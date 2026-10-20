@@ -4,7 +4,7 @@
 //! inverse kinematics, the external push on the tool, and the secondary (null-space) goals.
 
 use crate::MAXN;
-use crate::dynamics::{self, Constraints, MAXK, Terms, VecN, inverse_dynamics};
+use crate::dynamics::{self, Constraints, MAXK, MatN, Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::{DMat, solve_dense};
 use crate::model::Model;
 
@@ -95,8 +95,9 @@ pub struct Plan {
     /// Degrees of freedom (dimension of the tangent space).
     pub dof: usize,
     pub lin: Option<Lin>,
-    /// diag M(q*): scales joint-space gains to the inertia of each joint.
-    pub m_diag: VecN,
+    /// M(q*): shapes joint-space gains (K = ω² M(q*)), so that near q* every closed-loop mode has the
+    /// designed natural frequency and damping.
+    pub m_star: MatN,
     pub v_star: f64,
     /// Energy scale of the passive bodies, 2 Σ m g |r| (swing-up).
     pub e_ref: f64,
@@ -134,7 +135,7 @@ impl Plan {
             ct_ok: false,
             dof: model.n,
             lin: None,
-            m_diag: [1.0; MAXN],
+            m_star: core::array::from_fn(|k| f64::from(u8::from(k % (MAXN + 1) == 0))),
             v_star: 0.0,
             e_ref: 1.0,
             q_ref: [0.0; MAXN],
@@ -201,7 +202,10 @@ impl Plan {
         let mut en = [0.0; 2];
         model.energy.eval(&qs, &zero, &mut en);
         self.v_star = en[1];
-        self.m_diag = core::array::from_fn(|i| if i < n { t.m[i * n + i].max(1e-9) } else { 1.0 });
+        // gains shaped by the full inertia: K = ω² M(q*) puts every linearised mode at ω (a diagonal choice
+        // leaves strongly coupled chains with modes hundreds of times stiffer or slower than designed)
+        self.m_star = [0.0; MAXN * MAXN];
+        self.m_star[..n * n].copy_from_slice(&t.m[..n * n]);
         self.ct_ok = model.nu > 0
             && (0..n).all(|i| {
                 let e: VecN = core::array::from_fn(|j| f64::from(u8::from(i == j)));
@@ -353,20 +357,17 @@ impl Plan {
     pub fn secondary(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> VecN {
         let n = model.n;
         let w = self.goals.posture;
-        let mut tau: VecN = core::array::from_fn(|i| {
-            if i < n {
-                self.m_diag[i] * (w * w * Self::error(model, i, q[i], self.q_star[i]) - 2.0 * w * qd[i])
-            } else {
-                0.0
-            }
+        // a posture spring–damper at ω and a climb along ∇w, both shaped by M(q*)
+        let mut a: VecN = core::array::from_fn(|i| {
+            if i < n { w * w * Self::error(model, i, q[i], self.q_star[i]) - 2.0 * w * qd[i] } else { 0.0 }
         });
         if self.goals.manipulability > 0.0 {
             let grad = manipulability_gradient(model, q);
             for i in 0..n {
-                tau[i] += self.goals.manipulability * self.m_diag[i] * grad[i];
+                a[i] += self.goals.manipulability * grad[i];
             }
         }
-        tau
+        mat_vec(n, &self.m_star, &a)
     }
 }
 

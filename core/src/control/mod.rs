@@ -206,7 +206,7 @@ pub static SPECS: [Spec; 11] = [
             param("wn", r"\omega_{n}", 6.0, 0.5, 30.0).log().unit("rad/s"),
             param("zeta", r"\zeta", 1.0, 0.1, 2.0),
         ],
-        telemetry: &[("kp", N), ("kd", N)],
+        telemetry: &[("kp", N * N), ("kd", N * N)],
     },
     Spec {
         key: "pd_gravity",
@@ -216,7 +216,7 @@ pub static SPECS: [Spec; 11] = [
             param("wn", r"\omega_{n}", 6.0, 0.5, 30.0).log().unit("rad/s"),
             param("zeta", r"\zeta", 1.0, 0.1, 2.0),
         ],
-        telemetry: &[("kp", N), ("kd", N), ("ug", N)],
+        telemetry: &[("kp", N * N), ("kd", N * N), ("ug", N)],
     },
     Spec {
         key: "computed_torque",

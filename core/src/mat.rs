@@ -5,6 +5,13 @@ use core::ops::{Add, Index, IndexMut, Mul, Sub};
 
 use crate::MAXN;
 
+/// Largest |x| of a sequence, propagating NaN: `f64::max` silently drops NaN, which would let a diverged
+/// iteration look converged and a broken state look fine.
+#[must_use]
+pub fn max_abs(xs: impl IntoIterator<Item = f64>) -> f64 {
+    xs.into_iter().fold(0.0, |m: f64, v| if m.is_nan() || v.is_nan() { f64::NAN } else { m.max(v.abs()) })
+}
+
 /// Row-major dynamic matrix.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DMat {
@@ -49,9 +56,10 @@ impl DMat {
         Self { rows: self.rows, cols: self.cols, data: self.data.iter().map(|x| x * s).collect() }
     }
 
+    /// Largest |entry|; NaN if any entry is NaN (so that convergence tests cannot pass on garbage).
     #[must_use]
     pub fn max_abs(&self) -> f64 {
-        self.data.iter().fold(0.0, |m, v| m.max(v.abs()))
+        max_abs(self.data.iter().copied())
     }
 
     /// Gauss–Jordan inverse with partial pivoting; `None` if (numerically) singular.
@@ -206,6 +214,13 @@ pub fn solve_dense(n: usize, a: &mut [f64], b: &mut [f64]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn max_abs_propagates_nan() {
+        assert!(max_abs([1.0, f64::NAN, 3.0]).is_nan());
+        assert!(max_abs([f64::NAN, 1.0]).is_nan());
+        assert_eq!(max_abs([-4.0, 3.0]), 4.0);
+    }
+
     #[test]
     fn dense_solve() {
         let mut a = [0.0, 2.0, 1.0, 1.0, 1.0, 0.0, 3.0, 0.0, 1.0];

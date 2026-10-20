@@ -413,7 +413,7 @@ class App {
 
     const viewport = $('viewport');
     const pointer = (kind: 'down' | 'move' | 'up') => (e: PointerEvent) => {
-      if ((e.target as Element).closest('.overlay, .gizmos *')) return;
+      if (e.target instanceof Element && e.target.closest('.overlay, .gizmos *')) return;
       if (kind === 'down') {
         this.closePopover();
         viewport.setPointerCapture(e.pointerId);
@@ -441,7 +441,8 @@ class App {
   }
 
   private key(e: KeyboardEvent, down: boolean): void {
-    if ((e.target as HTMLElement).closest('input, select, textarea')) return;
+    // key events may target the window or document (not an element): only skip typing into form fields
+    if (e.target instanceof Element && e.target.closest('input, select, textarea')) return;
     const k = e.key.toLowerCase();
     if (this.stageName === 'build') {
       if (down) this.buildKey(e, k);

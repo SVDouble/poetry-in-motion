@@ -79,7 +79,7 @@ impl Constraints {
 
     #[must_use]
     pub fn max_violation(&self) -> f64 {
-        self.phi[..self.m].iter().fold(0.0, |acc, v| acc.max(v.abs()))
+        crate::mat::max_abs(self.phi[..self.m].iter().copied())
     }
 
     /// `A x`
@@ -222,10 +222,24 @@ pub fn constraints(model: &mut Model, q: &[f64], qd: &[f64]) -> Option<Constrain
 /// Forward dynamics of any model (open chain or with loops): `(q̈, λ)`.
 pub fn accel(model: &mut Model, q: &[f64], qd: &[f64], tau: &[f64], coriolis: bool) -> (VecN, VecM) {
     let t = Terms::eval(&mut model.dynamics, model.n, q, qd);
-    match constraints(model, q, qd) {
-        Some(k) => forward_constrained(&t, &k, qd, tau, coriolis, BAUMGARTE),
-        None => (forward(model.n, &t, qd, tau, coriolis), [0.0; MAXM]),
-    }
+    let k = constraints(model, q, qd);
+    accel_with(model.n, &t, k.as_ref(), qd, tau, coriolis)
+}
+
+/// [`accel`] with M, C, N and the constraints already evaluated at the state.
+#[must_use]
+pub fn accel_with(
+    n: usize,
+    t: &Terms,
+    k: Option<&Constraints>,
+    qd: &[f64],
+    tau: &[f64],
+    coriolis: bool,
+) -> (VecN, VecM) {
+    k.map_or_else(
+        || (forward(n, t, qd, tau, coriolis), [0.0; MAXM]),
+        |k| forward_constrained(t, k, qd, tau, coriolis, BAUMGARTE),
+    )
 }
 
 /// Move a state onto the constraint manifold: Gauss–Newton on φ(q) = 0 with minimal-norm steps, then remove
@@ -277,9 +291,8 @@ pub fn lstsq(rows: usize, cols: usize, g: &[f64], b: &[f64]) -> ([f64; MAXK], f6
     if !solve_dense(cols, &mut gtg[..cols * cols], &mut x[..cols]) {
         return ([0.0; MAXK], f64::INFINITY);
     }
-    let res = (0..rows)
-        .map(|r| ((0..cols).map(|c| g[r * cols + c] * x[c]).sum::<f64>() - b[r]).abs())
-        .fold(0.0, f64::max);
+    let res =
+        crate::mat::max_abs((0..rows).map(|r| (0..cols).map(|c| g[r * cols + c] * x[c]).sum::<f64>() - b[r]));
     (x, res)
 }
 

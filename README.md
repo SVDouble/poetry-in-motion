@@ -86,8 +86,10 @@ Design notes:
   mechanism goes in as a flat `f64` array, and the derivation comes out as JSON.
 - **Shareable.** The mechanism is encoded in the URL, so a built robot can be sent as a link.
 
-Performance (`make bench`, native): 0.4 µs per controlled RK4 step for the cart-pole, 2 µs for a 4-link chain and
-9 µs for a 6-link chain, all far faster than real time at 1 kHz.
+Performance (`make bench`, native, best of 7): about 0.5 µs per controlled RK4 step for the cart-pole, 1.7 µs for a
+4-link chain and 4.3 µs for a 6-link chain, all far faster than real time at 1 kHz. After the parameters are folded
+in, terms that share their state monomial and harmonic are merged (the 6-link M, C, N shrink from 1959 to 1036
+terms), and every angle's sine and cosine come from one `sin_cos`.
 
 ## Getting started
 
@@ -107,10 +109,19 @@ make dev     # build the wasm core and start Vite on http://localhost:5173
 | `make fmt` | format and auto-fix (rustfmt, ruff, Biome) |
 | `make build` | production bundle in `web/dist` |
 | `make bench` | native throughput of the simulation step |
+| `make fuzz` | property tests on 1000 random mechanisms (`FUZZ_CASES=n`) |
+| `make e2e` | crawl the running app in a headless browser (`CHROMIUM=/path/to/chromium`) |
 
 Tooling: rustfmt and clippy (pedantic + nursery, warnings are errors), ruff and mypy (strict), Biome and
-TypeScript (strict). Tests are cargo test (physics and controllers), pytest (derivation) and Vitest (formatting,
-and the real wasm module through its ABI).
+TypeScript (strict). Tests:
+
+- cargo test: physics and controllers on the presets, and property tests on random mechanisms (the derived
+  equations against Euler–Lagrange computed numerically from the energy alone, energy and budget conservation,
+  every controller under shadows, pushes and parameter changes, convergence of the tracking controllers);
+- pytest: the derivation against SymPy;
+- Vitest: formatting, the real wasm module through its ABI, and every guided experiment on every mechanism
+  that offers it, checked against its claim;
+- `make e2e`: a headless-browser crawl of every stage, tab, controller, experiment and plot operation.
 
 ### Deploying
 

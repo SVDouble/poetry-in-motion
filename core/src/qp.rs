@@ -57,7 +57,7 @@ pub fn solve_box(
         let mut change = 0.0_f64;
         for i in 0..n {
             let xi = (y[i] - step * grad[i]).clamp(lo[i], hi[i]);
-            change = change.max((xi - x[i]).abs());
+            change = crate::mat::max_abs([change, xi - x[i]]);
             x_prev[i] = x[i];
             x[i] = xi;
         }
@@ -67,7 +67,8 @@ pub fn solve_box(
             y[i] = x[i] + beta * (x[i] - x_prev[i]);
         }
         t = t_next;
-        if change < 1e-9 {
+        // NaN (bad input) must not pass for convergence: stop and let the caller see it
+        if change < 1e-9 || change.is_nan() {
             return it + 1;
         }
     }
@@ -77,6 +78,15 @@ pub fn solve_box(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nan_input_is_not_mistaken_for_convergence() {
+        let h = [2.0, 0.0, 0.0, 2.0];
+        let mut x = [0.0; 2];
+        let mut scratch = [0.0; 6];
+        solve_box(&h, &[f64::NAN, 1.0], &[-1.0; 2], &[1.0; 2], 2.0, &mut x, &mut scratch, 50);
+        assert!(x[0].is_nan(), "NaN must surface, not be swallowed by max()");
+    }
 
     #[test]
     fn unconstrained_matches_the_linear_solve() {

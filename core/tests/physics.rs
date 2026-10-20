@@ -488,7 +488,8 @@ fn pushing_a_redundant_arm_far_away_settles_without_limit_cycles() {
         s.step(4_000);
         s.set_flag(Flag::PushX, 3.0);
         s.set_flag(Flag::PushY, -1.0);
-        s.step(4_000);
+        // the posture goal settles the redundant joint through a shallow, slower null-space mode
+        s.step(10_000);
         let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
         for _ in 0..500 {
             s.step(1);

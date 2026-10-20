@@ -12,9 +12,12 @@ use crate::plan::{Plan, Tool, manipulability};
 /// Largest force of the push on the tool (N): a hand, not a winch.
 pub const PUSH_MAX: f64 = 30.0;
 
-/// End-stop stiffness (N/m) and damping (N s/m) of prismatic joints with limits.
+/// End stops of limited prismatic joints: Hunt–Crossley contact `F = δ (K + D δ̇)` with penetration δ.
+/// The force grows continuously from zero (a damper that switched on at touch-down would make the force
+/// jump and cost RK4 its order); `D = C / δ₀` gives the damping `C` at the typical penetration δ₀.
 const STOP_K: f64 = 2.0e4;
 const STOP_C: f64 = 300.0;
+const STOP_DEPTH: f64 = 0.01;
 /// RK4 substeps per control step while an end stop is (about to be) in contact.
 const CONTACT_SUBSTEPS: u32 = 20;
 
@@ -222,7 +225,7 @@ impl Sim {
             let pen = q[i].abs() - limit;
             if limit > 0.0 && pen > 0.0 {
                 let s = q[i].signum();
-                -s * (STOP_K * pen + STOP_C * (s * qd[i])).max(0.0)
+                -s * (pen * (STOP_K + STOP_C / STOP_DEPTH * (s * qd[i]))).max(0.0)
             } else {
                 0.0
             }
@@ -241,19 +244,22 @@ impl Sim {
     }
 
     fn accel(&mut self, q: &VecN, qd: &VecN) -> VecN {
+        let t = Terms::eval(&mut self.model.dynamics, self.model.n, q, qd);
+        let k = dynamics::constraints(&mut self.model, q, qd);
+        self.accel_with(&t, k.as_ref(), q, qd)
+    }
+
+    /// Accelerations at a state whose M, C, N and constraints are already evaluated; records the power of
+    /// every force for the energy budget (the constraint forces act as −Aᵀλ).
+    fn accel_with(&mut self, t: &Terms, k: Option<&dynamics::Constraints>, q: &VecN, qd: &VecN) -> VecN {
+        let n = self.model.n;
         let stops = self.stops(q, qd);
         let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
-        let (qdd, lambda) = dynamics::accel(&mut self.model, q, qd, &tau, self.coriolis);
+        let (qdd, lambda) = dynamics::accel_with(n, t, k, qd, &tau, self.coriolis);
         self.lambda = lambda;
-        // power of every force at this RK4 stage (the constraint forces act as −Aᵀλ)
-        let n = self.model.n;
         let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
         let friction = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();
-        let constraint = if self.model.closed() {
-            dynamics::constraints(&mut self.model, q, qd).map_or(0.0, |k| -dot(&k.apply_t(&lambda)))
-        } else {
-            0.0
-        };
+        let constraint = k.map_or(0.0, |k| -dot(&k.apply_t(&lambda)));
         let b = &mut self.budget;
         b.stages[b.stage % 4] = [dot(&self.tau_u), dot(&self.tau_ext), dot(&stops), friction, constraint];
         b.stage += 1;
@@ -319,8 +325,9 @@ impl Sim {
             })
         };
         let sub = if near(&self.q, &self.qd) { CONTACT_SUBSTEPS } else { 1 };
-        for _ in 0..sub {
-            self.rk4(h / f64::from(sub));
+        // the first stage is at the state the controller just evaluated: reuse M, C, N and A
+        for s in 0..sub {
+            self.rk4(h / f64::from(sub), (s == 0).then_some((&terms, k.as_ref())));
         }
         if !self.q.iter().chain(&self.qd).all(|v| v.is_finite() && v.abs() < 1e5) {
             // a diverging controller or integration: fall back to the last good state, at rest
@@ -333,12 +340,16 @@ impl Sim {
     }
 
     /// One RK4 step of length `h` with the inputs held, accumulating the energy budget.
-    fn rk4(&mut self, h: f64) {
+    fn rk4(&mut self, h: f64, at_start: Option<(&Terms, Option<&dynamics::Constraints>)>) {
         let n = self.model.n;
         let (q0, v0) = (self.q, self.qd);
         self.budget.stage = 0;
         let lerp = |base: &VecN, d: &VecN, s: f64| -> VecN { core::array::from_fn(|i| base[i] + s * d[i]) };
-        let k1 = (v0, self.accel(&q0, &v0));
+        let a0 = match at_start {
+            Some((t, k)) => self.accel_with(t, k, &q0, &v0),
+            None => self.accel(&q0, &v0),
+        };
+        let k1 = (v0, a0);
         let (q1, v1) = (lerp(&q0, &k1.0, h / 2.0), lerp(&v0, &k1.1, h / 2.0));
         let k2 = (v1, self.accel(&q1, &v1));
         let (q2, v2) = (lerp(&q0, &k2.0, h / 2.0), lerp(&v0, &k2.1, h / 2.0));
@@ -418,9 +429,8 @@ impl Sim {
         mdot[..n * n].copy_from_slice(&a[ao.mdot..ao.mdot + n * n]);
         // Lemma 4.2: S = Ṁ − 2C is skew-symmetric
         let s = |r: usize, c: usize| mdot[r * n + c] - 2.0 * t.c[r * n + c];
-        let skew = (0..n)
-            .flat_map(|i| (0..n).map(move |j| (i, j)))
-            .fold(0.0, |m: f64, (i, j)| m.max((s(i, j) + s(j, i)).abs()));
+        let skew = (0..n).flat_map(|i| (0..n).map(move |j| (i, j))).map(|(i, j)| s(i, j) + s(j, i));
+        let skew = crate::mat::max_abs(skew);
         let eig = sym_eigenvalues(n, &t.m);
         let power: f64 = (0..n).map(|i| qd[i] * tau[i]).sum();
         let dissipation: f64 = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();

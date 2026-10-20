@@ -88,7 +88,7 @@ const pdLab =
         actions: [{ do: 'param', key: 'zeta', value: 0.15 }, { do: 'reset' }, { do: 'kick', v: 2 }],
         plots: [{ ids: q }, { ids: e }],
         notice:
-          'Each joint rings like a mass–spring with $\\zeta = 0.15$, but the joints also push each other through the off-diagonal terms of $M(q)$: the oscillations are not independent. Set ζ back to 1 for a critically damped response.',
+          'Near $q^*$ every mode rings with $\\zeta = 0.15$ — the gains are shaped by $M(q^*)$, so no direction is damped differently. Far from $q^*$, $M(q)$ differs from $M(q^*)$ and the response is no longer the same in every direction. Set ζ back to 1 for a critically damped response.',
       });
     }
     if (!gravity && !full && balanced) {
@@ -102,7 +102,7 @@ const pdLab =
       });
     }
     return {
-      watch: [{ ids: q }, { ids: e }, { ids: range(c.n, (i) => tele(me, 'kp', i)) }],
+      watch: [{ ids: q }, { ids: e }, { ids: range(c.nu, (a) => `u:${a}`) }],
       experiments,
     };
   };

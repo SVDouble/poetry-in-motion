@@ -31,11 +31,15 @@ pub struct Lqr {
 
 impl Controller for Lqr {
     fn design(&mut self, plan: &Plan, model: &mut Model, p: &[f64], dt: f64) {
-        self.k = plan.lin.as_ref().and_then(|l| {
-            let r = l.z.cols;
-            let (ad, bd) = c2d(&l.a, &l.b, dt);
-            dlqr(&ad, &bd, &weights(r, p[0], p[1], dt), &DMat::identity(model.nu).scale(p[2] * dt))
-        });
+        self.k = plan
+            .lin
+            .as_ref()
+            .and_then(|l| {
+                let r = l.z.cols;
+                let (ad, bd) = c2d(&l.a, &l.b, dt);
+                dlqr(&ad, &bd, &weights(r, p[0], p[1], dt), &DMat::identity(model.nu).scale(p[2] * dt))
+            })
+            .filter(|k| k.max_abs().is_finite());
     }
 
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
@@ -162,6 +166,11 @@ impl Controller for Mpc {
                 f[a * nx + b] = (0..rows).map(|row| gamma[row * cols + a] * qp[row * nx + b]).sum();
             }
         }
+        if !h.iter().chain(&f).all(|v| v.is_finite()) {
+            // the prediction overflowed (a strongly unstable linearisation): no MPC here
+            self.steps = 0;
+            return;
+        }
         self.lip = qp::lipschitz(cols, &h);
         *self = Self {
             nx,
@@ -200,6 +209,9 @@ impl Controller for Mpc {
             let iters = c.params[5].round() as usize;
             self.iterations =
                 qp::solve_box(&self.h, &g, &lo, &hi, self.lip, &mut self.du, &mut self.scratch, iters);
+            if !self.du.iter().all(|v| v.is_finite()) {
+                self.du.fill(0.0); // never apply a broken plan: hold u* and start the next solve cold
+            }
             self.active =
                 (0..cols).filter(|&a| self.du[a] <= lo[a] + 1e-9 || self.du[a] >= hi[a] - 1e-9).count();
             let hu: Vec<f64> =

@@ -265,7 +265,8 @@ export class Signals {
     let label = base;
     if (len === 2) label = `${base} ${i === 1 ? 'y' : 'x'}`;
     else if (len > 2) {
-      if (i >= this.d.n) return undefined;
+      // a joint vector (one entry per coordinate); matrices and long plans are not plottable signals
+      if (len !== this.snap.layout.maxn || i >= this.d.n) return undefined;
       label = `${base} ${this.coord(i)}`;
     }
     return {

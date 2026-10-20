@@ -226,7 +226,7 @@ function goalSections(d: Derivation, snap: Snapshot): SectionSpec[] {
     build(b) {
       b.text('Both goals are expressed as a joint torque τ₀ and then projected:');
       b.math(
-        String.raw`\tau_0 = \operatorname{diag}M(q^{*})\Big(\omega_p^2\,(q^{*} - q) - 2\omega_p\,\dot q\Big) + k_w \operatorname{diag}M(q^{*})\,\nabla_q w(q)`,
+        String.raw`\tau_0 = M(q^{*})\Big(\omega_p^2\,(q^{*} - q) - 2\omega_p\,\dot q + k_w\,\nabla_q w(q)\Big)`,
       );
       b.math(String.raw`w(q) = \sqrt{\det J(q)J(q)^{T}} = ${b.live.num(() => snap.v('MANIPULABILITY'))}`, {
         caption: 'Yoshikawa manipulability: zero at singular poses; its gradient is taken numerically',

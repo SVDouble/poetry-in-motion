@@ -1,0 +1,224 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["playwright"]
+# ///
+"""End-to-end crawl of the running app.
+
+Drives every stage, preset, side tab, controller page and role, shadow, experiment, scope operation, toggle
+and builder edit; fails on any page or console error and on functional mismatches (dock, notices, plots,
+comparison table, NaN on screen).
+
+Run with `make e2e` (starts a dev server). `CHROMIUM` selects the browser executable; WebGL 2 is forced
+because headless WebGPU is not available everywhere.
+"""
+
+import asyncio
+import json
+import os
+import sys
+
+from playwright.async_api import Page, async_playwright
+
+URL = os.environ.get("APP_URL", "http://localhost:5173/") + "?webgl"
+
+
+class Crawl:
+    def __init__(self, page: Page) -> None:
+        self.page = page
+        self.where = "start"
+        self.errors: list[str] = []
+        page.on("pageerror", lambda e: self.fail(f"pageerror: {e}"))
+        page.on("console", lambda m: self.fail(f"console.error: {m.text}") if m.type == "error" else None)
+
+    def fail(self, message: str) -> None:
+        self.errors.append(f"[{self.where}] {message}")
+
+    async def js(self, code: str) -> object:
+        return await self.page.evaluate(code)
+
+    async def click(self, selector: str, text: str | None = None, *, last: bool = False) -> bool:
+        """Click the first (or last) element matching `selector` (and exact `text`); False if none."""
+        match = "" if text is None else f".filter(e => e.textContent === {json.dumps(text)})"
+        pick = ".pop()" if last else "[0]"
+        code = f"(() => {{ const e = [...document.querySelectorAll({json.dumps(selector)})]{match}{pick};"
+        return bool(await self.js(code + " if (!e) return false; e.click(); return true; })()"))
+
+    async def texts(self, selector: str) -> list[str]:
+        return await self.js(
+            f"[...document.querySelectorAll({json.dumps(selector)})].map(e => e.textContent)"
+        )
+
+    async def text(self, selector: str) -> str | None:
+        return await self.js(f"document.querySelector({json.dumps(selector)})?.textContent ?? null")
+
+    async def wait(self, ms: int) -> None:
+        await self.page.wait_for_timeout(ms)
+
+    # ------------------------------------------------------------------ areas
+
+    async def build(self, preset: str) -> None:
+        self.where = f"{preset}/build"
+        await self.click(".preset-grid button", preset)
+        await self.wait(400)
+        for label in ["+ revolute", "+ prismatic", "+ fixed"]:
+            self.where = f"{preset}/build {label}"
+            await self.click("button", label)
+            await self.wait(250)
+        self.where = f"{preset}/build remove, undo, redo"
+        await self.click(".tree-item button", "×", last=True)
+        await self.wait(250)
+        for label in ["↶", "↶", "↶", "↶", "↷", "↶"]:
+            await self.click(".head-tools button", label)
+            await self.wait(150)
+        await self.wait(300)
+
+    async def tabs(self, preset: str) -> None:
+        for tab in ["Goals", "Equations", "Model", "Control"]:
+            self.where = f"{preset}/tab {tab}"
+            await self.click(".side-head .segmented button", tab)
+            await self.wait(300)
+
+    async def open_page(self, name: str) -> None:
+        await self.click(".page-picker")
+        await self.js(
+            "[...document.querySelectorAll('.ctrl-menu-item')]"
+            f".find(b => b.querySelector('.name').textContent === {json.dumps(name)})?.click()"
+        )
+        await self.wait(150)
+
+    async def controllers(self, preset: str) -> list[str]:
+        await self.click(".page-picker")
+        names = await self.texts(".ctrl-menu-item .name")
+        await self.page.keyboard.press("Escape")
+        for name in names:
+            self.where = f"{preset}/page {name}"
+            await self.open_page(name)
+            if await self.click(".role-actions button", "Make primary"):
+                await self.wait(250)
+                shown = await self.text(".dock-primary span:nth-child(2)")
+                if shown != name:
+                    self.fail(f"dock shows {shown!r} after making {name!r} primary")
+            await self.click(".card-actions button")
+            await self.wait(100)
+        return names
+
+    async def shadows(self, preset: str) -> None:
+        for k in range(4):
+            self.where = f"{preset}/shadow {k}"
+            await self.click(".dock-add")
+            await self.js(
+                "[...document.querySelectorAll('.ctrl-menu-item')].find(b => !b.disabled"
+                " && !/primary|shadow|remove/.test(b.textContent))?.click()"
+            )
+            await self.wait(300)
+        rows = len(await self.texts(".compare-row:not(.head)"))
+        pills = len(await self.texts(".dock .pill"))
+        if rows != pills + 1:
+            self.fail(f"comparison table has {rows} rows for {pills} shadows + primary")
+        await self.js(
+            "[...document.querySelectorAll('.compare-actions button')]"
+            ".find(b => b.textContent.startsWith('Restart'))?.click()"
+        )
+        await self.wait(300)
+
+    async def experiments(self, preset: str, names: list[str]) -> None:
+        for name in names:
+            await self.open_page(name)
+            for title in await self.texts(".lab-item b"):
+                self.where = f"{preset}/{name}/experiment {title}"
+                await self.js(
+                    "[...document.querySelectorAll('.lab-item')]"
+                    f".find(i => i.querySelector('b').textContent === {json.dumps(title)})"
+                    "?.querySelector('button').click()"
+                )
+                await self.wait(700)
+                opened = await self.text(".lab-item.open b")
+                plots = await self.text(".scope-presets button.on")
+                if opened != title or plots != title:
+                    self.fail(f"notice {opened!r}, plots {plots!r}")
+                values = await self.texts(".scope-chip .v, .compare-row .num")
+                if any("NaN" in v or "undefined" in v for v in values):
+                    self.fail("NaN values on screen")
+            await self.click(".lab-row button", "Watch")
+
+    async def scope(self, preset: str) -> None:
+        for label in await self.texts(".scope-presets button"):
+            self.where = f"{preset}/scope {label}"
+            await self.click(".scope-presets button", label)
+            await self.wait(200)
+        self.where = f"{preset}/scope edit"
+        await self.click(".scope-add")
+        await self.click(".picker-item", last=True)
+        await self.click(".scope-bar button", "+ plot")
+        await self.wait(200)
+        await self.click(".scope-drop", last=True)
+        await self.click(".scope-chip .x", last=True)
+        await self.wait(200)
+
+    async def chrome(self, preset: str) -> None:
+        for toggle in ["Frames", "Trail", "Shadows", "Coriolis", "Keys"]:
+            self.where = f"{preset}/toggle {toggle}"
+            await self.click("#toggles button", toggle)
+            await self.click("#toggles button", toggle)
+        self.where = f"{preset}/model friction"
+        await self.click(".side-head .segmented button", "Model")
+        await self.click(".segmented button", "none")
+        await self.click(".segmented button", "as built")
+        self.where = f"{preset}/keys"
+        for key in ["Space", "r", "p", "p", "1", "2"]:
+            await self.page.keyboard.press(key)
+            await self.wait(80)
+        self.where = f"{preset}/drag and push"
+        mouse = self.page.mouse
+        await mouse.move(400, 300)
+        await mouse.down()
+        await mouse.move(420, 320)
+        await mouse.up()
+        await self.page.keyboard.down("Shift")
+        await mouse.move(400, 300)
+        await mouse.down()
+        await mouse.move(450, 330)
+        await self.wait(300)
+        await mouse.up()
+        await self.page.keyboard.up("Shift")
+        await self.wait(500)
+
+    async def preset(self, preset: str) -> None:
+        await self.build(preset)
+        self.where = f"{preset}/derive"
+        await self.click("[data-stage=derive]")
+        await self.wait(600)
+        self.where = f"{preset}/simulate"
+        await self.click("[data-stage=simulate]")
+        await self.wait(600)
+        await self.tabs(preset)
+        names = await self.controllers(preset)
+        await self.shadows(preset)
+        await self.experiments(preset, names)
+        await self.scope(preset)
+        await self.chrome(preset)
+        stats = (await self.text("#stats") or "").strip()
+        print(f"{preset}: ok · {stats[:60]}")
+        await self.click("[data-stage=build]")
+        await self.wait(300)
+
+
+async def main() -> int:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(executable_path=os.environ.get("CHROMIUM") or None)
+        page = await browser.new_page(viewport={"width": 1440, "height": 900})
+        crawl = Crawl(page)
+        await page.goto(URL)
+        await crawl.wait(2500)
+        for preset in await crawl.texts(".preset-grid button"):
+            await crawl.preset(preset)
+        await browser.close()
+    unique = list(dict.fromkeys(crawl.errors))
+    print(f"\n{len(unique)} errors")
+    for e in unique:
+        print(e)
+    return 1 if unique else 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

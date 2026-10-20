@@ -20,20 +20,26 @@ fn main() {
         ("6-link chain, PD + gravity", chain(6), Kind::PdGravity),
         ("RR arm, impedance", presets::arm2(), Kind::Impedance),
         ("cart-pole, MPC", presets::cartpole(), Kind::Mpc),
+        ("four-bar loop, LQR", presets::four_bar(), Kind::Lqr),
     ];
     for (name, desc, mode) in cases {
         let t0 = Instant::now();
         let model = Model::from_desc(&desc);
         let derive_ms = t0.elapsed().as_secs_f64() * 1e3;
-        let terms = model.dynamics.terms();
+        let (.., terms, merged) = model.dynamics.stats();
         let mut w = World::new(model);
         w.set_controller(0, Some(mode));
-        let n = 200_000;
-        let t = Instant::now();
-        w.step(n);
-        let dt = t.elapsed().as_secs_f64();
+        // best of several runs: robust against other processes preempting the benchmark
+        let n = 50_000;
+        let dt = (0..7)
+            .map(|_| {
+                let t = Instant::now();
+                w.step(n);
+                t.elapsed().as_secs_f64()
+            })
+            .fold(f64::INFINITY, f64::min);
         println!(
-            "{name:28} derive {derive_ms:7.2} ms | M,C,N tape {terms:5} terms | {:7.0} ns/step ({:.0}× real time)",
+            "{name:28} derive {derive_ms:7.2} ms | M,C,N {terms:5} terms → {merged:4} merged | {:7.0} ns/step ({:.0}× real time)",
             dt / f64::from(n) * 1e9,
             f64::from(n) / dt / 1000.0
         );

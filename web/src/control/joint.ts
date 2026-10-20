@@ -1,5 +1,6 @@
 /** Pages of the joint-space controllers. */
 import { sci, texMat } from '../eq/tex';
+import { solve } from './nullspace';
 import { actuatedIdx, col, idleNote, type Page, type PageContext, qVec, realise } from './page';
 
 const err = (c: PageContext) => (i: number) => c.snap.v('Q_REF', i) - c.snap.v('Q', i);
@@ -48,17 +49,25 @@ export const passive = (c: PageContext): Page => ({
 
 function pdPage(c: PageContext, gravity: boolean): Page {
   const { n, d, snap } = c;
-  const kp = (i: number) => c.tele('kp', i);
+  // K_p, packed row-major n × n
+  const kp = () => Array.from({ length: n * n }, (_, k) => c.tele('kp', k));
+  const sag = () =>
+    solve(
+      n,
+      kp(),
+      Array.from({ length: n }, (_, i) => snap.v('DV', i)),
+      1,
+    ) ?? new Array(n).fill(Number.NaN);
   return {
     lead: gravity
       ? 'Joint PD plus exact gravity compensation: no steady-state error, and stability follows from energy alone.'
-      : 'One independent spring–damper per actuated joint. Simple and robust, but gravity makes it sag.',
+      : 'A spring and damper on the actuated joints, shaped by the inertia at the target. Simple and robust, but gravity makes it sag.',
     cite: gravity ? 'Takegaki & Arimoto 1981; MLS §4.5' : 'MLS §4.5',
     idea(b) {
       b.text(
         gravity
           ? 'A PD controller is a virtual spring and damper on every joint. Adding the gravity force the mechanism needs at its current pose cancels the only thing that pulls it away from the target, so the springs can settle exactly at q*. No model of the inertia is needed — only of the potential energy.'
-          : 'Each actuated joint gets a virtual spring towards its reference and a damper on its velocity, ignoring the coupling between joints. The gains are scaled by the diagonal of M(q*) so that every joint, viewed alone, has the natural frequency ω<sub>n</sub> and damping ratio ζ.',
+          : 'Each actuated joint is pulled towards its reference by a virtual spring and slowed by a damper. The gains are constant matrices shaped like the inertia at the target, M(q*): near q* the mechanism then responds in every direction with the natural frequency ω<sub>n</sub> and damping ratio ζ you set — no direction sluggish, none violently stiff.',
       );
     },
     generic(b) {
@@ -67,9 +76,9 @@ function pdPage(c: PageContext, gravity: boolean): Page {
           ? String.raw`u = K_p\,e + K_v\,\dot e + u_g,\qquad B u_g = \frac{\partial V}{\partial q}(q)`
           : String.raw`u = K_p\,e + K_v\,\dot e,\qquad e = q_d - q`,
       );
-      b.math(
-        String.raw`K_p = \omega_n^2 \operatorname{diag} M(q^{*}),\qquad K_v = 2\zeta\omega_n \operatorname{diag} M(q^{*})`,
-        { caption: 'joint i alone: m_ii ë + K_v,i ė + K_p,i e = 0 has natural frequency ω_n and damping ζ' },
+      b.math(String.raw`K_p = \omega_n^2\, M(q^{*}),\qquad K_v = 2\zeta\omega_n\, M(q^{*})`);
+      b.text(
+        String.raw`Linearised at $q^{*}$ (gravity balanced), $M(q^{*})\,\ddot e + K_v\dot e + K_p e = 0$ becomes $M(q^{*})\big(\ddot e + 2\zeta\omega_n\dot e + \omega_n^2 e\big) = 0$: every mode has exactly $\omega_n$ and $\zeta$. The classical decentralised choice $K_p = \omega_n^2 \operatorname{diag} M(q^{*})$ treats each joint alone; in a strongly coupled chain the modes then spread by orders of magnitude — some sluggish, some so stiff that a 1 kHz digital controller destabilises them.`,
       );
       if (!gravity) {
         b.text(
@@ -86,8 +95,12 @@ function pdPage(c: PageContext, gravity: boolean): Page {
     concrete(b) {
       references(c, b);
       b.math(
-        String.raw`K_p = \operatorname{diag}${b.live.vec(n, kp)},\quad K_v = \operatorname{diag}${b.live.vec(n, (i) => c.tele('kd', i))}`,
-        { caption: 'only the actuated joints use their gains' },
+        String.raw`K_p = ${b.live.mat(n, n, (i, j) => c.tele('kp', i * n + j))},\quad K_v = ${b.live.mat(n, n, (i, j) => c.tele('kd', i * n + j))}`,
+        {
+          caption: c.loops
+            ? 'all coordinates take part: the loops tie them together'
+            : 'on an open chain only the actuated joints’ errors enter (a collocated servo)',
+        },
       );
       b.math(
         String.raw`\frac{\partial V}{\partial q} = ${col(d.dV)} = ${b.live.vec(n, (i) => snap.v('DV', i))}`,
@@ -98,7 +111,7 @@ function pdPage(c: PageContext, gravity: boolean): Page {
         b.math(String.raw`u_g = ${b.live.vec(c.nu, (i) => c.tele('ug', i))}`);
       } else {
         b.math(
-          String.raw`K_p^{-1}\frac{\partial V}{\partial q}(q) = ${b.live.vec(n, (i) => snap.v('DV', i) / kp(i))}\quad\text{vs.}\quad e = ${b.live.vec(n, err(c))}`,
+          String.raw`K_p^{-1}\frac{\partial V}{\partial q}(q) = ${b.live.vec(n, (i) => sag()[i] ?? Number.NaN)}\quad\text{vs.}\quad e = ${b.live.vec(n, err(c))}`,
           { caption: 'predicted sag versus the actual error (equal once at rest, for actuated joints)' },
         );
       }
@@ -212,7 +225,7 @@ export const passivity = (c: PageContext): Page => {
       b.text('Subtracting from the equations of motion leaves a mechanical system in s:');
       b.math(String.raw`M(q)\,\dot s + C(q,\dot q)\,s + K_D\,s = 0`);
       b.text(
-        String.raw`$\Lambda = \lambda I$ sets how fast $e$ follows once $s = 0$ (first order: $\dot e = -\lambda e$); $K_D = k_D \operatorname{diag} M(q^{*})$ how hard $s$ is driven to zero.`,
+        String.raw`$\Lambda = \lambda I$ sets how fast $e$ follows once $s = 0$ (first order: $\dot e = -\lambda e$); $K_D = k_D\, M(q^{*})$ how hard $s$ is driven to zero — shaped like the inertia, so every direction converges alike.`,
       );
     },
     concrete(b) {
