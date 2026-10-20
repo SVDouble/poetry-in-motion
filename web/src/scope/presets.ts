@@ -36,8 +36,12 @@ export function presets(d: Derivation, store: ControlStore, watch: PlotDef[], pr
     {
       key: 'energy',
       label: 'Energy',
-      hint: 'kinetic, potential and total energy; the power balance Ė = q̇ᵀτ − q̇ᵀβq̇',
-      plots: [{ ids: ['energy:T', 'energy:V', 'energy:E'] }, { ids: ['energy:P', 'energy:D', 'energy:dE'] }],
+      hint: 'where every joule goes: E against the work of inputs, pushes, stops and friction',
+      plots: [
+        { ids: ['energy:T', 'energy:V', 'energy:E'] },
+        { ids: ['energy:E', 'energy:Ebal', 'work:fric', 'work:in', 'work:ext'] },
+        { ids: ['budget'] },
+      ],
     },
     {
       key: 'eom',

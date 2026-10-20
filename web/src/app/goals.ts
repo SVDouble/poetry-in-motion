@@ -10,7 +10,7 @@ import type { Derivation } from '../model/derivation';
 import type { Mechanism } from '../model/description';
 import type { SimClient } from '../sim/client';
 import type { Snapshot } from '../sim/layout';
-import { card, DEG, el, note, type SliderOpts, segmented, slider } from '../ui/widgets';
+import { card, DEG, el, note, row, type Slider, type SliderOpts, segmented, slider } from '../ui/widgets';
 import { type Numeric, SETTING_FLAGS, type Settings, toolTargets } from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
@@ -247,20 +247,34 @@ export function modelTab(
 ): HTMLElement {
   const host = el('div', 'editor');
   const max = { m: 10, g: 20, beta: 2, l: 2, r: 2, I: 2 } as const;
-  const coeffs = d.params.map((p) =>
-    slider({
+  const sliders = new Map<number, Slider>();
+  const set = (i: number, v: number) => {
+    params[i] = v;
+    client.send({ type: 'param', i, v });
+  };
+  const coeffs = d.params.map((p) => {
+    const s = slider({
       label: p.tex,
       tex: true,
       min: p.kind === 'r' ? -1 : 0,
       max: max[p.kind],
       step: 0.001,
       value: params[p.index] ?? p.value,
-      onInput: (v) => {
-        params[p.index] = v;
-        client.send({ type: 'param', i: p.index, v });
-      },
-    }),
-  );
+      onInput: (v) => set(p.index, v),
+    });
+    sliders.set(p.index, s);
+    return s;
+  });
+  // friction: all β to zero (a conservative mechanism), or back to the built values
+  const betas = d.params.filter((p) => p.kind === 'beta');
+  const friction = (on: boolean) => {
+    for (const p of betas) {
+      const v = on ? p.value : 0;
+      set(p.index, v);
+      sliders.get(p.index)?.set(v);
+    }
+  };
+  const frictionOn = betas.some((p) => (params[p.index] ?? p.value) !== 0);
   host.append(
     card(
       'Coefficients',
@@ -272,6 +286,21 @@ export function modelTab(
     ),
     card(
       'What-if',
+      note(
+        'Joint friction β is part of N(q, q̇): with it a passive mechanism loses energy (see the energy budget in the Equations tab and the Energy plots). Without it, energy is conserved to integration accuracy.',
+        'prose',
+      ),
+      row(
+        'joint friction β',
+        segmented(
+          [
+            ['on', 'as built'],
+            ['off', 'none'],
+          ],
+          frictionOn ? 'on' : 'off',
+          (v) => friction(v === 'on'),
+        ),
+      ),
       note(
         `Coriolis & centrifugal forces are ${settings.coriolis ? 'on' : 'off'} (toggle in the viewport). Switching them off is non-physical: energy is no longer conserved, and model-based controllers that still cancel C q̇ inject energy.`,
         'prose',

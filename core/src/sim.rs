@@ -15,6 +15,29 @@ pub const PUSH_MAX: f64 = 30.0;
 /// End-stop stiffness (N/m) and damping (N s/m) of prismatic joints with limits.
 const STOP_K: f64 = 2.0e4;
 const STOP_C: f64 = 300.0;
+/// RK4 substeps per control step while an end stop is (about to be) in contact.
+const CONTACT_SUBSTEPS: u32 = 20;
+
+/// Energy budget: the work done on the mechanism since the last restart.
+///
+/// Integrated with the RK4 weights of the motion itself, so that `E − E₀ = W_in + W_ext + W_stop − W_friction + W_constraint` holds to RK4 accuracy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Budget {
+    pub e0: f64,
+    /// [inputs B u, push and kicks, end stops, friction loss (positive), constraint forces]
+    pub work: [f64; 5],
+    stages: [[f64; 5]; 4],
+    stage: usize,
+}
+
+impl Budget {
+    /// E − E₀ − (net work): zero for physically consistent dynamics.
+    #[must_use]
+    pub fn residual(&self, e: f64) -> f64 {
+        let [w_in, w_ext, w_stop, w_fric, w_con] = self.work;
+        e - self.e0 - (w_in + w_ext + w_stop - w_fric + w_con)
+    }
+}
 
 #[derive(Debug)]
 pub struct Sim {
@@ -40,6 +63,7 @@ pub struct Sim {
     plan_dirty: bool,
     ctrl_dirty: bool,
     aux: Vec<f64>,
+    pub budget: Budget,
 }
 
 impl Sim {
@@ -67,6 +91,7 @@ impl Sim {
             plan_dirty: true,
             ctrl_dirty: true,
             aux: Vec::new(),
+            budget: Budget::default(),
         };
         sim.aux = vec![0.0; sim.model.aux_off.len];
         sim.reset();
@@ -117,6 +142,13 @@ impl Sim {
         dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
         self.plan.sync(&mut self.model, &self.q);
         self.ctrl.reset();
+        self.restart_budget();
+    }
+
+    /// Start a new energy budget at the current state.
+    fn restart_budget(&mut self) {
+        let [t, v] = self.energy();
+        self.budget = Budget { e0: t + v, ..Budget::default() };
     }
 
     pub fn set_state(&mut self, i: usize, q: f64, qd: f64) {
@@ -128,8 +160,12 @@ impl Sim {
 
     pub fn kick(&mut self, i: usize, dqd: f64) {
         if i < self.n() {
+            let before = self.energy();
             self.qd[i] += dqd;
             dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
+            let after = self.energy();
+            // an impulse: its work is the jump in energy
+            self.budget.work[1] += after[0] + after[1] - before[0] - before[1];
         }
     }
 
@@ -138,6 +174,7 @@ impl Sim {
             self.p[i] = v;
             self.model.set_params(&self.p);
             self.plan_dirty = true;
+            self.restart_budget(); // a new mechanism has a different energy
         }
     }
 
@@ -208,6 +245,18 @@ impl Sim {
         let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
         let (qdd, lambda) = dynamics::accel(&mut self.model, q, qd, &tau, self.coriolis);
         self.lambda = lambda;
+        // power of every force at this RK4 stage (the constraint forces act as −Aᵀλ)
+        let n = self.model.n;
+        let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
+        let friction = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();
+        let constraint = if self.model.closed() {
+            dynamics::constraints(&mut self.model, q, qd).map_or(0.0, |k| -dot(&k.apply_t(&lambda)))
+        } else {
+            0.0
+        };
+        let b = &mut self.budget;
+        b.stages[b.stage % 4] = [dot(&self.tau_u), dot(&self.tau_ext), dot(&stops), friction, constraint];
+        b.stage += 1;
         qdd
     }
 
@@ -261,7 +310,33 @@ impl Sim {
             self.tau_u[i] = (0..nu).map(|a| self.model.b[i * nu + a] * self.u[a]).sum();
         }
 
-        let (q0, v0, h) = (self.q, self.qd, self.dt);
+        let (q0, h) = (self.q, self.dt);
+        // an end-stop contact switches on mid-step and costs RK4 its accuracy: resolve it with substeps
+        let near = |q: &VecN, qd: &VecN| {
+            (0..n).any(|i| {
+                let limit = self.model.limit.get(i).copied().unwrap_or(0.0);
+                limit > 0.0 && (q[i] + h * qd[i]).abs().max(q[i].abs()) > limit
+            })
+        };
+        let sub = if near(&self.q, &self.qd) { CONTACT_SUBSTEPS } else { 1 };
+        for _ in 0..sub {
+            self.rk4(h / f64::from(sub));
+        }
+        if !self.q.iter().chain(&self.qd).all(|v| v.is_finite() && v.abs() < 1e5) {
+            // a diverging controller or integration: fall back to the last good state, at rest
+            self.q = q0;
+            self.qd = [0.0; MAXN];
+            self.restart_budget();
+        }
+        self.t += h;
+        self.steps += 1;
+    }
+
+    /// One RK4 step of length `h` with the inputs held, accumulating the energy budget.
+    fn rk4(&mut self, h: f64) {
+        let n = self.model.n;
+        let (q0, v0) = (self.q, self.qd);
+        self.budget.stage = 0;
         let lerp = |base: &VecN, d: &VecN, s: f64| -> VecN { core::array::from_fn(|i| base[i] + s * d[i]) };
         let k1 = (v0, self.accel(&q0, &v0));
         let (q1, v1) = (lerp(&q0, &k1.0, h / 2.0), lerp(&v0, &k1.1, h / 2.0));
@@ -274,13 +349,10 @@ impl Sim {
             self.q[i] = q0[i] + h / 6.0 * (k1.0[i] + 2.0 * k2.0[i] + 2.0 * k3.0[i] + k4.0[i]);
             self.qd[i] = v0[i] + h / 6.0 * (k1.1[i] + 2.0 * k2.1[i] + 2.0 * k3.1[i] + k4.1[i]);
         }
-        if !self.q.iter().chain(&self.qd).all(|v| v.is_finite() && v.abs() < 1e5) {
-            // a diverging controller or integration: fall back to the last good state, at rest
-            self.q = q0;
-            self.qd = [0.0; MAXN];
+        let s = self.budget.stages;
+        for (j, w) in self.budget.work.iter_mut().enumerate() {
+            *w += h / 6.0 * (s[0][j] + 2.0 * s[1][j] + 2.0 * s[2][j] + s[3][j]);
         }
-        self.t += h;
-        self.steps += 1;
     }
 
     /// `[T, V]` at the current state.
@@ -377,6 +449,8 @@ impl Sim {
         put(off::CQD, &cqd[..n]);
         put(off::MDOT, &mdot[..n * n]);
         put(off::ENERGY, &[ke, pe, ke + pe, power, dissipation, skew, eig[..n].iter().product()]);
+        let b = &self.budget;
+        put(off::WORK, &[b.work[0], b.work[1], b.work[2], b.work[3], b.work[4], b.e0, b.residual(ke + pe)]);
         put(off::EIG_M, &eig[..n]);
         for (kf, ang) in self.model.frame_angles.iter().enumerate().take(MAXF) {
             put(off::FRAMES + 3 * kf, &[a[ao.frames + 2 * kf], a[ao.frames + 2 * kf + 1], ang.eval(&q)]);

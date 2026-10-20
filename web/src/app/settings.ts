@@ -46,7 +46,7 @@ export const SETTING_FLAGS: [Numeric, Flag][] = [
   ['manipulability', 'Manipulability'],
 ];
 
-export function pushSettings(client: SimClient, s: Settings): void {
+export function pushSettings(client: Pick<SimClient, 'flag'>, s: Settings): void {
   for (const [key, flag] of SETTING_FLAGS) client.flag(flag, s[key]);
   client.flag('Coriolis', s.coriolis ? 1 : 0);
   client.flag('UseTool', s.useTool ? 1 : 0);

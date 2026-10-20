@@ -227,6 +227,7 @@ fn a_pendulum_on_a_fixed_bracket_matches_a_pendulum_mounted_there() {
     // bracket welded to the ground at 30°, pendulum hinged at its middle
     let mut bracket = presets::link(None, JointKind::Fixed, 2.0, 1.0);
     bracket.mount_angle = 0.5;
+    bracket.values[4] = 0.7; // a welded body has no joint: its friction coefficient must not matter
     let mut pend = presets::link(Some(0), JointKind::Revolute, 1.0, 0.8);
     pend.mount_s = 0.5;
     pend.actuated = false;
@@ -499,4 +500,42 @@ fn pushing_a_redundant_arm_far_away_settles_without_limit_cycles() {
         }
         assert!((0..3).all(|i| hi[i] - lo[i] < 1e-3), "{kind:?} oscillates: {lo:?} … {hi:?}");
     }
+}
+
+#[test]
+fn the_energy_budget_closes_with_friction_inputs_pushes_and_loops() {
+    // E − E₀ = W_in + W_ext + W_stop − W_friction + W_loops, integrated with the RK4 weights of the motion
+    for d in [
+        presets::cartpole(),
+        presets::arm2(),
+        presets::acrobot(),
+        presets::four_bar(),
+        presets::slider_crank(),
+    ] {
+        for kind in [Kind::Passive, Kind::PdGravity] {
+            let mut s = with(&d, kind);
+            s.kick(0, 1.0);
+            s.set_flag(Flag::PushX, 0.5);
+            s.set_flag(Flag::PushY, 0.5);
+            s.step(3_000);
+            s.set_flag(Flag::PushOn, 0.0);
+            s.step(5_000);
+            let o = s.publish().to_vec();
+            assert!(o[off::WORK + 3] > 0.0, "friction must dissipate");
+            assert!(
+                o[off::BUDGET].abs() < 1e-6,
+                "{kind:?} n = {}: residual {:e}",
+                s.primary().n(),
+                o[off::BUDGET]
+            );
+        }
+    }
+    // the cart hitting its end stop: the stop's work is part of the budget
+    let mut s = with(&presets::cartpole(), Kind::Passive);
+    s.primary_mut().set_state(0, 0.0, 6.0);
+    s.step(3_000);
+    let o = s.publish();
+    assert!(o[off::WORK + 2] < -1.0, "the stop should have absorbed energy: {}", o[off::WORK + 2]);
+    // the stop switches on mid-substep: a few ppm of the ~20 J (0.2 % without contact substeps)
+    assert!(o[off::BUDGET].abs() < 5e-4, "residual {:e}", o[off::BUDGET]);
 }

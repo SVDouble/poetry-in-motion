@@ -144,12 +144,29 @@ export class Signals {
           P: ['q̇ᵀτ power in', () => s.v('POWER')],
           D: ['q̇ᵀβq̇ friction', () => s.v('DISSIPATION')],
           dE: ['Ė = q̇ᵀτ − q̇ᵀβq̇', () => s.v('POWER') - s.v('DISSIPATION')],
+          E0: ['E₀ (start of budget)', () => s.v('E0')],
+          // E plus what friction took minus what inputs, pushes, stops and loops gave: constant = E₀
+          Ebal: ['E − net work (= E₀)', () => s.v('E0') + s.v('BUDGET')],
         };
         const t = e[a ?? ''];
         return t
           ? { id, label: t[0], unit: a === 'P' || a === 'D' || a === 'dE' ? 'W' : 'J', get: t[1] }
           : undefined;
       }
+      case 'work': {
+        const w: Record<string, [string, number]> = {
+          in: ['work by inputs ∫q̇ᵀBu', 0],
+          ext: ['work by push & kicks', 1],
+          stop: ['work by end stops', 2],
+          fric: ['friction loss ∫q̇ᵀβq̇', 3],
+          con: ['work by loop forces', 4],
+        };
+        const t = w[a ?? ''];
+        if (!t || (a === 'con' && !this.d.closures.length)) return undefined;
+        return { id, label: t[0], unit: 'J', get: () => s.v('WORK', t[1]) };
+      }
+      case 'budget':
+        return { id, label: 'budget residual E − E₀ − ΣW', unit: 'J', get: () => s.v('BUDGET') };
       case 'detM':
         return { id, label: 'det M', unit: '', get: () => s.v('DET_M') };
       case 'eig':
@@ -279,7 +296,23 @@ export class Signals {
           ['m', 'c', 'n', ...(this.d.closures.length ? ['a'] : []), 'tau'].map((t) => `eom:${i}:${t}`),
         ).flat(),
       },
-      { name: 'Energy', ids: ['energy:T', 'energy:V', 'energy:E', 'energy:P', 'energy:D', 'energy:dE'] },
+      {
+        name: 'Energy',
+        ids: [
+          'energy:T',
+          'energy:V',
+          'energy:E',
+          'energy:P',
+          'energy:D',
+          'energy:dE',
+          'energy:E0',
+          'energy:Ebal',
+        ],
+      },
+      {
+        name: 'Energy budget',
+        ids: ['work:in', 'work:ext', 'work:stop', 'work:fric', 'work:con', 'budget'],
+      },
       { name: 'Inertia', ids: ['detM', ...range(n, (i) => `eig:${i}`)] },
     ];
     if (this.d.tool) {

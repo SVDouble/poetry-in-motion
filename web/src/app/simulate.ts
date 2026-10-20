@@ -4,8 +4,9 @@
  * `main.ts` owns the app shell (stages, building, the frame loop) and delegates here while simulating.
  */
 import { LABS } from '../control/lab';
-import { type Action, type Experiment, pageContext } from '../control/page';
+import { type Experiment, pageContext } from '../control/page';
 import { shortName } from '../control/pages';
+import { kickable, type Port, runExperiment } from '../control/runner';
 import { type ControlStore, SLOT_COLORS } from '../control/store';
 import { liveSections } from '../eq/live';
 import type { EquationPanel } from '../eq/panel';
@@ -24,7 +25,7 @@ import { segmented } from '../ui/widgets';
 import { ControlTab, dock } from './control';
 import { goalsTab, modelTab } from './goals';
 import { ACTUATOR_KEYS, ACTUATOR_LABELS } from './keys';
-import { defaultSettings, pushSettings, SETTING_FLAGS, type Settings, toolTargets } from './settings';
+import { pushSettings, type Settings, toolTargets } from './settings';
 
 type SideTab = 'control' | 'goals' | 'eq' | 'model';
 
@@ -32,7 +33,7 @@ const PLOT_HZ = 30;
 const KICK = 1.5;
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
-const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
 /** What the app shell provides. */
 export interface Shell {
@@ -222,19 +223,11 @@ export class SimulateStage {
 
   /** Set up an experiment from a clean slate, then play its steps. A newer run cancels this one. */
   private async run(kind: number, e: Experiment): Promise<void> {
-    const { store, settings, client } = this.s;
-    const why = store.reason(kind);
+    const d = this.d;
+    const why = this.s.store.reason(kind);
+    if (!d) return;
     if (why) return this.s.flash(why);
     const token = ++this.runToken;
-    this.release();
-    store.setPrimary(kind);
-    store.clearShadows();
-    store.resetParams(kind);
-    const defaults = defaultSettings();
-    for (const [key] of SETTING_FLAGS) settings[key] = defaults[key];
-    settings.coriolis = true;
-    settings.useTool = false;
-    pushSettings(client, settings);
     this.scope.show('experiment', e.plots as PlotDef[], e.title);
     this.tab?.ran(kind, e.title);
     if (this.side !== 'control') {
@@ -242,78 +235,25 @@ export class SimulateStage {
       this.mountSide();
     }
     this.s.setRunning(true);
-    for (const a of e.actions) {
-      if (token !== this.runToken) return;
-      await this.act(a);
-    }
-  }
-
-  private async act(a: Action): Promise<void> {
-    const { store, settings, client } = this.s;
-    const d = this.d!;
-    switch (a.do) {
-      case 'param': {
-        const kind = store.primary;
-        const i = store.spec(kind)?.params.findIndex((p) => p.key === a.key) ?? -1;
-        if (i >= 0) store.setParam(kind, i, a.value);
-        return;
-      }
-      case 'shadow': {
-        const kind = store.byKey(a.key);
-        if (kind >= 0 && store.reason(kind) === null && store.slotOf(kind) < 0) {
-          store.resetParams(kind);
-          store.toggleShadow(kind);
-        }
-        return;
-      }
-      case 'setting': {
-        settings[a.key] = a.value;
-        const flag = SETTING_FLAGS.find(([k]) => k === a.key)?.[1];
-        if (flag) client.flag(flag, a.value);
+    const { client, store, settings } = this.s;
+    const port: Port = {
+      d,
+      store,
+      settings,
+      send: (m) => client.send(m),
+      flag: (f, v) => client.flag(f, v),
+      snap: () => this.snap,
+      sleep,
+      reset: () => this.reset(),
+      setUseTool: (on) => this.setUseTool(on),
+      setPush: (at) => {
+        this.pushAt = at;
+      },
+      settingsChanged: () => {
         if (this.side === 'goals') this.mountSide();
-        return;
-      }
-      case 'coriolis':
-        settings.coriolis = a.on;
-        client.flag('Coriolis', a.on ? 1 : 0);
-        return;
-      case 'reset':
-        this.reset();
-        return;
-      case 'hold': {
-        this.reset();
-        await sleep(120); // the next snapshot shows the reset pose
-        client.flag('TargetX', this.snap.v('TOOL_P'));
-        client.flag('TargetY', this.snap.v('TOOL_P', 1));
-        this.setUseTool(true);
-        return;
-      }
-      case 'hang': {
-        this.reset();
-        const first = d.coords.findIndex((c) => c.kind === 'revolute');
-        d.coords.forEach((_, i) => {
-          const q = this.snap.v('Q_TARGET', i) + (i === first ? Math.PI : 0);
-          client.send({ type: 'state', i, q, qd: 0 });
-        });
-        return;
-      }
-      case 'kick':
-        for (const i of kickable(d)) client.send({ type: 'kick', i, v: a.v });
-        return;
-      case 'push': {
-        await sleep(300); // let the setup settle so the push starts from the current pose
-        const [x, y] = [this.snap.v('TOOL_P') + a.dx, this.snap.v('TOOL_P', 1) + a.dy];
-        this.pushAt = [x, y];
-        client.flag('PushX', x);
-        client.flag('PushY', y);
-        await sleep(a.ms);
-        this.release();
-        return;
-      }
-      case 'wait':
-        await sleep(a.ms);
-        return;
-    }
+      },
+    };
+    await runExperiment(port, kind, e, () => token === this.runToken);
   }
 
   // ---------------------------------------------------------------- interaction
@@ -427,12 +367,6 @@ export class SimulateStage {
   resetTrails(): void {
     for (const g of this.ghosts) g.resetTrail();
   }
-}
-
-/** Joints a kick goes to: the passive ones (underactuated), else all. */
-function kickable(d: Derivation): number[] {
-  const passive = d.coords.flatMap((c, i) => (c.actuated ? [] : [i]));
-  return passive.length ? passive : d.coords.map((_, i) => i);
 }
 
 /** Computed torque where every DOF is actuated, LQR for underactuated mechanisms, else passive. */

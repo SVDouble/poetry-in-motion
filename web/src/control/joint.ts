@@ -233,7 +233,9 @@ export const passivity = (c: PageContext): Page => {
         String.raw`\dot V = -\dot e^{T}K_D\dot e - e^{T}\Lambda K_D\Lambda e < 0\quad\text{for } (e,\dot e) \neq 0`,
       );
       b.text(
-        'Global asymptotic tracking for a fully actuated system — and, unlike computed torque, the proof survives bounded parameter errors well (it is the basis of adaptive control).',
+        c.loops
+          ? 'Global asymptotic tracking for a fully actuated open chain. With loops the argument has to be made in independent coordinates (the constraint forces enter the s-dynamics), and V written in the full q is not guaranteed to decrease monotonically — the controller still converges, but watch V wiggle.'
+          : 'Global asymptotic tracking for a fully actuated system — and, unlike computed torque, the proof survives bounded parameter errors well (it is the basis of adaptive control).',
       );
     },
     limits(b) {

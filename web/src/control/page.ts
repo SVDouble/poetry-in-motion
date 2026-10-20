@@ -51,8 +51,11 @@ export type Action =
   /** Reset, then make the tool's current position its target (a well-posed task-space set-point). */
   | { do: 'hold' }
   | { do: 'hang' }
+  /** Reset, then start exactly at the equilibrium q* (at rest): where linear controllers are designed. */
+  | { do: 'atTarget' }
   | { do: 'kick'; v: number }
-  | { do: 'push'; dx: number; dy: number; ms: number }
+  /** Push the tool with the spring towards tool + (dx, dy), or `inward` metres towards the base. */
+  | { do: 'push'; dx?: number; dy?: number; inward?: number; ms: number }
   | { do: 'wait'; ms: number };
 
 export interface Experiment {

@@ -96,6 +96,16 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
           = ${b.live.num(() => snap.v('POWER'))} - ${b.live.num(() => snap.v('DISSIPATION'))}
           = ${b.live.num(() => snap.v('POWER') - snap.v('DISSIPATION'))}\,\mathrm{W}`,
         );
+        b.text(
+          'Integrated since the last reset (with the same RK4 weights as the motion), every joule is accounted for. Friction is part of $N(q,\\dot q)$: with $\\beta > 0$ a passive mechanism loses energy — that is physics, not a numerical leak.',
+        );
+        const w = (i: number) => b.live.num(() => snap.v('WORK', i));
+        b.math(
+          String.raw`E - E_0 = \underbrace{${w(0)}}_{\text{inputs}} + \underbrace{${w(1)}}_{\text{push, kicks}} + \underbrace{${w(2)}}_{\text{end stops}} - \underbrace{${w(3)}}_{\text{friction}}${d.closures.length ? String.raw` + \underbrace{${w(4)}}_{\text{loops}}` : ''}`,
+        );
+        b.math(String.raw`\text{residual} = ${b.live.num(() => snap.v('BUDGET'), sci)}\,\mathrm{J}`, {
+          caption: 'integration error (or non-physical what-ifs: switch Coriolis off and watch it grow)',
+        });
       },
     },
     {

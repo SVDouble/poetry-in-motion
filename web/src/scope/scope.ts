@@ -5,7 +5,11 @@
  */
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { fix } from '../eq/tex';
+import { fix, sci } from '../eq/tex';
+
+/** Fixed point, or scientific for tiny non-zero values (residuals, leakage). */
+const num = (v: number) => (v !== 0 && Math.abs(v) < 1e-3 ? sci(v) : fix(v));
+
 import { css, palette } from '../scene/theme';
 import { closePopover, popover } from '../ui/popover';
 import { button, el } from '../ui/widgets';
@@ -117,7 +121,7 @@ class PlotView {
         scales: { x: { time: false } },
         axes: [
           { ...axis, values: (_u, v) => v.map((t) => `${t.toFixed(0)}s`) },
-          { ...axis, size: 46, values: (_u, v) => v.map((x) => fix(x)) },
+          { ...axis, size: 46, values: (_u, v) => v.map((x) => num(x)) },
         ],
         series: [
           {},
@@ -136,20 +140,28 @@ class PlotView {
   }
 
   draw(rec: Recorder): void {
+    // uPlot treats null as a gap but NaN poisons its auto-range: missing samples (a signal watched only
+    // from now on, a slot that is not running) become null
+    const gaps = (col: Float64Array) => Array.from(col, (v) => (Number.isNaN(v) ? null : v));
     const data = [
       rec.t.subarray(0, rec.n),
-      ...this.sigs.map((s) => rec.series(s.id)),
+      ...this.sigs.map((s) => gaps(rec.series(s.id))),
     ] as unknown as uPlot.AlignedData;
     const t1 = rec.n ? rec.t[rec.n - 1]! : 0;
     this.plot.batch(() => {
-      this.plot.setData(data, false);
+      this.plot.setData(data); // rescales y to the data; x is fixed to the rolling window below
       this.plot.setScale('x', { min: Math.max(0, t1 - WINDOW_S), max: Math.max(WINDOW_S, t1) });
     });
     this.sigs.forEach((s, k) => {
-      const text = fix(s.get());
+      const text = num(s.get());
       const v = this.values[k]!;
       if (v.textContent !== text) v.textContent = text;
     });
+  }
+
+  /** Height of the legend chips above the canvas. */
+  get header(): number {
+    return (this.el.firstElementChild as HTMLElement).offsetHeight;
   }
 
   resize(w: number, h: number): void {
@@ -302,7 +314,7 @@ export class Scope {
     const pw = Math.floor((w - gap * (cols - 1)) / cols) - 1;
     const rows = Math.ceil(n / cols);
     this.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-    const ph = rows === 1 ? h - 30 : 150;
-    for (const v of this.views) v.resize(pw, Math.max(90, ph));
+    // one row fills the strip: each canvas gets what its own legend leaves (several rows scroll)
+    for (const v of this.views) v.resize(pw, Math.max(80, rows === 1 ? h - v.header - 4 : 150));
   }
 }

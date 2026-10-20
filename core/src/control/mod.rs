@@ -126,8 +126,8 @@ impl Kind {
             Self::Passive => Ok(()),
             Self::Pd | Self::PdGravity | Self::Lqr | Self::Mpc => actuated(),
             Self::ComputedTorque | Self::Passivity => full(),
-            Self::Vmc => tool().and_then(|()| actuated()),
-            Self::Impedance | Self::Admittance => tool().and_then(|()| full()),
+            // shaping the tool's potential through Jᵀ needs an actuator per degree of freedom
+            Self::Vmc | Self::Impedance | Self::Admittance => tool().and_then(|()| full()),
             Self::SwingUp => actuated().and(if plan.ct_ok {
                 Err("for underactuated systems (this one is fully actuated)")
             } else {

@@ -53,6 +53,9 @@ layout! { off, FIELDS;
     MDOT: MAXN * MAXN,
     /// [T, V, T + V], q̇ᵀτ, q̇ᵀdiag(β)q̇, max |(Ṁ − 2C) + (Ṁ − 2C)ᵀ|, det M
     ENERGY: 3, POWER: 1, DISSIPATION: 1, SKEW: 1, DET_M: 1,
+    /// Energy budget since the last restart: work of [inputs, push + kicks, end stops, friction (loss),
+    /// constraint forces], E₀, and the residual E − E₀ − (net work).
+    WORK: 5, E0: 1, BUDGET: 1,
     EIG_M: MAXN,
     /// (x, y, φ) of the frames s, 1 … nb, t.
     FRAMES: 3 * MAXF,
@@ -166,6 +169,7 @@ mod tests {
         assert_eq!([STEPS, NQ, NU, KIND, PHASE], [TIME + 1, TIME + 2, TIME + 3, TIME + 4, TIME + 5]);
         assert_eq!([POWER, DISSIPATION, SKEW, DET_M], [ENERGY + 3, ENERGY + 4, ENERGY + 5, ENERGY + 6]);
         assert_eq!([DOF, CT_OK], [EQ_RESIDUAL + 1, EQ_RESIDUAL + 2]);
+        assert_eq!([E0, BUDGET], [WORK + 5, WORK + 6]);
         assert_eq!([USE_TOOL, REACHABLE], [TARGET + 2, TARGET + 3]);
         assert_eq!([FEXT, MANIPULABILITY, UMAX], [X_REF + 2, X_REF + 4, X_REF + 5]);
         assert_eq!([NCON, CONSTRAINT], [NC + 1, NC + 2]);
