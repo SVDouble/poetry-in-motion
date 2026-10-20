@@ -421,7 +421,9 @@ pub fn derive(desc: &Desc) -> Derived {
         .map(|ij| (0..n).fold(s.zero(), |acc, k| acc.add(&gamma[ij * n + k].mul(&s.var(vars.qd(k))))))
         .collect();
     let dv: Vec<Expr> = (0..n).map(|i| partial_q(&revolute, vars, &v, i)).collect();
-    let nvec: Vec<Expr> = (0..n).map(|i| dv[i].add(&s.var(vars.beta(i)).mul(&s.var(vars.qd(i))))).collect();
+    // viscous friction of the joint that drives coordinate i, i.e. of the body that coordinate moves
+    let nvec: Vec<Expr> =
+        (0..n).map(|i| dv[i].add(&s.var(vars.beta(coord_body[i])).mul(&s.var(vars.qd(i))))).collect();
     let mdot: Vec<Expr> = m.iter().map(|e| dt_q(&revolute, vars, e)).collect();
     let dndq: Vec<Expr> = (0..n * n).map(|ij| partial_q(&revolute, vars, &dv[ij / n], ij % n)).collect();
     let eom: Vec<Expr> = (0..n)
