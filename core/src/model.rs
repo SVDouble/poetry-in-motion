@@ -42,6 +42,8 @@ pub struct Model {
     pub energy: Tape,
     /// Tool position p (2) and ∂p/∂q (2n) — inverse kinematics.
     pub tool: Option<Tape>,
+    /// Positions of the frames `s, 1 … nb, t` (2 each): points that secondary tasks can steer.
+    pub points: Tape,
     /// Loop closures: φ (m), A (m × n), Ȧ q̇ (m); `m = 2 · closures`.
     pub constraints: Option<Tape>,
     /// Loop closures, and the number of scalar constraint equations they give.
@@ -133,6 +135,7 @@ impl Model {
         push(&mut off.js, &js, &mut aux_exprs);
         off.len = aux_exprs.len();
 
+        let points = Tape::compile(vars, &frame_xy);
         let tool = d.tool.as_ref().map(|t| {
             let xs: Vec<&Expr> = [&t.pose.p[0], &t.pose.p[1]].into_iter().chain(&t.jp).collect();
             Tape::compile(vars, &xs)
@@ -170,6 +173,7 @@ impl Model {
             gravity: Tape::compile(vars, &dv),
             energy: Tape::compile(vars, &[&d.t, &d.v]),
             tool,
+            points,
             constraints,
             nc: d.desc.closures.len(),
             ncon: d.phi.len(),
@@ -185,6 +189,7 @@ impl Model {
         self.aux.set_params(p);
         self.gravity.set_params(p);
         self.energy.set_params(p);
+        self.points.set_params(p);
         if let Some(t) = &mut self.tool {
             t.set_params(p);
         }

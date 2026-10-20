@@ -540,3 +540,109 @@ fn the_energy_budget_closes_with_friction_inputs_pushes_and_loops() {
     // the stop switches on mid-substep: a few ppm of the ~20 J (0.2 % without contact substeps)
     assert!(o[off::BUDGET].abs() < 5e-4, "residual {:e}", o[off::BUDGET]);
 }
+
+/// Tool position, orientation and elbow targets stacked with strict priorities on a redundant arm.
+fn stacked(d: &Desc, kind: Kind, dphi: f64, delbow: [f64; 2]) -> (World, [f64; 2], f64, [f64; 2]) {
+    let mut s = with(d, kind);
+    s.step(100);
+    let o = s.publish().to_vec();
+    let nb = d.bodies.len();
+    let tool = [o[off::TOOL_P], o[off::TOOL_P + 1]];
+    let phi = o[off::FRAMES + 3 * (nb + 1) + 2];
+    let body = o[off::GOALS + 5] as usize;
+    let elbow =
+        [o[off::FRAMES + 3 * (body + 1)] + delbow[0], o[off::FRAMES + 3 * (body + 1) + 1] + delbow[1]];
+    aim(&mut s, tool[0], tool[1]);
+    s.set_flag(Flag::Orient, 6.0);
+    s.set_flag(Flag::OrientTarget, phi + dphi);
+    s.set_flag(Flag::Elbow, 6.0);
+    s.set_flag(Flag::ElbowX, elbow[0]);
+    s.set_flag(Flag::ElbowY, elbow[1]);
+    s.step(10_000);
+    (s, tool, phi + dphi, elbow)
+}
+
+fn tele(w: &mut World, kind: Kind, name: &str, i: usize) -> f64 {
+    let (o, _) = kind.spec().telemetry_field(name).expect("telemetry field");
+    w.publish()[off::SLOT + slot::TELEMETRY + o + i]
+}
+
+#[test]
+fn a_seven_joint_arm_meets_position_orientation_and_elbow_goals_in_priority() {
+    let d = presets::arm7();
+    for kind in [Kind::Vmc, Kind::Impedance] {
+        let (mut s, tool, phi, elbow) = stacked(&d, kind, 0.3, [0.05, 0.08]);
+        let o = s.publish().to_vec();
+        let p = [o[off::TOOL_P], o[off::TOOL_P + 1]];
+        assert!(
+            (p[0] - tool[0]).hypot(p[1] - tool[1]) < 2e-3,
+            "{kind:?}: tool off by {:?}",
+            [p[0] - tool[0], p[1] - tool[1]]
+        );
+        let eo = tele(&mut s, kind, "orient_err", 0);
+        let ee = [tele(&mut s, kind, "elbow_err", 0), tele(&mut s, kind, "elbow_err", 1)];
+        assert!(eo.abs() < 2e-3, "{kind:?}: orientation error {eo} (target {phi})");
+        assert!(ee[0].hypot(ee[1]) < 5e-3, "{kind:?}: elbow error {ee:?} (target {elbow:?})");
+        let (leak, leak_sec) = (tele(&mut s, kind, "leak", 0), tele(&mut s, kind, "leak_sec", 0));
+        assert!(leak < 1e-6 && leak_sec < 1e-6, "{kind:?}: leakage {leak:e} / {leak_sec:e}");
+    }
+}
+
+#[test]
+fn an_unreachable_lower_goal_cannot_disturb_the_ones_above() {
+    // three joints: tool position and orientation use all of them, the elbow goal has no room left
+    let spec = [(1.0, 0.8, 0.4), (0.8, 0.7, 0.5), (0.5, 0.5, 0.4)];
+    let bodies = spec
+        .iter()
+        .enumerate()
+        .map(|(i, &(m, l, q0))| {
+            let mut b = presets::link(i.checked_sub(1), JointKind::Revolute, m, l);
+            b.q0 = q0;
+            b
+        })
+        .collect();
+    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new() };
+    for kind in [Kind::Vmc, Kind::Impedance] {
+        // turning the tool by −0.2 rad keeps the wrist within reach of the first two links
+        let (mut s, tool, _, _) = stacked(&d, kind, -0.2, [0.3, -0.3]);
+        let o = s.publish().to_vec();
+        let p = [o[off::TOOL_P], o[off::TOOL_P + 1]];
+        assert!((p[0] - tool[0]).hypot(p[1] - tool[1]) < 2e-3, "{kind:?}: the tool gave way to the elbow");
+        assert!(tele(&mut s, kind, "orient_err", 0).abs() < 2e-3, "{kind:?}: orientation gave way");
+        let ee = [tele(&mut s, kind, "elbow_err", 0), tele(&mut s, kind, "elbow_err", 1)];
+        assert!(ee[0].hypot(ee[1]) > 0.1, "{kind:?}: the elbow cannot have been reached: {ee:?}");
+    }
+}
+
+#[test]
+fn an_unreachable_orientation_saturates_calmly() {
+    // +0.4 rad would put the wrist beyond the first two links' reach: the arm stretches to the boundary and
+    // stays there, the tool keeps its place, nothing oscillates or blows up (damped least squares)
+    let spec = [(1.0, 0.8, 0.4), (0.8, 0.7, 0.5), (0.5, 0.5, 0.4)];
+    let bodies = spec
+        .iter()
+        .enumerate()
+        .map(|(i, &(m, l, q0))| {
+            let mut b = presets::link(i.checked_sub(1), JointKind::Revolute, m, l);
+            b.q0 = q0;
+            b
+        })
+        .collect();
+    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new() };
+    for kind in [Kind::Vmc, Kind::Impedance] {
+        let (mut s, tool, _, _) = stacked(&d, kind, 0.4, [0.0, 0.0]);
+        let mut worst: f64 = 0.0;
+        for _ in 0..1000 {
+            s.step(1);
+            let o = s.publish();
+            worst = worst.max((0..3).map(|i| o[off::QD + i].abs()).fold(0.0, f64::max));
+        }
+        let o = s.publish().to_vec();
+        let p = [o[off::TOOL_P], o[off::TOOL_P + 1]];
+        assert!(
+            (p[0] - tool[0]).hypot(p[1] - tool[1]) < 1e-2,
+            "{kind:?}: the tool gave way: {p:?} vs {tool:?}"
+        );
+        assert!(worst < 0.05, "{kind:?}: still moving at {worst} rad/s");
+    }
+}

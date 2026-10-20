@@ -1,7 +1,7 @@
 /**
- * The Goals and Model tabs: what the controllers aim for
- * (joint or tool targets, secondary goals in the null space of the tool task), how the world pushes back,
- * and the symbolic coefficients of the model.
+ * The Goals and Model tabs: what the controllers aim for (joint or tool targets, and below the tool a
+ * hierarchy of further goals — orientation, elbow, posture — each in the null space of the ones above), how
+ * the world pushes back, and the symbolic coefficients of the model.
  */
 import { cachedTaskSpace } from '../control/nullspace';
 import type { EquationPanel, SectionSpec } from '../eq/panel';
@@ -10,7 +10,18 @@ import type { Derivation } from '../model/derivation';
 import type { Mechanism } from '../model/description';
 import type { SimClient } from '../sim/client';
 import type { Snapshot } from '../sim/layout';
-import { card, DEG, el, note, row, type Slider, type SliderOpts, segmented, slider } from '../ui/widgets';
+import {
+  button,
+  card,
+  DEG,
+  el,
+  note,
+  row,
+  type Slider,
+  type SliderOpts,
+  segmented,
+  slider,
+} from '../ui/widgets';
 import { type Numeric, SETTING_FLAGS, type Settings, toolTargets } from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
@@ -40,7 +51,23 @@ export interface GoalsContext {
   onJointTarget: () => void;
   /** Toggle following the tool target. */
   setUseTool: (on: boolean) => void;
+  /** Re-render the tab (after a goal was switched on or off). */
+  refresh: () => void;
 }
+
+/** Bodies whose joint can serve as the elbow: on the chain to the tool, and not fixed to the ground. */
+export function elbowCandidates(mech: Mechanism): number[] {
+  const out: number[] = [];
+  let b = mech.tool;
+  while (b >= 0) {
+    const body = mech.bodies[b]!;
+    if (body.parent >= 0 || body.joint === 'prismatic') out.unshift(b);
+    b = body.parent;
+  }
+  return out;
+}
+
+const DEFAULT_GOAL_W = 6;
 
 export function goalsTab(g: GoalsContext): HTMLElement {
   const { d, mech, client, settings } = g;
@@ -74,7 +101,10 @@ export function goalsTab(g: GoalsContext): HTMLElement {
           ['tool', 'Tool target x_d'],
         ],
         settings.useTool ? 'tool' : 'joint',
-        (v) => g.setUseTool(v === 'tool'),
+        (v) => {
+          g.setUseTool(v === 'tool');
+          g.refresh(); // fold or unfold the joint targets (not from a slider drag: that would end the drag)
+        },
       ),
       note(
         'Drag in the viewport to move the tool target; Shift-drag to push the tool with a spring (at most 30 N, like a hand).',
@@ -89,7 +119,10 @@ export function goalsTab(g: GoalsContext): HTMLElement {
           ),
         ]
       : []),
-    ...targets,
+    // with a tool target the joint targets only serve as the posture: fold them away
+    ...(settings.useTool && d.tool
+      ? [el('details', 'fold', el('summary', '', 'Joint targets q* (the posture goal)'), ...targets)]
+      : targets),
     settingSlider(client, settings, 'refWn', String.raw`\omega_{\text{ref}}`, {
       min: 0.5,
       max: 20,
@@ -98,25 +131,7 @@ export function goalsTab(g: GoalsContext): HTMLElement {
     }),
   );
 
-  const secondary = card(
-    'Secondary goals (null space)',
-    note(
-      d.tool && d.n - d.phi.length > 2 && !d.closures.length
-        ? 'Pursued by VMC and impedance control without moving the tool. Posture pulls towards the joint targets q*; manipulability climbs ∇w away from singular poses.'
-        : 'This mechanism has no redundancy for the tool task (or has loops): the goals below have no effect.',
-    ),
-    settingSlider(client, settings, 'posture', String.raw`\omega_{p}`, {
-      min: 0,
-      max: 20,
-      unit: 'rad/s',
-      hint: 'posture stiffness as a natural frequency',
-    }),
-    settingSlider(client, settings, 'manipulability', String.raw`k_{w}`, {
-      min: 0,
-      max: 20,
-      hint: 'gain on the manipulability gradient',
-    }),
-  );
+  const secondary = hierarchyCard(g);
 
   const world = card(
     'Interaction & limits',
@@ -143,11 +158,153 @@ export function goalsTab(g: GoalsContext): HTMLElement {
   host.append(task, secondary, world);
   const sections = el('div', 'goal-sections');
   host.append(sections);
-  g.panel.mount(goalSections(d, g.snap), sections);
+  g.panel.mount(goalSections(d, g.snap, g.mech), sections);
   return host;
 }
 
-function goalSections(d: Derivation, snap: Snapshot): SectionSpec[] {
+/** The goals below the tool, in priority order. */
+function hierarchyCard(g: GoalsContext): HTMLElement {
+  const { d, mech, client, settings, snap } = g;
+  const dof = d.n - d.phi.length;
+  const open = d.closures.length === 0;
+  const box = card('Task hierarchy');
+  if (!d.tool) {
+    box.append(note('Build a tool point to stack goals below it.'));
+    return box;
+  }
+  box.append(
+    note(
+      open && dof > 2
+        ? `Pursued by VMC, impedance and admittance control. Each level acts only in what the levels above leave free (${dof} DOF − 2 for the tool = ${dof - 2} to share): a lower goal can never disturb a higher one, and an unreachable one is pursued as far as possible.`
+        : 'This mechanism has no redundancy for the tool task (or has loops): only the tool position is controlled.',
+    ),
+  );
+  if (!open || dof <= 2) return box;
+  const set = (key: Numeric, v: number) => {
+    settings[key] = v;
+    const flag = SETTING_FLAGS.find(([k]) => k === key)?.[1];
+    if (flag) client.flag(flag, v);
+  };
+  const toggle = (key: 'orient' | 'elbow', on: boolean) => {
+    set(key, on ? DEFAULT_GOAL_W : 0);
+    g.refresh();
+  };
+  const nb = mech.bodies.length;
+  const here = (what: 'orient' | 'elbow') =>
+    button(
+      'here',
+      () => {
+        if (what === 'orient') set('orientTarget', snap.frame(nb + 1)[2]);
+        else {
+          const [x, y] = snap.frame(Math.round(snap.v('GOALS', 5)) + 1);
+          set('elbowX', x);
+          set('elbowY', y);
+        }
+        g.refresh();
+      },
+      'btn small',
+      'use the current pose as the target',
+    );
+  const onOff = (key: 'orient' | 'elbow') =>
+    segmented(
+      [
+        ['off', 'off'],
+        ['on', 'on'],
+      ],
+      settings[key] > 0 ? 'on' : 'off',
+      (v) => toggle(key, v === 'on'),
+    );
+
+  box.append(
+    el('div', 'level', el('b', '', '1 · tool position'), el('span', 'muted small', 'the primary task')),
+  );
+  box.append(el('div', 'level', el('b', '', '2 · tool orientation φ_t'), onOff('orient')));
+  if (settings.orient > 0) {
+    box.append(
+      settingSlider(client, settings, 'orient', String.raw`\omega_{\varphi}`, {
+        min: 0.5,
+        max: 20,
+        log: true,
+        unit: 'rad/s',
+      }),
+      slider({
+        label: String.raw`\varphi^{*}`,
+        tex: true,
+        min: -180,
+        max: 180,
+        step: 1,
+        unit: '°',
+        value: settings.orientTarget * DEG,
+        onInput: (v) => set('orientTarget', v / DEG),
+      }),
+      el('div', 'card-actions', here('orient')),
+    );
+  }
+  box.append(el('div', 'level', el('b', '', '3 · elbow'), onOff('elbow')));
+  if (settings.elbow > 0) {
+    const options = elbowCandidates(mech).map((b) => [String(b), `joint ${b + 1}`] as [string, string]);
+    const current = String(Math.round(snap.v('GOALS', 5)));
+    box.append(
+      row(
+        'which joint',
+        segmented(options, current, (v) => {
+          client.flag('ElbowBody', Number(v));
+          window.setTimeout(g.refresh, 50);
+        }),
+      ),
+      settingSlider(client, settings, 'elbow', String.raw`\omega_{e}`, {
+        min: 0.5,
+        max: 20,
+        log: true,
+        unit: 'rad/s',
+      }),
+      slider({
+        label: 'x_e^{*}',
+        tex: true,
+        min: -3,
+        max: 3,
+        step: 0.01,
+        unit: 'm',
+        value: settings.elbowX,
+        onInput: (v) => set('elbowX', v),
+      }),
+      slider({
+        label: 'y_e^{*}',
+        tex: true,
+        min: -3,
+        max: 3,
+        step: 0.01,
+        unit: 'm',
+        value: settings.elbowY,
+        onInput: (v) => set('elbowY', v),
+      }),
+      el('div', 'card-actions', here('elbow')),
+      note('Alt-drag in the viewport to place the elbow target.'),
+    );
+  }
+  box.append(
+    el(
+      'div',
+      'level',
+      el('b', '', '4 · posture & manipulability'),
+      el('span', 'muted small', 'whatever is left'),
+    ),
+    settingSlider(client, settings, 'posture', String.raw`\omega_{p}`, {
+      min: 0,
+      max: 20,
+      unit: 'rad/s',
+      hint: 'posture stiffness as a natural frequency',
+    }),
+    settingSlider(client, settings, 'manipulability', String.raw`k_{w}`, {
+      min: 0,
+      max: 20,
+      hint: 'gain on the manipulability gradient',
+    }),
+  );
+  return box;
+}
+
+function goalSections(d: Derivation, snap: Snapshot, mech: Mechanism): SectionSpec[] {
   const n = d.n;
   const ts = cachedTaskSpace(snap);
   const tool = d.tool;
@@ -221,19 +378,71 @@ function goalSections(d: Derivation, snap: Snapshot): SectionSpec[] {
     },
   });
   out.push({
-    id: 'g-secondary',
-    title: 'Secondary objectives',
+    id: 'g-hierarchy',
+    title: 'A hierarchy of tasks',
+    cite: 'Siciliano & Slotine 1991; Khatib 1987',
     build(b) {
-      b.text('Both goals are expressed as a joint torque τ₀ and then projected:');
+      b.text(
+        String.raw`A redundant arm can pursue several goals at once, ranked: the tool position first, then the tool orientation $\varphi_t$, then an elbow point, then a posture. With a 7-joint arm in space this is the classic split — the 6-D tool pose plus one "arm angle" that swings the elbow. In the plane the tool needs 2 coordinates, its orientation 1, an elbow point 2.`,
+      );
+      b.text(
+        String.raw`Every task $k$ has a Jacobian $J_k$ and a desired acceleration from a critically damped spring at its own frequency:`,
+      );
       b.math(
-        String.raw`\tau_0 = M(q^{*})\Big(\omega_p^2\,(q^{*} - q) - 2\omega_p\,\dot q + k_w\,\nabla_q w(q)\Big)`,
+        String.raw`a_k = \omega_k^2\,(x_k^{*} - x_k) - 2\omega_k\,\dot x_k,\qquad \varphi_t = \textstyle\sum_{i\,\text{revolute}} q_i + c \;\Rightarrow\; J_\varphi = [1\ \cdots\ 1]`,
+      );
+      b.text(
+        String.raw`Strict priority comes from recursion. Level $k$ only sees what levels $1 \dots k-1$ leave free, through the restricted Jacobian $\hat J_k = J_k P_{k-1}$ ($P_0 = I$), with the dynamically consistent inverse in the metric of $M$:`,
+      );
+      b.math(
+        String.raw`\hat\Lambda_k = \big(\hat J_k M^{-1}\hat J_k^{T}\big)^{-1},\qquad \hat J_k^{\#} = M^{-1}\hat J_k^{T}\hat\Lambda_k,\qquad P_k = P_{k-1} - \hat J_k^{\#}\hat J_k`,
+      );
+      b.math(
+        String.raw`\ddot q \mathrel{+}= \hat J_k^{\#}\,\big(a_k - \dot J_k\dot q - J_k\ddot q\big)\quad\text{(impedance)},\qquad \tau \mathrel{+}= \hat J_k^{T}\hat\Lambda_k\,a_k\quad\text{(VMC)}`,
+      );
+      b.text(
+        String.raw`Why a lower level cannot disturb a higher one: its correction lies in the range of $M^{-1}\hat J_k^{T} = M^{-1}P_{k-1}^{T}J_k^{T} = P_{k-1}M^{-1}J_k^{T}$, and $J_i P_{k-1} = 0$ for every $i < k$. This holds for <i>any</i> $\hat\Lambda_k$, so the command can be damped without breaking the priorities: near a singularity, or when the levels above have used up a task's directions, each eigen-direction $\mu$ of $\hat J_k M^{-1}\hat J_k^{T}$ gets $\mu/(\mu^2+\delta^2)$ instead of $1/\mu$ (damped least squares), while the projector keeps the exact inverse. An unreachable goal then rests at the boundary of what is possible instead of shaking the arm.`,
+      );
+      b.text(
+        String.raw`What is left after the last task, $P_K$, carries the posture and manipulability goal $\tau_0 = M(q^{*})\big(\omega_p^2(q^{*} - q) - 2\omega_p\dot q + k_w\nabla w\big)$ — and when every direction is used ($P_K = 0$), nothing.`,
+      );
+      // live: the levels, and what the running task controller reports
+      const levels = [
+        ['1', 'tool position', 2, true],
+        ['2', 'tool orientation', 1, snap.v('GOALS') > 0],
+        ['3', 'elbow', 2, snap.v('GOALS', 2) > 0],
+      ] as const;
+      const dof = n - d.phi.length;
+      let left = dof;
+      const rows = levels.map(([k, name, dim, on]) => {
+        const used = on ? Math.min(dim, Math.max(0, left)) : 0;
+        left -= used;
+        return String.raw`${k}\ &\text{${name}}\ &${on ? dim : '—'}\ &${on ? used : '—'}`;
+      });
+      b.math(
+        String.raw`\begin{array}{llcc} & \text{task} & \text{needs} & \text{gets} \\ \hline ${rows.join(String.raw`\\`)} \\ 4 & \text{posture} & & ${Math.max(0, left)} \end{array}`,
+        {
+          caption: `degrees of freedom when the tab was opened (${dof} in all); reopen the tab after switching goals`,
+        },
+      );
+      b.math(
+        String.raw`\varphi^{*} - \varphi_t = ${b.live.num(() => {
+          if (!(snap.v('GOALS') > 0)) return Number.NaN;
+          const e = snap.v('GOALS', 1) - snap.frame(mech.bodies.length + 1)[2];
+          return Math.atan2(Math.sin(e), Math.cos(e));
+        })}\,\mathrm{rad},\qquad \|x_e^{*} - x_e\| = ${b.live.num(() => {
+          if (!(snap.v('GOALS', 2) > 0)) return Number.NaN;
+          const [x, y] = snap.frame(Math.round(snap.v('GOALS', 5)) + 1);
+          return Math.hypot(snap.v('GOALS', 3) - x, snap.v('GOALS', 4) - y);
+        })}\,\mathrm{m}`,
+        { caption: '— means that goal is off' },
+      );
+      b.text(
+        'The VMC, impedance and admittance pages report the leakage of the lower levels into the ones above (‖J_k M⁻¹ τ_lower‖, ‖J_k Δq̈‖): round-off.',
       );
       b.math(String.raw`w(q) = \sqrt{\det J(q)J(q)^{T}} = ${b.live.num(() => snap.v('MANIPULABILITY'))}`, {
-        caption: 'Yoshikawa manipulability: zero at singular poses; its gradient is taken numerically',
+        caption: 'Yoshikawa manipulability of the tool task: zero at singular poses',
       });
-      b.text(
-        'VMC adds N⊥τ₀ to its torque. Impedance control uses the same idea at the acceleration level: among all joint accelerations that realise the commanded tool acceleration it picks the one closest, in the metric of M, to M⁻¹τ₀ — which is equivalent. Both pages report the <i>leakage</i> ‖J M⁻¹ N⊥ τ₀‖, the tool acceleration caused by the secondary goals: it stays at round-off level.',
-      );
     },
   });
   return out;

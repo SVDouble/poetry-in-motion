@@ -1,12 +1,16 @@
 //! Task-space controllers acting on the tool point: virtual model control (energy shaping), impedance and
-//! admittance. Secondary goals (posture, manipulability) act in the null space of the tool task.
+//! admittance.
+//!
+//! On open chains further goals are stacked below the tool position with strict priorities: the tool
+//! orientation, then the elbow, then posture and manipulability. Each level acts only in the null space of
+//! the levels above it, in the metric of M (dynamically consistent), so it cannot disturb them.
 
 use super::{Controller, Ctx, Telemetry};
 use crate::MAXN;
 use crate::dynamics::{Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
 use crate::model::Model;
-use crate::plan::{Plan, Tool, manipulability, resolve_accel};
+use crate::plan::{Plan, SubTask, Tool, manipulability, resolve_accel};
 
 type MatN = [f64; MAXN * MAXN];
 
@@ -29,34 +33,224 @@ fn task_inertia(n: usize, t: &Terms, jp: &[f64]) -> Option<([f64; 4], [f64; 2 * 
     Some(([d / det, -b / det, -b / det, a / det], minv_jt))
 }
 
-/// Dynamically consistent null-space projector N = I − Jᵀ J̄ᵀ with J̄ = M⁻¹ Jᵀ Λ: torques N τ₀ produce no
-/// acceleration of the tool.
-fn null_projector(n: usize, t: &Terms, jp: &[f64]) -> Option<MatN> {
-    let (lam, minv_jt) = task_inertia(n, t, jp)?;
-    // J̄ (n × 2) = M⁻¹ Jᵀ Λ
-    let jbar = |c: usize, r: usize| minv_jt[c * 2] * lam[r] + minv_jt[c * 2 + 1] * lam[2 + r];
-    let mut p = [0.0; MAXN * MAXN];
-    for i in 0..n {
-        for j in 0..n {
-            p[i * n + j] =
-                f64::from(u8::from(i == j)) - (0..2).map(|r| jp[r * n + i] * jbar(j, r)).sum::<f64>();
-        }
-    }
-    Some(p)
-}
-
-/// Acceleration of the tool caused by a joint torque: ‖J M⁻¹ τ‖ (the task "leakage" of a null-space torque).
-fn leakage(n: usize, t: &Terms, jp: &[f64], tau: &VecN) -> f64 {
-    let mut a = [0.0; MAXN];
-    if !cholesky_solve(n, &t.m, tau, &mut a) {
-        return f64::NAN;
-    }
-    (0..2).map(|r| (0..n).map(|c| jp[r * n + c] * a[c]).sum::<f64>().powi(2)).sum::<f64>().sqrt()
-}
-
 /// Effective task mass for the damping of a virtual spring: mean eigenvalue of Λ.
 fn task_mass(n: usize, t: &Terms, jp: &[f64]) -> f64 {
     task_inertia(n, t, jp).map_or(1.0, |(l, _)| f64::midpoint(l[0], l[3])).max(1e-6)
+}
+
+/// One level of a [`Stack`]: its restricted Jacobian Ĵ = J P (rows × n), the damped task inertia Λ̂ and the
+/// dynamically consistent inverse Ĵ# = M⁻¹ Ĵᵀ Λ̂ (n × rows, `pinv[c * 2 + r]`) used for its command.
+#[derive(Clone, Copy, Debug)]
+struct Level {
+    rows: usize,
+    jhat: [f64; 2 * MAXN],
+    lam: [f64; 4],
+    pinv: [f64; 2 * MAXN],
+}
+
+/// Damping of a level's command, relative to the task's own (unprojected) size: directions the levels
+/// above have nearly used up, or a singular pose, get a bounded command instead of an exploding one. The
+/// primary task stays nearly exact; lower levels are best-effort and damped more, so an unreachable goal
+/// rests at the boundary instead of flipping the arm through the singularity there.
+const DLS_PRIMARY: f64 = 1e-2;
+const DLS_SECONDARY: f64 = 1e-1;
+
+/// Joint damping (1/s) in the tool's null space under the secondary levels.
+const NULL_DAMPING: f64 = 8.0;
+
+/// Strict task priorities in the metric of M (Khatib; Siciliano–Slotine): level k acts only in the null
+/// space of levels 1 … k−1, through the motion projector `P_k = P_{k−1} − Ĵ#_k Ĵ_k` (P₀ = I). Torques of
+/// the form Ĵ_kᵀ F or P_kᵀ τ produce no acceleration of any level above k.
+#[derive(Debug)]
+struct Stack {
+    n: usize,
+    minv: MatN,
+    p: MatN,
+    levels: usize,
+}
+
+impl Stack {
+    fn new(n: usize, m: &MatN) -> Option<Self> {
+        let mut minv = [0.0; MAXN * MAXN];
+        for c in 0..n {
+            let e: VecN = core::array::from_fn(|k| f64::from(u8::from(k == c)));
+            let mut col = [0.0; MAXN];
+            if !cholesky_solve(n, m, &e, &mut col) {
+                return None;
+            }
+            for r in 0..n {
+                minv[r * n + c] = col[r];
+            }
+        }
+        let p = core::array::from_fn(|k| if k < n * n && k % (n + 1) == 0 { 1.0 } else { 0.0 });
+        Some(Self { n, minv, p, levels: 0 })
+    }
+
+    /// Add the next-lower level with Jacobian `j` (rows × n) and shrink the null space.
+    fn push(&mut self, rows: usize, j: &[f64]) -> Level {
+        let n = self.n;
+        let mut jhat = [0.0; 2 * MAXN];
+        for r in 0..rows {
+            for c in 0..n {
+                jhat[r * n + c] = (0..n).map(|k| j[r * n + k] * self.p[k * n + c]).sum();
+            }
+        }
+        // M⁻¹ Ĵᵀ (n × rows) and A = Ĵ M⁻¹ Ĵᵀ. Λ̂ is A's truncated inverse: directions the levels above leave
+        // free are inverted exactly (so the projection is exact), directions they have used up (eigenvalues
+        // below a fraction of the task's own, unprojected size) are dropped instead of amplified
+        let mut mj = [0.0; 2 * MAXN];
+        for c in 0..n {
+            for r in 0..rows {
+                mj[c * 2 + r] = (0..n).map(|k| self.minv[c * n + k] * jhat[r * n + k]).sum();
+            }
+        }
+        let a = |r: usize, s: usize| (0..n).map(|c| jhat[r * n + c] * mj[c * 2 + s]).sum::<f64>();
+        let scale: f64 = (0..rows)
+            .map(|r| {
+                (0..n)
+                    .map(|c| j[r * n + c] * (0..n).map(|k| self.minv[c * n + k] * j[r * n + k]).sum::<f64>())
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+            .max(1e-300);
+        let floor = 1e-6 * scale;
+        // per eigen-direction μ of A: the projector uses the exact truncated inverse 1/μ (lower levels must
+        // be confined exactly), the command the damped μ/(μ² + δ²) — any Λ̂ keeps the command out of the
+        // levels above, since M⁻¹Ĵᵀ lies in their null space
+        let delta = if self.levels == 0 { DLS_PRIMARY } else { DLS_SECONDARY } * scale;
+        self.levels += 1;
+        let (exact, cmd) = if rows == 1 {
+            let x = a(0, 0);
+            (
+                [if x > floor { 1.0 / x } else { 0.0 }, 0.0, 0.0, 0.0],
+                [if x > floor { x / (x * x + delta * delta) } else { 0.0 }, 0.0, 0.0, 0.0],
+            )
+        } else {
+            let (x, y, z) = (a(0, 0), a(0, 1), a(1, 1));
+            let (mean, half) = (f64::midpoint(x, z), (0.5 * (x - z)).hypot(y));
+            let (mut exact, mut cmd) = ([0.0; 4], [0.0; 4]);
+            for mu in [mean + half, mean - half] {
+                // eigenvector of [[x, y], [y, z]] for μ: both (y, μ − x) and (μ − z, y) solve it; take the
+                // better conditioned one (either may vanish), and a unit vector when the matrix is diagonal
+                let (c1, c2) = ((y, mu - x), (mu - z, y));
+                let (vx, vy) = if c1.0.hypot(c1.1) >= c2.0.hypot(c2.1) { c1 } else { c2 };
+                let norm = vx.hypot(vy);
+                let (vx, vy, norm) = if norm > 1e-300 * (1.0 + mu.abs()) {
+                    (vx, vy, norm)
+                } else if (x - mu).abs() <= (z - mu).abs() {
+                    (1.0, 0.0, 1.0)
+                } else {
+                    (0.0, 1.0, 1.0)
+                };
+                let (vx, vy) = (vx / norm, vy / norm);
+                let outer = [vx * vx, vx * vy, vx * vy, vy * vy];
+                // a direction (or a whole task) that cannot move at all contributes nothing — not 0/0
+                let (e, c) = if mu > floor { (1.0 / mu, mu / (mu * mu + delta * delta)) } else { (0.0, 0.0) };
+                for k in 0..4 {
+                    exact[k] += outer[k] * e;
+                    cmd[k] += outer[k] * c;
+                }
+            }
+            (exact, cmd)
+        };
+        // the projector update with the exact inverse
+        let mut pexact = [0.0; 2 * MAXN];
+        for c in 0..n {
+            for r in 0..rows {
+                pexact[c * 2 + r] = (0..rows).map(|s| mj[c * 2 + s] * exact[s * 2 + r]).sum();
+            }
+        }
+        for i in 0..n {
+            for k in 0..n {
+                self.p[i * n + k] -= (0..rows).map(|r| pexact[i * 2 + r] * jhat[r * n + k]).sum::<f64>();
+            }
+        }
+        let lam = cmd;
+        let mut pinv = [0.0; 2 * MAXN];
+        for c in 0..n {
+            for r in 0..rows {
+                pinv[c * 2 + r] = (0..rows).map(|s| mj[c * 2 + s] * lam[s * 2 + r]).sum();
+            }
+        }
+        Level { rows, jhat, lam, pinv }
+    }
+
+    /// Pᵀ τ: a torque projected so that it accelerates none of the levels pushed so far.
+    fn project_torque(&self, tau: &VecN) -> VecN {
+        let n = self.n;
+        core::array::from_fn(|i| if i < n { (0..n).map(|k| self.p[k * n + i] * tau[k]).sum() } else { 0.0 })
+    }
+
+    /// P v: the part of `v` that leaves every level pushed so far untouched.
+    fn apply(&self, v: &VecN) -> VecN {
+        let n = self.n;
+        core::array::from_fn(|i| if i < n { (0..n).map(|k| self.p[i * n + k] * v[k]).sum() } else { 0.0 })
+    }
+
+    /// P (pref − q̈): the part of a preferred acceleration that leaves every level pushed so far untouched.
+    fn project_accel(&self, pref: &VecN, qdd: &VecN) -> VecN {
+        let n = self.n;
+        core::array::from_fn(|i| {
+            if i < n { (0..n).map(|k| self.p[i * n + k] * (pref[k] - qdd[k])).sum() } else { 0.0 }
+        })
+    }
+
+    /// ‖J M⁻¹ τ‖: the acceleration a torque causes in a task with Jacobian `j` (leakage).
+    fn leak(&self, rows: usize, j: &[f64], tau: &VecN) -> f64 {
+        let n = self.n;
+        let a: VecN = core::array::from_fn(|i| {
+            if i < n { (0..n).map(|k| self.minv[i * n + k] * tau[k]).sum() } else { 0.0 }
+        });
+        (0..rows).map(|r| (0..n).map(|c| j[r * n + c] * a[c]).sum::<f64>().powi(2)).sum::<f64>().sqrt()
+    }
+}
+
+impl Level {
+    /// Ĵᵀ Λ̂ a: the torque that gives this level the acceleration `a` without touching the levels above.
+    fn torque(&self, n: usize, a: [f64; 2]) -> VecN {
+        let f: [f64; 2] = core::array::from_fn(|r| (0..self.rows).map(|s| self.lam[r * 2 + s] * a[s]).sum());
+        core::array::from_fn(|i| {
+            if i < n { (0..self.rows).map(|r| self.jhat[r * n + i] * f[r]).sum() } else { 0.0 }
+        })
+    }
+
+    /// q̈ + Ĵ# (b − J q̈): correct q̈ so that this level gets J q̈ = b, within the null space above it.
+    fn resolve(&self, n: usize, j: &[f64], b: [f64; 2], qdd: &mut VecN) {
+        let res: [f64; 2] = core::array::from_fn(|r| {
+            if r < self.rows { b[r] - (0..n).map(|c| j[r * n + c] * qdd[c]).sum::<f64>() } else { 0.0 }
+        });
+        for (c, v) in qdd.iter_mut().enumerate().take(n) {
+            *v += (0..self.rows).map(|r| self.pinv[c * 2 + r] * res[r]).sum::<f64>();
+        }
+    }
+}
+
+/// What a stacked controller reports about its secondary tasks.
+#[derive(Clone, Copy, Debug, Default)]
+struct Secondary {
+    orient_err: f64,
+    elbow_err: [f64; 2],
+    /// Largest acceleration the lower levels cause in any secondary task above them.
+    leak_sec: f64,
+}
+
+impl Secondary {
+    fn record(&mut self, tasks: &[SubTask]) {
+        *self = Self::default();
+        for t in tasks {
+            if t.rows == 1 {
+                self.orient_err = t.e[0];
+            } else {
+                self.elbow_err = t.e;
+            }
+        }
+    }
+
+    fn put(&self, t: &mut Telemetry<'_>) {
+        t.put("orient_err", &[self.orient_err]);
+        t.put("elbow_err", &self.elbow_err);
+        t.put("leak_sec", &[self.leak_sec]);
+    }
 }
 
 /// Virtual model control / energy shaping (Takegaki–Arimoto): a virtual spring–damper pulls the tool to its
@@ -77,6 +271,7 @@ pub struct Vmc {
     lyap: f64,
     lyap_prev: Option<f64>,
     lyap_dot: f64,
+    sec: Secondary,
 }
 
 impl Controller for Vmc {
@@ -96,19 +291,35 @@ impl Controller for Vmc {
         self.tau_task = core::array::from_fn(|i| {
             if i < n { (0..2).map(|r| tool.jp[r * n + i] * self.force[r]).sum() } else { 0.0 }
         });
-        // secondary goals, projected so they cannot move the tool (open chains)
+        // the levels below the tool (open chains): orientation, elbow, then posture — each through the
+        // null space of everything above it
         self.projector.clear();
         self.tau_null = [0.0; MAXN];
+        self.sec = Secondary::default();
+        self.leak = 0.0;
         if c.k.is_none()
-            && let Some(p) = null_projector(n, c.terms, &tool.jp)
+            && let Some(mut stack) = Stack::new(n, &c.terms.m)
         {
+            let tasks = plan.sub_tasks(model, c.q, c.qd);
+            self.sec.record(&tasks);
+            stack.push(2, &tool.jp);
+
+            let mut below: Vec<VecN> = Vec::with_capacity(tasks.len() + 1);
+            for t in &tasks {
+                let lv = stack.push(t.rows, &t.j);
+                below.push(lv.torque(n, t.a));
+            }
             let tau0 = plan.secondary(model, c.q, c.qd);
-            self.projector.extend_from_slice(&p[..n * n]);
-            self.tau_null = core::array::from_fn(|i| {
-                if i < n { k_null * (0..n).map(|j| p[i * n + j] * tau0[j]).sum::<f64>() } else { 0.0 }
-            });
+            below.push(stack.project_torque(&tau0.map(|v| k_null * v)));
+            let sum = |taus: &[VecN]| -> VecN { core::array::from_fn(|i| taus.iter().map(|t| t[i]).sum()) };
+            self.tau_null = sum(&below);
+            self.leak = stack.leak(2, &tool.jp, &self.tau_null);
+            for (k, t) in tasks.iter().enumerate() {
+                self.sec.leak_sec = self.sec.leak_sec.max(stack.leak(t.rows, &t.j, &sum(&below[k + 1..])));
+            }
+            // Pᵀ of the whole stack: what is left for the posture goal
+            self.projector.extend((0..n * n).map(|ik| stack.p[(ik % n) * n + ik / n]));
         }
-        self.leak = leakage(n, c.terms, &tool.jp, &self.tau_null);
         self.w = manipulability(n, &tool.jp);
         let mut dv = [0.0; MAXN];
         model.gravity.eval(c.q, c.qd, &mut dv);
@@ -134,6 +345,7 @@ impl Controller for Vmc {
         t.put("w", &[self.w]);
         t.put("lyap", &[self.lyap]);
         t.put("lyap_dot", &[self.lyap_dot]);
+        self.sec.put(t);
     }
 }
 
@@ -144,6 +356,65 @@ fn task_accel(n: usize, c: &Ctx<'_>, tool: &Tool, xdd: [f64; 2], pref: &VecN) ->
     let with = resolve_accel(n, c.terms, c.k, (&tool.jp, &b), pref);
     let without = resolve_accel(n, c.terms, c.k, (&tool.jp, &b), &[0.0; MAXN]);
     (with, without)
+}
+
+/// The joint accelerations of the full stack (open chains): the tool acceleration `xdd`, then the secondary
+/// tasks, then the preference `pref` in what remains. Returns (q̈, q̈ of the tool level alone, report, the
+/// tool's leakage). With loops only the tool level is resolved (closest to `pref`).
+fn stacked_accel(
+    plan: &Plan,
+    model: &mut Model,
+    c: &Ctx<'_>,
+    tool: &Tool,
+    xdd: [f64; 2],
+    pref: &VecN,
+) -> (VecN, VecN, Secondary, f64) {
+    let n = model.n;
+    let mut sec = Secondary::default();
+    let stack = if c.k.is_none() { Stack::new(n, &c.terms.m) } else { None };
+    let Some(mut stack) = stack else {
+        let (with, without) = task_accel(n, c, tool, xdd, pref);
+        let dq: VecN = core::array::from_fn(|i| with[i] - without[i]);
+        let leak = (0..2)
+            .map(|r| (0..n).map(|j| tool.jp[r * n + j] * dq[j]).sum::<f64>().powi(2))
+            .sum::<f64>()
+            .sqrt();
+        return (with, without, sec, leak);
+    };
+    let tasks = plan.sub_tasks(model, c.q, c.qd);
+    sec.record(&tasks);
+    let mut qdd = [0.0; MAXN];
+    stack.push(2, &tool.jp).resolve(n, &tool.jp, [xdd[0] - tool.jdqd[0], xdd[1] - tool.jdqd[1]], &mut qdd);
+    let task_only = qdd;
+    // a base of damping in the tool's null space: the secondary levels override it along their own
+    // directions, and where they fade (an unreachable goal at a singular boundary) it lets the arm settle
+    if !tasks.is_empty() {
+        let damp = stack.apply(&core::array::from_fn(|i| if i < n { -NULL_DAMPING * c.qd[i] } else { 0.0 }));
+        for i in 0..n {
+            qdd[i] += damp[i];
+        }
+    }
+    let mut after = Vec::with_capacity(tasks.len());
+    for t in &tasks {
+        let b = [t.a[0] - t.jdqd[0], t.a[1] - t.jdqd[1]];
+        stack.push(t.rows, &t.j).resolve(n, &t.j, b, &mut qdd);
+        after.push(qdd);
+    }
+    let fix = stack.project_accel(pref, &qdd);
+    for i in 0..n {
+        qdd[i] += fix[i];
+    }
+    let moved = |j: &[f64], rows: usize, from: &VecN| {
+        (0..rows)
+            .map(|r| (0..n).map(|c| j[r * n + c] * (qdd[c] - from[c])).sum::<f64>().powi(2))
+            .sum::<f64>()
+            .sqrt()
+    };
+    for (t, a) in tasks.iter().zip(&after) {
+        sec.leak_sec = sec.leak_sec.max(moved(&t.j, t.rows, a));
+    }
+    let leak = moved(&tool.jp, 2, &task_only);
+    (qdd, task_only, sec, leak)
 }
 
 /// M⁻¹ τ₀ scaled: the null-space preference as an acceleration.
@@ -169,6 +440,7 @@ pub struct Impedance {
     tau_null: VecN,
     leak: f64,
     w: f64,
+    sec: Secondary,
 }
 
 impl Controller for Impedance {
@@ -186,7 +458,8 @@ impl Controller for Impedance {
             xd_ddot[r] + (plan.f_ext[r] - d * (tool.v[r] - xd_dot[r]) - k * self.e[r]) / mass
         });
         let pref = preference(plan, model, c, k_null);
-        let (qdd, qdd_task) = task_accel(n, c, tool, self.xdd_cmd, &pref);
+        let (qdd, qdd_task, sec, leak) = stacked_accel(plan, model, c, tool, self.xdd_cmd, &pref);
+        self.sec = sec;
         let mq = mat_vec(n, &c.terms.m, &qdd);
         let h = c.terms.h(n, c.qd);
         let f: VecN = core::array::from_fn(|i| {
@@ -198,10 +471,7 @@ impl Controller for Impedance {
         });
         let dq: VecN = core::array::from_fn(|i| qdd[i] - qdd_task[i]);
         self.tau_null = mat_vec(n, &c.terms.m, &dq);
-        self.leak = (0..2)
-            .map(|r| (0..n).map(|j| tool.jp[r * n + j] * dq[j]).sum::<f64>().powi(2))
-            .sum::<f64>()
-            .sqrt();
+        self.leak = leak;
         self.w = manipulability(n, &tool.jp);
         inverse_dynamics(model, c.k, &f).0
     }
@@ -215,6 +485,7 @@ impl Controller for Impedance {
         t.put("tau_null", &self.tau_null);
         t.put("leak", &[self.leak]);
         t.put("w", &[self.w]);
+        self.sec.put(t);
     }
 }
 
@@ -256,7 +527,7 @@ impl Controller for Admittance {
             xv_ddot[r] + wn * wn * (xv[r] - tool.p[r]) + 2.0 * wn * (self.xv_dot[r] - tool.v[r])
         });
         let pref = preference(plan, model, c, 1.0);
-        let (qdd, _) = task_accel(n, c, tool, xdd, &pref);
+        let (qdd, ..) = stacked_accel(plan, model, c, tool, xdd, &pref);
         let mq = mat_vec(n, &c.terms.m, &qdd);
         let h = c.terms.h(n, c.qd);
         let f: VecN = core::array::from_fn(|i| mq[i] + h[i]);
@@ -268,5 +539,53 @@ impl Controller for Admittance {
         t.put("xv_dot", &self.xv_dot);
         t.put("fext", &self.fext);
         t.put("x", &self.x);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lower_levels_never_disturb_higher_ones_and_feasible_levels_are_met() {
+        let n = 5;
+        // a symmetric positive definite M = AᵀA + I
+        let a: Vec<f64> = (0..n * n).map(|k| ((k * 37 % 11) as f64 - 5.0) / 7.0).collect();
+        let mut m = [0.0; MAXN * MAXN];
+        for i in 0..n {
+            for j in 0..n {
+                m[i * n + j] =
+                    (0..n).map(|k| a[k * n + i] * a[k * n + j]).sum::<f64>() + f64::from(u8::from(i == j));
+            }
+        }
+        let j1: Vec<f64> = (0..2 * n).map(|k| ((k * 13 % 7) as f64 - 3.0) / 3.0).collect();
+        let j2: Vec<f64> = (0..n).map(|k| ((k * 5 % 3) as f64) - 1.0 + 0.3).collect();
+        let j3: Vec<f64> = (0..2 * n).map(|k| ((k * k * 17 % 7) as f64 - 3.0) / 2.0).collect();
+        let (b1, b2, b3) = ([0.7, -1.1], [0.4, 0.0], [-0.3, 0.9]);
+        let mut stack = Stack::new(n, &m).unwrap();
+        let mut qdd = [0.0; MAXN];
+        stack.push(2, &j1).resolve(n, &j1, b1, &mut qdd);
+        let after1 = qdd;
+        stack.push(1, &j2).resolve(n, &j2, b2, &mut qdd);
+        let after2 = qdd;
+        stack.push(2, &j3).resolve(n, &j3, b3, &mut qdd);
+        let got = |j: &[f64], r: usize, q: &VecN| (0..n).map(|c| j[r * n + c] * q[c]).sum::<f64>();
+        // exact: a lower level's correction leaves every level above untouched
+        for r in 0..2 {
+            assert!((got(&j1, r, &qdd) - got(&j1, r, &after1)).abs() < 1e-12, "level 1 disturbed");
+        }
+        assert!((got(&j2, 0, &qdd) - got(&j2, 0, &after2)).abs() < 1e-12, "level 2 disturbed");
+        // the primary is met up to its small damping bias; a lower level is damped more (best-effort, more
+        // so where the levels above have used up its directions) but always moves towards its goal
+        for r in 0..2 {
+            assert!((got(&j1, r, &qdd) - b1[r]).abs() < 1e-3 * (1.0 + b1[r].abs()), "primary missed");
+        }
+        let miss = |j: &[f64], b: [f64; 2], rows: usize, q: &VecN| {
+            (0..rows).map(|r| (got(j, r, q) - b[r]).powi(2)).sum::<f64>().sqrt()
+        };
+        assert!(miss(&j2, b2, 1, &after2) < miss(&j2, b2, 1, &after1), "level 2 made no progress");
+        assert!(miss(&j3, b3, 2, &qdd) < miss(&j3, b3, 2, &after2), "level 3 made no progress");
+        // all five directions used: nothing left for posture
+        assert!(stack.p[..n * n].iter().all(|v| v.abs() < 1e-9));
     }
 }

@@ -39,7 +39,7 @@ export interface Page {
 }
 
 /** Settings an experiment may change (mirrored by core flags). */
-export type SettingKey = 'umax' | 'posture' | 'manipulability' | 'pushK' | 'refWn';
+export type SettingKey = 'umax' | 'posture' | 'manipulability' | 'pushK' | 'refWn' | 'orient' | 'elbow';
 
 /** One step of an experiment's setup. The page's own controller is made primary first. */
 export type Action =
@@ -53,6 +53,9 @@ export type Action =
   | { do: 'hang' }
   /** Reset, then start exactly at the equilibrium q* (at rest): where linear controllers are designed. */
   | { do: 'atTarget' }
+  /** Switch the secondary tasks on (natural frequency ω), with targets relative to the current pose:
+   * the tool turned by `dphi`, the elbow moved by `delbow` (omit a field to leave that task off). */
+  | { do: 'stack'; w: number; dphi?: number; delbow?: [number, number] }
   | { do: 'kick'; v: number }
   /** Push the tool with the spring towards tool + (dx, dy), or `inward` metres towards the base. */
   | { do: 'push'; dx?: number; dy?: number; inward?: number; ms: number }

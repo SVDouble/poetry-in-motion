@@ -145,6 +145,7 @@ export class SimulateStage {
           panel,
           onJointTarget: () => this.setUseTool(false),
           setUseTool: (on) => this.setUseTool(on),
+          refresh: () => this.mountSide(),
         }),
       );
     } else if (this.tab) side.replaceChildren(this.tab.render());
@@ -270,7 +271,14 @@ export class SimulateStage {
     this.s.client.flag('PushOn', 0);
   }
 
-  pointer(x: number, y: number, kind: 'down' | 'move' | 'up', pressed: boolean, shift: boolean): void {
+  pointer(
+    x: number,
+    y: number,
+    kind: 'down' | 'move' | 'up',
+    pressed: boolean,
+    shift: boolean,
+    alt = false,
+  ): void {
     const d = this.d;
     const robot = this.s.robot();
     const { client } = this.s;
@@ -287,6 +295,20 @@ export class SimulateStage {
       return;
     }
     if (!pressed || kind === 'up') return;
+    // Alt-drag: the elbow target (switching the elbow goal on)
+    if (alt && d.tool && !d.closures.length) {
+      const { settings } = this.s;
+      settings.elbowX = x;
+      settings.elbowY = y;
+      client.flag('ElbowX', x);
+      client.flag('ElbowY', y);
+      if (!(settings.elbow > 0)) {
+        settings.elbow = 6;
+        client.flag('Elbow', 6);
+        if (this.side === 'goals') this.mountSide();
+      }
+      return;
+    }
     if (toolTargets(d)) {
       client.flag('TargetX', x);
       client.flag('TargetY', y);

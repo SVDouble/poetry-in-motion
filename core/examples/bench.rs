@@ -21,6 +21,7 @@ fn main() {
         ("RR arm, impedance", presets::arm2(), Kind::Impedance),
         ("cart-pole, MPC", presets::cartpole(), Kind::Mpc),
         ("four-bar loop, LQR", presets::four_bar(), Kind::Lqr),
+        ("7-joint arm, impedance", presets::arm7(), Kind::Impedance),
     ];
     for (name, desc, mode) in cases {
         let t0 = Instant::now();

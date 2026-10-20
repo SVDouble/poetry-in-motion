@@ -76,6 +76,8 @@ layout! { off, FIELDS;
     QD_REF: MAXN,
     /// Task reference x_d and the external force on the tool.
     X_REF: 2, FEXT: 2, MANIPULABILITY: 1, UMAX: 1,
+    /// Secondary goals: orientation ω and target, elbow ω, target (x, y) and body.
+    GOALS: 6,
     /// Loop closures, constraint equations, max |φ(q)|.
     NC: 1, NCON: 1, CONSTRAINT: 1,
     LAMBDA: MAXM,
@@ -117,10 +119,18 @@ pub enum Flag {
     /// Secondary goals in the task null space.
     Posture = 10,
     Manipulability = 11,
+    /// Priority 2: tool orientation (natural frequency, 0 = off) and its target angle.
+    Orient = 12,
+    OrientTarget = 13,
+    /// Priority 3: the elbow (natural frequency, 0 = off), its target point and which body's joint it is.
+    Elbow = 14,
+    ElbowX = 15,
+    ElbowY = 16,
+    ElbowBody = 17,
 }
 
 impl Flag {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 18] = [
         Self::Coriolis,
         Self::Umax,
         Self::TargetX,
@@ -133,6 +143,12 @@ impl Flag {
         Self::PushK,
         Self::Posture,
         Self::Manipulability,
+        Self::Orient,
+        Self::OrientTarget,
+        Self::Elbow,
+        Self::ElbowX,
+        Self::ElbowY,
+        Self::ElbowBody,
     ];
 
     #[must_use]

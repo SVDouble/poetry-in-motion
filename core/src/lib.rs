@@ -28,4 +28,4 @@ pub mod tape;
 pub mod world;
 
 /// Maximum number of joints (generalised coordinates) of a mechanism.
-pub const MAXN: usize = 6;
+pub const MAXN: usize = 7;

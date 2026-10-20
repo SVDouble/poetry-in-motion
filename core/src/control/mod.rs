@@ -258,6 +258,9 @@ pub static SPECS: [Spec; 11] = [
             ("w", 1),
             ("lyap", 1),
             ("lyap_dot", 1),
+            ("orient_err", 1),
+            ("elbow_err", 2),
+            ("leak_sec", 1),
         ],
     },
     Spec {
@@ -279,6 +282,9 @@ pub static SPECS: [Spec; 11] = [
             ("tau_null", N),
             ("leak", 1),
             ("w", 1),
+            ("orient_err", 1),
+            ("elbow_err", 2),
+            ("leak_sec", 1),
         ],
     },
     Spec {

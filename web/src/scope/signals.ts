@@ -66,6 +66,9 @@ const TELE: Record<string, [string, string]> = {
   active: ['active bounds', ''],
   size: ['horizon N', ''],
   energy: ['E − E*', 'J'],
+  orient_err: ['orientation error', 'rad'],
+  elbow_err: ['elbow error', 'm'],
+  leak_sec: ['leakage into secondary tasks', 'm/s² | rad/s²'],
   energy_ref: ['E_ref', 'J'],
 };
 
@@ -184,6 +187,40 @@ export class Signals {
         return a === 'n'
           ? { id, label: '‖F_ext‖', unit: 'N', get: () => Math.hypot(s.v('FEXT'), s.v('FEXT', 1)) }
           : { id, label: `F_ext ${a}`, unit: 'N', get: () => s.v('FEXT', a === 'y' ? 1 : 0) };
+      case 'orient':
+      case 'orienterr': {
+        if (!this.d.tool) return undefined;
+        const tool = this.d.bodies.length + 1;
+        const phi = () => s.frame(tool)[2];
+        return head === 'orient'
+          ? { id, label: 'tool angle φ_t', unit: 'rad', get: phi }
+          : {
+              id,
+              label: 'φ* − φ_t',
+              unit: 'rad',
+              get: () => {
+                if (!s.v('GOALS')) return Number.NaN; // orientation goal off
+                const e = s.v('GOALS', 1) - phi();
+                return Math.atan2(Math.sin(e), Math.cos(e));
+              },
+            };
+      }
+      case 'elbow':
+      case 'elbowerr': {
+        if (!this.d.tool) return undefined;
+        const at = () => s.frame(Math.round(s.v('GOALS', 5)) + 1);
+        if (head === 'elbow') {
+          const r = a === 'y' ? 1 : 0;
+          return { id, label: `elbow ${a}`, unit: 'm', get: () => at()[r] };
+        }
+        return {
+          id,
+          label: '‖elbow* − elbow‖',
+          unit: 'm',
+          get: () =>
+            s.v('GOALS', 2) ? Math.hypot(s.v('GOALS', 3) - at()[0], s.v('GOALS', 4) - at()[1]) : Number.NaN,
+        };
+      }
       case 'w':
         return this.d.tool
           ? { id, label: 'manipulability w', unit: '', get: () => s.v('MANIPULABILITY') }
@@ -321,6 +358,7 @@ export class Signals {
         name: 'Task space',
         ids: ['tool:x', 'tool:y', 'xref:x', 'xref:y', 'taskerr', 'fext:x', 'fext:y', 'fext:n', 'w'],
       });
+      groups.push({ name: 'Task hierarchy', ids: ['orient', 'orienterr', 'elbow:x', 'elbow:y', 'elbowerr'] });
     }
     if (this.d.closures.length)
       groups.push({ name: 'Loops', ids: ['viol', ...range(this.d.phi.length, (j) => `lambda:${j}`)] });

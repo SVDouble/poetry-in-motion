@@ -67,6 +67,9 @@ export class RobotView {
   private readonly slots = new Map<number, THREE.Group>();
   private readonly toolBall: THREE.Mesh;
   private readonly toolTarget: THREE.Group;
+  /** Secondary goals: the target orientation at the tool, and the elbow target. */
+  private readonly orientTarget: Arrow;
+  private readonly elbowTarget: THREE.Group;
   private readonly trail = new Trail(palette.accent, 600);
   private readonly frames: THREE.Group[] = [];
   private readonly gArrow: Arrow;
@@ -235,6 +238,15 @@ export class RobotView {
     );
     this.toolTarget.position.z = 0.4;
     root.add(this.toolTarget, this.trail);
+    this.orientTarget = new Arrow(palette.coriolis, 0.008, 0.05);
+    this.orientTarget.visible = false;
+    this.elbowTarget = new THREE.Group();
+    this.elbowTarget.add(
+      new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.007, 8, 40), glow(palette.coriolis)),
+      new THREE.Mesh(new THREE.CircleGeometry(0.014, 20), glow(palette.coriolis)),
+    );
+    this.elbowTarget.visible = false;
+    root.add(this.orientTarget, this.elbowTarget);
 
     // the push on the tool: a spring from the tool to the pointer
     const springGeo = new THREE.BufferGeometry();
@@ -439,6 +451,17 @@ export class RobotView {
     this.toolBall.position.set(tx, ty, 0.15);
 
     this.toolTarget.visible = ik;
+    // secondary goals (snapshot GOALS: orientation ω, φ*, elbow ω, x*, y*, body)
+    const orientOn = running && snap.v('GOALS') > 0 && this.mech.tool >= 0;
+    this.orientTarget.visible = orientOn;
+    if (orientOn) {
+      this.orientTarget.position.set(tx, ty, 0.42);
+      this.orientTarget.angle = snap.v('GOALS', 1);
+      this.orientTarget.set(0.22);
+    }
+    const elbowOn = running && snap.v('GOALS', 2) > 0;
+    this.elbowTarget.visible = elbowOn;
+    if (elbowOn) this.elbowTarget.position.set(snap.v('GOALS', 3), snap.v('GOALS', 4), 0.42);
     this.toolTarget.position.set(snap.v('TARGET', 0), snap.v('TARGET', 1), 0.4);
     const reach = snap.v('REACHABLE') !== 0;
     for (const c of this.toolTarget.children) {

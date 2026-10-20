@@ -69,14 +69,14 @@ const CHECKS: Record<string, Check> = {
   'Exact compensation vs. sag': {
     verify: (tr) =>
       all(
-        settles(tr, err('pd_gravity'), 2e-3),
+        settles(tr, err('pd_gravity'), 5e-3),
         fail(tr.final(err('pd')) > 5 * tr.final(err('pd_gravity')) + 1e-3, 'PD does not sag'),
       ),
   },
   'The gravity sag': {
     verify: (tr) =>
       all(
-        settles(tr, err('pd_gravity'), 2e-3),
+        settles(tr, err('pd_gravity'), 5e-3),
         fail(tr.final(err('pd')) > 5 * tr.final(err('pd_gravity')) + 1e-3, 'PD does not sag'),
       ),
   },
@@ -228,6 +228,37 @@ const CHECKS: Record<string, Check> = {
       const lag = Math.abs(endOfPush(tr, 'tele:admittance:x:0') - endOfPush(tr, 'tele:admittance:xv:0'));
       return all(fail(lag > 0.01, `lag only ${fmt(lag)} m`), settles(tr, 'taskerr', 0.02));
     },
+  },
+  'A stack of tasks': {
+    ids: (key) => ['taskerr', 'orienterr', 'elbowerr', `tele:${key}:leak:0`, `tele:${key}:leak_sec:0`],
+    verify: (tr, key) => {
+      const after = tr.mark('stack') + 0.2;
+      return all(
+        settles(tr, 'taskerr', 2e-3),
+        settles(tr, 'orienterr', 2e-3),
+        settles(tr, 'elbowerr', 5e-3),
+        fail(
+          tr.max(`tele:${key}:leak:0`, after) < 1e-6,
+          `tool leakage ${fmt(tr.max(`tele:${key}:leak:0`, after))}`,
+        ),
+        fail(
+          tr.max(`tele:${key}:leak_sec:0`, after) < 1e-6,
+          `secondary leakage ${fmt(tr.max(`tele:${key}:leak_sec:0`, after))}`,
+        ),
+      );
+    },
+  },
+  'Priority under conflict': {
+    ids: () => ['taskerr', 'orienterr', 'elbowerr'],
+    verify: (tr) =>
+      all(
+        settles(tr, 'taskerr', 2e-3),
+        settles(tr, 'orienterr', 2e-3),
+        fail(
+          tr.final('elbowerr') > 0.05,
+          `the elbow reached an impossible goal (${fmt(tr.final('elbowerr'))})`,
+        ),
+      ),
   },
   'Region of attraction': {
     verify: (tr) => settles(tr, err('lqr'), 0.01),

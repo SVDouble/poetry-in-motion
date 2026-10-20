@@ -11,6 +11,13 @@ export interface Settings {
   pushK: number;
   posture: number;
   manipulability: number;
+  /** Priority 2: tool orientation (natural frequency, 0 = off) and its target (rad). */
+  orient: number;
+  orientTarget: number;
+  /** Priority 3: the elbow (natural frequency, 0 = off) and its target point. */
+  elbow: number;
+  elbowX: number;
+  elbowY: number;
   useTool: boolean;
   coriolis: boolean;
   frames: boolean;
@@ -27,6 +34,11 @@ export const defaultSettings = (): Settings => ({
   pushK: 200,
   posture: 4,
   manipulability: 0,
+  orient: 0,
+  orientTarget: 0,
+  elbow: 0,
+  elbowX: 0,
+  elbowY: 0,
   useTool: false,
   coriolis: true,
   frames: true,
@@ -44,6 +56,11 @@ export const SETTING_FLAGS: [Numeric, Flag][] = [
   ['pushK', 'PushK'],
   ['posture', 'Posture'],
   ['manipulability', 'Manipulability'],
+  ['orient', 'Orient'],
+  ['orientTarget', 'OrientTarget'],
+  ['elbow', 'Elbow'],
+  ['elbowX', 'ElbowX'],
+  ['elbowY', 'ElbowY'],
 ];
 
 export function pushSettings(client: Pick<SimClient, 'flag'>, s: Settings): void {

@@ -419,7 +419,7 @@ class App {
         viewport.setPointerCapture(e.pointerId);
       }
       const [x, y] = this.stage.toWorld(e.clientX, e.clientY);
-      this.pointer(x, y, kind, e.buttons !== 0 || kind === 'down', e.shiftKey);
+      this.pointer(x, y, kind, e.buttons !== 0 || kind === 'down', e.shiftKey, e.altKey);
     };
     for (const kind of ['down', 'move', 'up'] as const)
       viewport.addEventListener(`pointer${kind}`, pointer(kind));
@@ -428,7 +428,14 @@ class App {
     window.addEventListener('blur', () => this.sim.releaseKeys());
   }
 
-  private pointer(x: number, y: number, kind: 'down' | 'move' | 'up', pressed: boolean, shift = false): void {
+  private pointer(
+    x: number,
+    y: number,
+    kind: 'down' | 'move' | 'up',
+    pressed: boolean,
+    shift = false,
+    alt = false,
+  ): void {
     const d = this.derivation;
     if (!d || !this.robot) return;
     if (this.stageName === 'build') {
@@ -437,7 +444,7 @@ class App {
       if (i >= 0) this.editor.select(i);
       return;
     }
-    if (this.stageName === 'simulate') this.sim.pointer(x, y, kind, pressed, shift);
+    if (this.stageName === 'simulate') this.sim.pointer(x, y, kind, pressed, shift, alt);
   }
 
   private key(e: KeyboardEvent, down: boolean): void {

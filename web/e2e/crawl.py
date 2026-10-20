@@ -72,6 +72,29 @@ class Crawl:
             await self.wait(150)
         await self.wait(300)
 
+    async def hierarchy(self, preset: str) -> None:
+        self.where = f"{preset}/goals hierarchy"
+        await self.click(".side-head .segmented button", "Goals")
+        await self.wait(200)
+        for _ in range(2):  # switch orientation, then elbow on (the tab re-renders after each)
+            await self.click(".level .segmented button", "on")
+            await self.wait(300)
+        await self.click(".card-actions button", "here")
+        await self.click(".param-card .segmented button", "joint 3")
+        await self.wait(300)
+        await self.page.keyboard.down("Alt")
+        await self.page.mouse.move(420, 320)
+        await self.page.mouse.down()
+        await self.page.mouse.move(430, 330)
+        await self.page.mouse.up()
+        await self.page.keyboard.up("Alt")
+        await self.wait(400)
+        for _ in range(2):
+            await self.click(".level .segmented button", "off")
+            await self.wait(300)
+        await self.click(".side-head .segmented button", "Control")
+        await self.wait(300)
+
     async def tabs(self, preset: str) -> None:
         for tab in ["Goals", "Equations", "Model", "Control"]:
             self.where = f"{preset}/tab {tab}"
@@ -192,6 +215,7 @@ class Crawl:
         await self.click("[data-stage=simulate]")
         await self.wait(600)
         await self.tabs(preset)
+        await self.hierarchy(preset)
         names = await self.controllers(preset)
         await self.shadows(preset)
         await self.experiments(preset, names)

@@ -594,6 +594,31 @@ pub mod presets {
         d
     }
 
+    /// A redundant 7-joint arm (shoulder to wrist links shortening like a human arm, gripper as tool):
+    /// two task coordinates leave five for orientation, an elbow and posture goals.
+    #[must_use]
+    pub fn arm7() -> Desc {
+        let spec = [
+            (2.0, 0.5, -0.9),
+            (1.6, 0.45, 0.5),
+            (1.2, 0.4, 0.4),
+            (0.9, 0.3, 0.3),
+            (0.6, 0.25, 0.3),
+            (0.4, 0.2, 0.2),
+            (0.3, 0.15, 0.1),
+        ];
+        let bodies = spec
+            .iter()
+            .enumerate()
+            .map(|(i, &(m, l, q0))| {
+                let mut b = link(i.checked_sub(1), JointKind::Revolute, m, l);
+                b.q0 = q0;
+                b
+            })
+            .collect();
+        Desc { bodies, g: 9.81, tool: Some(6), closures: Vec::new() }
+    }
+
     /// Four-bar linkage: crank and rocker hinged to the ground, coupler pinned to the rocker tip (a loop).
     #[must_use]
     pub fn four_bar() -> Desc {

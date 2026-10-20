@@ -27,9 +27,12 @@
    equations of motion, energy and power, task space, per-controller comparisons and each controller's
    internals such as its Lyapunov function, null-space leakage or active MPC constraints). One controller runs as the primary and up to four others as **shadows**: independent
    simulations of the same mechanism under the same pushes, drawn as ghosts and compared in the plots. The
-   **Goals** tab sets joint or tool targets and secondary goals (posture, manipulability) pursued through the
-   dynamically consistent null-space projector `N = I − Jᵀ J̄ᵀ`, with its numbers live. Shift-drag pushes the
-   tool with a spring. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
+   **Goals** tab sets joint or tool targets and a task hierarchy below the tool: its orientation, an elbow
+   point (the planar counterpart of a 7-DOF arm's "arm angle"), then posture and manipulability. Each level
+   acts in the dynamically consistent null space of the levels above (`P_k = P_{k−1} − Ĵ#_k Ĵ_k`, damped least
+   squares for the command, exact projectors), so a lower goal can never disturb a higher one; the
+   seven-joint arm preset has room for all of them. Shift-drag pushes the tool with a spring, Alt-drag places
+   the elbow target. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
    LQR/MPC live in tangent coordinates of the constraint manifold.
 
 ```

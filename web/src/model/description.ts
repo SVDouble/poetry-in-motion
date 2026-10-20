@@ -213,6 +213,23 @@ export const PRESETS: Record<string, () => Mechanism> = {
       link(1, 'revolute', { l: 0.5, m: 0.5, q0: 0.4 }),
     ],
   }),
+  'Seven-joint arm': () => ({
+    name: 'Seven-joint arm',
+    g: 9.81,
+    tool: 6,
+    closures: [],
+    // shoulder to wrist, links shortening like a human arm: two task coordinates leave five for the
+    // orientation, an elbow and posture goals
+    bodies: [
+      link(-1, 'revolute', { l: 0.5, m: 2, q0: -0.9 }),
+      link(0, 'revolute', { l: 0.45, m: 1.6, q0: 0.5 }),
+      link(1, 'revolute', { l: 0.4, m: 1.2, q0: 0.4 }),
+      link(2, 'revolute', { l: 0.3, m: 0.9, q0: 0.3 }),
+      link(3, 'revolute', { l: 0.25, m: 0.6, q0: 0.3 }),
+      link(4, 'revolute', { l: 0.2, m: 0.4, q0: 0.2 }),
+      link(5, 'revolute', { l: 0.15, m: 0.3, q0: 0.1 }),
+    ],
+  }),
   'Double pendulum': () => ({
     name: 'Double pendulum',
     g: 9.81,

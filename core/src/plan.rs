@@ -23,6 +23,37 @@ pub struct Goals {
     pub posture: f64,
     /// Manipulability: gain of the gradient ascent on w = √det(J Jᵀ) (0 = off).
     pub manipulability: f64,
+    /// Priority 2: tool orientation φ_t → `orient_target`, natural frequency (rad/s, 0 = off).
+    pub orient: f64,
+    pub orient_target: f64,
+    /// Priority 3: the elbow (the origin of body `elbow_body`) → `elbow_target`, natural frequency
+    /// (rad/s, 0 = off). The planar counterpart of the arm angle that resolves a 7-DOF arm's redundancy.
+    pub elbow: f64,
+    pub elbow_target: [f64; 2],
+    pub elbow_body: usize,
+}
+
+/// A secondary task for one step: its Jacobian (rows × n, row-major), J̇q̇, the desired task acceleration
+/// a = ω²e − 2ω ẋ and the error e, for `rows` = 1 (orientation) or 2 (a point).
+#[derive(Clone, Copy, Debug)]
+pub struct SubTask {
+    pub rows: usize,
+    pub j: [f64; 2 * MAXN],
+    pub jdqd: [f64; 2],
+    pub a: [f64; 2],
+    pub e: [f64; 2],
+}
+
+/// The body halfway along the chain from the ground to the tool: a natural "elbow".
+fn middle_of_tool_chain(model: &Model) -> usize {
+    let desc = &model.desc;
+    let Some(mut b) = desc.tool else { return 0 };
+    let mut chain = vec![b];
+    while let Some(p) = desc.bodies[b].parent {
+        chain.push(p);
+        b = p;
+    }
+    chain[chain.len() / 2]
 }
 
 /// Linearisation in tangent coordinates x = (ξ, ξ̇) with q ≈ q* + Z ξ (Z = I for open chains).
@@ -127,7 +158,15 @@ impl Plan {
             ref_wn: 4.0,
             push: None,
             push_k: 200.0,
-            goals: Goals { posture: 4.0, manipulability: 0.0 },
+            goals: Goals {
+                posture: 4.0,
+                manipulability: 0.0,
+                orient: 0.0,
+                orient_target: 0.0,
+                elbow: 0.0,
+                elbow_target: [0.0; 2],
+                elbow_body: middle_of_tool_chain(model),
+            },
             q_star: q_target,
             x_star: [0.0; 2],
             u_ff: [0.0; MAXN],
@@ -353,6 +392,39 @@ impl Plan {
         (self.x_ref, self.xd_ref, self.xdd_ref)
     }
 
+    /// The enabled secondary tasks, highest priority first: tool orientation, then the elbow point.
+    pub fn sub_tasks(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> Vec<SubTask> {
+        let n = model.n;
+        let mut out = Vec::new();
+        let g = self.goals;
+        if g.orient > 0.0 && model.has_tool() {
+            // the tool frame's angle is linear in q: φ = k·q + c, so J = k and J̇ = 0
+            let angle = &model.frame_angles[model.desc.nb() + 1];
+            let mut j = [0.0; 2 * MAXN];
+            for (i, &k) in angle.k.iter().enumerate().take(n) {
+                j[i] = f64::from(k);
+            }
+            let phi = angle.eval(q);
+            let rate: f64 = (0..n).map(|i| j[i] * qd[i]).sum();
+            let e = wrap(g.orient_target - phi);
+            out.push(SubTask {
+                rows: 1,
+                j,
+                jdqd: [0.0; 2],
+                a: [g.orient * g.orient * e - 2.0 * g.orient * rate, 0.0],
+                e: [e, 0.0],
+            });
+        }
+        if g.elbow > 0.0 && g.elbow_body < model.desc.nb() {
+            let (p, j, jdqd) = point_kinematics(model, g.elbow_body + 1, q, qd);
+            let v: [f64; 2] = core::array::from_fn(|r| (0..n).map(|c| j[r * n + c] * qd[c]).sum());
+            let e = [g.elbow_target[0] - p[0], g.elbow_target[1] - p[1]];
+            let a = core::array::from_fn(|r| g.elbow * g.elbow * e[r] - 2.0 * g.elbow * v[r]);
+            out.push(SubTask { rows: 2, j, jdqd, a, e });
+        }
+        out
+    }
+
     /// Secondary-goal torque τ₀ (posture and manipulability), to be projected into the task null space.
     pub fn secondary(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> VecN {
         let n = model.n;
@@ -454,6 +526,49 @@ pub fn resolve_accel(
     core::array::from_fn(|c| {
         if c < n { pref[c] + (0..rows).map(|r| minv_st[c * rows + r] * y[r]).sum::<f64>() } else { 0.0 }
     })
+}
+
+/// Position, Jacobian (2 × n) and J̇q̇ of frame `k`'s origin, by central differences of the frame tape.
+pub fn point_kinematics(
+    model: &mut Model,
+    k: usize,
+    q: &[f64],
+    qd: &[f64],
+) -> ([f64; 2], [f64; 2 * MAXN], [f64; 2]) {
+    let n = model.n;
+    let len = model.points.len();
+    let mut buf = vec![0.0; len];
+    let zero = [0.0; MAXN];
+    let mut at = |model: &mut Model, x: &VecN| -> [f64; 2] {
+        model.points.eval(x, &zero, &mut buf);
+        [buf[2 * k], buf[2 * k + 1]]
+    };
+    let base: VecN = core::array::from_fn(|i| if i < n { q[i] } else { 0.0 });
+    let p = at(model, &base);
+    let h = 1e-6;
+    let mut j = [0.0; 2 * MAXN];
+    for c in 0..n {
+        let (mut a, mut b) = (base, base);
+        a[c] += h;
+        b[c] -= h;
+        let (pa, pb) = (at(model, &a), at(model, &b));
+        for r in 0..2 {
+            j[r * n + c] = (pa[r] - pb[r]) / (2.0 * h);
+        }
+    }
+    // J̇q̇ = d²p/ds² along q + s q̇ (second directional difference)
+    let speed = qd[..n].iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let mut jdqd = [0.0; 2];
+    if speed > 1e-12 {
+        let s = 1e-4 / speed;
+        let fwd: VecN = core::array::from_fn(|i| base[i] + if i < n { s * qd[i] } else { 0.0 });
+        let back: VecN = core::array::from_fn(|i| base[i] - if i < n { s * qd[i] } else { 0.0 });
+        let (pf, pb) = (at(model, &fwd), at(model, &back));
+        for r in 0..2 {
+            jdqd[r] = (pf[r] - 2.0 * p[r] + pb[r]) / (s * s);
+        }
+    }
+    (p, j, jdqd)
 }
 
 #[cfg(test)]

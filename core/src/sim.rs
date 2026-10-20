@@ -20,6 +20,9 @@ const STOP_C: f64 = 300.0;
 const STOP_DEPTH: f64 = 0.01;
 /// RK4 substeps per control step while an end stop is (about to be) in contact.
 const CONTACT_SUBSTEPS: u32 = 20;
+/// A step that opens a loop further by more than this (m) is redone with `LOOP_SUBSTEPS` substeps.
+const LOOP_TOLERANCE: f64 = 1e-7;
+const LOOP_SUBSTEPS: u32 = 10;
 
 /// Energy budget: the work done on the mechanism since the last restart.
 ///
@@ -215,6 +218,16 @@ impl Sim {
             Flag::PushK => pl.push_k = v.max(0.0),
             Flag::Posture => pl.goals.posture = v.max(0.0),
             Flag::Manipulability => pl.goals.manipulability = v.max(0.0),
+            Flag::Orient => pl.goals.orient = v.max(0.0),
+            Flag::OrientTarget => pl.goals.orient_target = v,
+            Flag::Elbow => pl.goals.elbow = v.max(0.0),
+            Flag::ElbowX => pl.goals.elbow_target[0] = v,
+            Flag::ElbowY => pl.goals.elbow_target[1] = v,
+            Flag::ElbowBody => {
+                if v >= 0.0 && (v as usize) < self.model.desc.nb() {
+                    pl.goals.elbow_body = v as usize;
+                }
+            }
         }
     }
 
@@ -325,9 +338,24 @@ impl Sim {
             })
         };
         let sub = if near(&self.q, &self.qd) { CONTACT_SUBSTEPS } else { 1 };
+        let (qd0, budget0) = (self.qd, self.budget);
         // the first stage is at the state the controller just evaluated: reuse M, C, N and A
         for s in 0..sub {
             self.rk4(h / f64::from(sub), (s == 0).then_some((&terms, k.as_ref())));
+        }
+        // near a singular loop configuration the constraint forces get large and 1 ms is too coarse: when
+        // the step itself opened the loop measurably (beyond what Baumgarte is still closing), redo it
+        if sub == 1 && self.model.closed() {
+            let before = k.as_ref().map_or(0.0, dynamics::Constraints::max_violation);
+            let after =
+                dynamics::constraints(&mut self.model, &self.q, &self.qd).map_or(0.0, |k| k.max_violation());
+            let grew = after - before;
+            if grew.is_nan() || grew > LOOP_TOLERANCE {
+                (self.q, self.qd, self.budget) = (q0, qd0, budget0);
+                for s in 0..LOOP_SUBSTEPS {
+                    self.rk4(h / f64::from(LOOP_SUBSTEPS), (s == 0).then_some((&terms, k.as_ref())));
+                }
+            }
         }
         if !self.q.iter().chain(&self.qd).all(|v| v.is_finite() && v.abs() < 1e5) {
             // a diverging controller or integration: fall back to the last good state, at rest
@@ -480,6 +508,11 @@ impl Sim {
         put(off::Q_REF, &pl.q_ref[..n]);
         put(off::QD_REF, &pl.qd_ref[..n]);
         put(off::X_REF, &[pl.x_ref[0], pl.x_ref[1], pl.f_ext[0], pl.f_ext[1], w, self.umax]);
+        let g = &pl.goals;
+        put(
+            off::GOALS,
+            &[g.orient, g.orient_target, g.elbow, g.elbow_target[0], g.elbow_target[1], g.elbow_body as f64],
+        );
         let violation = k.as_ref().map_or(0.0, dynamics::Constraints::max_violation);
         put(off::NC, &[self.model.nc as f64, self.model.ncon as f64, violation]);
         put(off::LAMBDA, &self.lambda[..self.model.ncon]);

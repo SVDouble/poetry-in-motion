@@ -53,6 +53,7 @@ export const FIELDS = [
   'FEXT',
   'MANIPULABILITY',
   'UMAX',
+  'GOALS',
   'NC',
   'NCON',
   'CONSTRAINT',
@@ -89,6 +90,12 @@ export const FLAGS = [
   'PushK',
   'Posture',
   'Manipulability',
+  'Orient',
+  'OrientTarget',
+  'Elbow',
+  'ElbowX',
+  'ElbowY',
+  'ElbowBody',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];

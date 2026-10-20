@@ -50,6 +50,18 @@ export function presets(d: Derivation, store: ControlStore, watch: PlotDef[], pr
       plots: n > 1 ? [eomRow(row), eomRow(row === 0 ? 1 : 0)] : [eomRow(0)],
     },
   );
+  if (d.tool && !d.closures.length && n - d.phi.length > 2) {
+    list.push({
+      key: 'hierarchy',
+      label: 'Hierarchy',
+      hint: 'each level of the task hierarchy: tool, orientation, elbow',
+      plots: [
+        { ids: ['taskerr'] },
+        { ids: ['orienterr', 'elbowerr'] },
+        { ids: ['orient', 'elbow:x', 'elbow:y'] },
+      ],
+    });
+  }
   if (d.tool) {
     list.push({
       key: 'task',

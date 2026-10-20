@@ -28,6 +28,34 @@ function common(c: PageContext) {
 
 type LabFn = (c: PageContext) => Lab;
 
+/** Task-hierarchy experiments for a stacked task controller (open chains with a tool). */
+function hierarchy(c: PageContext, key: string): Experiment[] {
+  if (!c.d.tool || c.loops) return [];
+  const leaks = [tele(key, 'leak'), tele(key, 'leak_sec')];
+  const out: Experiment[] = [];
+  if (c.dof >= 5) {
+    out.push({
+      title: 'A stack of tasks',
+      goal: 'Hold the tool, turn it by 0.3 rad and move the elbow: three goals, one arm.',
+      actions: [{ do: 'hold' }, { do: 'stack', w: 6, dphi: 0.3, delbow: [0.05, 0.08] }],
+      plots: [{ ids: ['taskerr', 'orienterr', 'elbowerr'] }, { ids: leaks }],
+      notice:
+        'Priority 1 (the tool) never moves; orientation and elbow converge in what it leaves free, and posture takes the rest. Each level is resolved through $P_{k-1}$, the dynamically consistent null space of the levels above: their leakage stays at round-off. With 7 joints: 2 for the tool, 1 for its orientation, 2 for the elbow — 2 left for posture.',
+    });
+  }
+  if (c.dof === 3) {
+    out.push({
+      title: 'Priority under conflict',
+      goal: 'Tool position and orientation use all three joints: the elbow goal has no room.',
+      actions: [{ do: 'hold' }, { do: 'stack', w: 6, dphi: -0.1, delbow: [0.3, -0.3] }],
+      plots: [{ ids: ['taskerr', 'orienterr'] }, { ids: ['elbowerr'] }],
+      notice:
+        'The elbow level only sees $\\hat J_3 = J_3 P_2$, and $P_2 = 0$ once the tool and its orientation have used every joint: its command vanishes. The higher goals are met exactly; the elbow error simply stays. Order the goals the other way and the tool orientation would give way instead.',
+    });
+  }
+  return out;
+}
+
 const passiveLab: LabFn = (c) => {
   const { q } = common(c);
   const friction = c.d.params.some((p) => p.kind === 'beta' && p.value > 0);
@@ -152,7 +180,8 @@ const passivityLab: LabFn = (c) => {
     experiments.push({
       title: 'Watch the Lyapunov function',
       goal: 'Kick the mechanism and follow V and V̇.',
-      actions: [{ do: 'reset' }, { do: 'kick', v: 3 }],
+      // the proof assumes the torques are delivered: no actuator limit for this one
+      actions: [{ do: 'setting', key: 'umax', value: 1e4 }, { do: 'reset' }, { do: 'kick', v: 3 }],
       plots: [{ ids: [tele('passivity', 'lyap')] }, { ids: [tele('passivity', 'lyap_dot')] }],
       notice:
         'The kick injects energy, so $V = \\tfrac12 s^T M s + e^T\\Lambda K_D e$ jumps up — and from then on only decreases: $\\dot V = -\\dot e^T K_D\\dot e - e^T\\Lambda K_D\\Lambda e \\le 0$. The proof uses $\\dot M - 2C$ skew-symmetric instead of cancelling the dynamics.',
@@ -208,6 +237,7 @@ const vmcLab: LabFn = (c) => {
         'The static deflection shrinks like $F/K$; the damping $D = 2\\zeta\\sqrt{K\\bar\\lambda(\\Lambda)}$ grows with it, so the response stays well damped.',
     });
   }
+  experiments.push(...hierarchy(c, 'vmc'));
   if (redundant) {
     experiments.push({
       title: 'Posture in the null space',
@@ -234,6 +264,7 @@ const impedanceLab: LabFn = (c) => {
       { ids: [tele('impedance', 'leak')] },
     ],
     experiments: [
+      ...hierarchy(c, 'impedance'),
       // K_d e = F holds for a tool free to move in the plane: not where a loop constrains it
       ...(c.loops
         ? []

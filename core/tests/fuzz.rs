@@ -34,9 +34,9 @@ impl Rng {
     }
 }
 
-/// A random tree of 1–6 bodies (some fixed, some prismatic), optionally closed by a pin or slot.
+/// A random tree of 1–7 bodies (some fixed, some prismatic), optionally closed by a pin or slot.
 fn mechanism(r: &mut Rng, friction: bool) -> Desc {
-    let nb = 1 + r.below(6);
+    let nb = 1 + r.below(7);
     let mut bodies = Vec::new();
     let mut moving = 0;
     for i in 0..nb {
@@ -208,7 +208,7 @@ fn every_controller_runs_on_every_mechanism_it_supports() {
                 w.set_flag(Flag::UseTool, 1.0);
             }
             for step in 0..30 {
-                match r.below(8) {
+                match r.below(10) {
                     0 => w.kick(r.below(n), r.range(-2.0, 2.0)),
                     1 => {
                         w.set_flag(Flag::PushX, r.range(-2.0, 2.0));
@@ -226,6 +226,17 @@ fn every_controller_runs_on_every_mechanism_it_supports() {
                     4 => w.set_flag(Flag::Umax, r.range(1.0, 200.0)),
                     5 => w.set_flag(Flag::Posture, r.range(0.0, 20.0)),
                     6 => w.set_param(r.below(5 * d.bodies.len()), r.range(0.1, 1.5)),
+                    7 => {
+                        // secondary goals, reachable or not
+                        w.set_flag(Flag::Orient, if r.chance(0.7) { r.range(1.0, 12.0) } else { 0.0 });
+                        w.set_flag(Flag::OrientTarget, r.range(-PI, PI));
+                    }
+                    8 => {
+                        w.set_flag(Flag::Elbow, if r.chance(0.7) { r.range(1.0, 12.0) } else { 0.0 });
+                        w.set_flag(Flag::ElbowX, r.range(-1.5, 1.5));
+                        w.set_flag(Flag::ElbowY, r.range(-1.5, 1.5));
+                        w.set_flag(Flag::ElbowBody, r.below(d.bodies.len()) as f64);
+                    }
                     _ => {}
                 }
                 w.step(50);
@@ -253,6 +264,8 @@ fn every_controller_runs_on_every_mechanism_it_supports() {
             w.set_flag(Flag::UseTool, 0.0);
             w.set_flag(Flag::Umax, 120.0);
             w.set_flag(Flag::Posture, 4.0);
+            w.set_flag(Flag::Orient, 0.0);
+            w.set_flag(Flag::Elbow, 0.0);
         }
     }
     assert!(runs > 2 * cases as usize, "only {runs} controller runs");
@@ -341,6 +354,9 @@ fn tracking_controllers_reach_random_targets() {
                 if lim > 0.0 { r.range(-0.5, 0.5) * lim } else { r.range(-1.0, 1.0) }
             })
             .collect();
+        // the property is about the control laws, not actuator sizing: random arms may need more than the
+        // default limit just to hold themselves against gravity
+        w.set_flag(Flag::Umax, 1e4);
         for kind in [Kind::ComputedTorque, Kind::PdGravity, Kind::Passivity] {
             w.set_controller(0, Some(kind));
             assert_eq!(

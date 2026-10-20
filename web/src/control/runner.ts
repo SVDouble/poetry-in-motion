@@ -94,15 +94,45 @@ async function act(port: Port, a: Action): Promise<void> {
       port.reset();
       port.mark?.('reset');
       return;
+    case 'stack': {
+      // targets relative to where the tool and the elbow are now
+      const snap = port.snap();
+      const nb = d.bodies.length; // frames: s, bodies 1 … nb, tool nb + 1
+      const set = (
+        key: 'orient' | 'orientTarget' | 'elbow' | 'elbowX' | 'elbowY',
+        flag: Parameters<Port['flag']>[0],
+        v: number,
+      ) => {
+        settings[key] = v;
+        port.flag(flag, v);
+      };
+      if (a.dphi !== undefined) {
+        set('orientTarget', 'OrientTarget', snap.frame(nb + 1)[2] + a.dphi);
+        set('orient', 'Orient', a.w);
+      }
+      if (a.delbow) {
+        const [x, y] = snap.frame(Math.round(snap.v('GOALS', 5)) + 1);
+        set('elbowX', 'ElbowX', x + a.delbow[0]);
+        set('elbowY', 'ElbowY', y + a.delbow[1]);
+        set('elbow', 'Elbow', a.w);
+      }
+      port.settingsChanged?.();
+      port.mark?.('stack');
+      return;
+    }
     case 'hold': {
       port.reset();
-      // bend the elbows: a stretched arm is singular, and no task-space law can hold a singular pose well
+      await port.sleep(20); // a fresh snapshot: the bend is relative to the reset pose, not the last one
+      // bend the arm by 0.6 rad in all, shared by the joints after the first: a stretched arm is singular
+      // and no task-space law holds a singular pose well (one sharp elbow for two links, a gentle curl for
+      // seven — bending every joint fully would fold a long arm onto itself)
       if (!d.closures.length) {
         const s0 = port.snap();
         const first = d.coords.findIndex((c) => c.kind === 'revolute');
+        const bend = d.coords.filter((c, i) => c.kind === 'revolute' && i > first).length;
         d.coords.forEach((c, i) => {
           if (c.kind === 'revolute' && i > first)
-            port.send({ type: 'state', i, q: s0.v('Q', i) + 0.6, qd: 0 });
+            port.send({ type: 'state', i, q: s0.v('Q', i) + 0.6 / bend, qd: 0 });
         });
       }
       await port.sleep(120); // the next snapshot shows the new pose
@@ -115,6 +145,7 @@ async function act(port: Port, a: Action): Promise<void> {
     }
     case 'hang': {
       port.reset();
+      await port.sleep(20); // a fresh snapshot after the reset
       const s = port.snap();
       const first = d.coords.findIndex((c) => c.kind === 'revolute');
       d.coords.forEach((_, i) => {

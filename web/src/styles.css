@@ -1541,3 +1541,31 @@ button.link:hover {
 .lab-notice .prose {
   margin: 2px 0 0;
 }
+
+/* ---------- Goals: task hierarchy ---------- */
+
+.param-card .level {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.param-card .level:first-of-type {
+  border-top: 0;
+}
+
+.param-card .level b {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+details.fold > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 6px 0;
+}
