@@ -1,0 +1,42 @@
+[project]
+name = "meowfer-sym"
+version = "0.1.0"
+description = "Symbolic derivation and code generation of robot equations of motion"
+requires-python = ">=3.15"
+dependencies = ["sympy>=1.14"]
+
+[project.scripts]
+meowfer-derive = "meowfer_sym.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.13", "mypy>=1.18"]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.14"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 110
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PL", "N"]
+ignore = [
+  "PLR0913", # derivation helpers take many symbols on purpose
+  "PLR2004", # magic numbers are physics constants here
+  "N802",    # sympy printer hooks are named _print_Foo
+  "N806",    # M, C, N, J follow the textbook notation
+  "N815",
+  "RUF001",  # unicode in docstrings is intentional (θ, ξ, ...)
+  "RUF002",
+  "RUF003",
+]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+disallow_untyped_calls = false
+disallow_subclassing_any = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

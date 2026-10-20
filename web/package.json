@@ -1,0 +1,28 @@
+{
+  "name": "meowfer-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "fix": "biome check --write .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "26.6.5",
+    "@types/three": "0.186.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "katex": "0.19.0",
+    "three": "0.186.1",
+    "uplot": "1.6.32"
+  }
+}

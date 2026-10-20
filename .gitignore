@@ -1,0 +1,21 @@
+# reference material (not redistributable)
+local/
+
+# build outputs
+/target/
+web/dist/
+web/src/wasm/*.wasm
+
+# dependencies / environments
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# editors / OS
+.DS_Store
+.idea/
+*.swp

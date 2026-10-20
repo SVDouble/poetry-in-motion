@@ -1,0 +1,13 @@
+[package]
+name = "meowfer-core"
+version = "0.1.0"
+description = "Real-time robot dynamics core (WASM) for the meowfer visualizer"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

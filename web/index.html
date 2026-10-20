@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Live robot dynamics in the browser: the equations of motion, frames and Jacobians update as the robot moves."
+    />
+    <title>meowfer · robot dynamics, live</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%238b7cff'/><path d='M16 16 L27 9' stroke='white' stroke-width='3' stroke-linecap='round'/><circle cx='16' cy='16' r='3.5' fill='white'/></svg>" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo" aria-hidden="true"></span>
+          <span class="name">meowfer</span>
+          <span class="tagline">robot dynamics, live</span>
+        </div>
+        <nav class="segmented" id="systems" aria-label="System"></nav>
+        <div class="transport">
+          <button type="button" class="btn" id="run" title="Pause / run (P)">Pause</button>
+          <button type="button" class="btn" id="reset" title="Reset (R)">Reset</button>
+          <select id="speed" class="btn" title="Simulation speed">
+            <option value="0.1">0.1×</option>
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+          </select>
+        </div>
+        <div class="stats" id="stats" aria-live="off"></div>
+      </header>
+
+      <main class="layout">
+        <section class="stagecol">
+          <div class="viewport" id="viewport">
+            <div class="overlay tl">
+              <div class="segmented modes" id="modes"></div>
+              <p class="hint" id="hint"></p>
+            </div>
+            <div class="overlay tr toggles" id="toggles"></div>
+            <div class="overlay bl keys" id="keys"></div>
+          </div>
+          <div class="plots" id="plots"></div>
+        </section>
+
+        <aside class="sidecol">
+          <div class="sidetabs segmented">
+            <button type="button" data-tab="eq" class="on">Equations</button>
+            <button type="button" data-tab="params">Parameters</button>
+          </div>
+          <div class="sidepane" id="equations"></div>
+          <div class="sidepane" id="params" hidden></div>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
