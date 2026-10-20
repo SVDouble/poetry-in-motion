@@ -64,7 +64,7 @@ describe('wasm core', () => {
     expect(d.n).toBe(dof(mech));
     expect(d.nu).toBe(mech.bodies.filter((b) => b.actuated && b.joint !== 'fixed').length);
     expect(d.closures).toHaveLength(mech.closures.length);
-    expect(d.phi).toHaveLength(2 * mech.closures.length);
+    expect(d.phi).toHaveLength(mech.closures.reduce((n, c) => n + (c.kind === 'pin' ? 2 : 1), 0));
     expect(d.M).toHaveLength(d.n);
     expect(d.eom).toHaveLength(d.n);
     expect(core.param_count()).toBe(paramVector(mech).length);
@@ -79,7 +79,7 @@ describe('wasm core', () => {
 
   it('rejects an invalid description', () => {
     expect(() => build([1, 0, 9.81, -1, 0])).toThrow(/version/);
-    expect(() => build([2, 0, 9.81, -1, 0])).toThrow(/bodies/);
+    expect(() => build([3, 0, 9.81, -1, 0])).toThrow(/bodies/);
   });
 
   it('satisfies M q̈ + C q̇ + N = τ in the published snapshot', () => {

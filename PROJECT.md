@@ -72,9 +72,14 @@ updating live** while the robot moves in a real simulation.
   (ports, handles, snapping), drag-and-drop re-parenting, per-entry removal, undo/redo and ground anchors.
   The model-based controllers (computed torque, LQR, swing-up) stay limited to trees.
 
+- v1.2 (2026-10-20): every controller works on closed loops (constrained inverse dynamics, exact gravity
+  compensation, LQR in tangent coordinates of the constraint manifold, IK with the loops closed, generalised
+  partial feedback linearisation); slot closures (point on a line, one constraint); Shift-drag sets θ(0).
+  Code: shared constrained-dynamics helpers in the core, an export macro, and the web app split into
+  `app/*` modules with table-driven editor fields and shared widgets.
+
 ## Next ideas
-- Controllers for closed chains (constrained computed torque, LQR on the constraint manifold), and contacts.
-- Prismatic loop closures (pin-in-slot), and an angle constraint (weld) between two bodies.
+- Contacts and joint limits for revolute joints; an angle constraint (weld) between two bodies.
 - 3D (spatial) mechanisms: twists, the product of exponentials and the body Jacobian in SE(3).
 - Guided lessons and exercises (e.g. "make the energy drift by switching off C").
 - Trajectory optimisation and other controllers (sliding mode, passivity-based, MPC).

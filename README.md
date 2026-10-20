@@ -3,12 +3,13 @@
 **Poetry in Motion** is an in-browser lab for robot dynamics, organised in three stages:
 
 1. **Build** a planar mechanism in a visual editor. It is a graph: a tree of bodies, each hanging from its
-   parent (or the ground) by a **revolute**, **prismatic** or **fixed** joint, plus **loop-closing pins**
-   between two bodies or a body and the ground (four-bar, slider-crank, …). Each joint has its own settings:
+   parent (or the ground) by a **revolute**, **prismatic** or **fixed** joint, plus **loop closures** between
+   two bodies or a body and the ground: **pins** (four-bar) and **slots** (slider-crank). Each joint has its own settings:
    its port along the parent (s·l, symbolic), mounting angle, slide axis and range, actuated or passive,
    damping, and initial and target values. Edit in the panel, or directly in the view:
    - click a **+ port** to attach a child or pin a loop there;
-   - drag **◆** to move a joint; drag **○** to rotate or stretch a body (snaps to 15° / 5 cm, Alt for free);
+   - drag **◆** to move a joint; drag **○** to rotate or stretch a body (snaps to 15° / 5 cm, Alt for free,
+     Shift to set its initial angle instead);
    - drag tree entries to re-hang bodies, use × to remove one, and Ctrl+Z to undo.
 
    Presets: cart-pole, two- and three-link arm, double pendulum, wall pendulum, branching arm, acrobot,
@@ -18,7 +19,9 @@
    symbols, the Coriolis matrix, gravity and friction, the scalar equations, and the Jacobians.
 3. **Simulate** it in real time. The same equations drive the physics and the controllers, and every quantity
    updates live next to the robot. The controllers (PD, PD + gravity, computed torque, LQR, energy-based
-   swing-up) are derived from the model and explained in the panel.
+   swing-up) are derived from the model and explained in the panel. They work on open chains and on closed
+   loops alike: inverse dynamics solves `B u − Aᵀλ = M q̈_d + C q̇ + N` with q̈_d consistent with the constraints,
+   and the LQR lives in tangent coordinates of the constraint manifold.
 
 ```
 M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ        (Murray, Li & Sastry, eq. 4.24)
@@ -37,7 +40,9 @@ core/  Rust → WebAssembly
        ├─ doc.rs    the derivation as LaTeX/JSON for the step-by-step view
        ├─ tape.rs   symbolic expressions compiled into allocation-free numeric tapes
        ├─ sim.rs    RK4 at 1 kHz, KKT solve with Baumgarte stabilisation for loops, end stops, snapshots
-       └─ control/  generic PD, PD + gravity, computed torque (+ IK), LQR (doubling Riccati), swing-up (PFL)
+       ├─ dynamics.rs  M, C, N; constraints; KKT forward dynamics; projection; constrained inverse dynamics
+       └─ control/  generic PD, PD + gravity, computed torque (+ IK), LQR on the constraint manifold
+                    (doubling Riccati), energy swing-up with generalised partial feedback linearisation
 web/   TypeScript + Vite: builder, step-by-step derivation, physics in a Web Worker with SharedArrayBuffer
        snapshots, three.js (WebGPU with WebGL 2 fallback), KaTeX equations patched in place, uPlot charts
 sym/   Python + SymPy: an independent derivation of the reference systems, generated into Rust kernels that

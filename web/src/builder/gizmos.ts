@@ -20,7 +20,8 @@ export interface GizmoEvents {
   connect(body: number, s: number, world: [number, number]): void;
   dragStart(): void;
   dragJoint(world: [number, number], free: boolean): void;
-  dragTip(world: [number, number], free: boolean): void;
+  /** `initial`: Shift held — set the initial joint angle instead of the mounting angle. */
+  dragTip(world: [number, number], free: boolean, initial: boolean): void;
   dragEnd(): void;
 }
 
@@ -59,7 +60,7 @@ export class Gizmos {
       if (!this.dragging) return;
       const w = this.stage.toWorld(e.clientX, e.clientY);
       if (this.dragging === 'joint') this.events.dragJoint(w, e.altKey);
-      else this.events.dragTip(w, e.altKey);
+      else this.events.dragTip(w, e.altKey, e.shiftKey);
     });
     window.addEventListener('pointerup', () => {
       if (!this.dragging) return;
@@ -166,7 +167,8 @@ export class Gizmos {
     );
     const th = el('circle', { cx: hx, cy: hy, r: 9, class: 'handle tip' });
     const tt = el('title', {});
-    tt.textContent = 'drag: rotate about the joint and set the length (snaps to 15° / 5 cm; Alt: free)';
+    tt.textContent =
+      'drag: rotate about the joint and set the length (snaps to 15° / 5 cm; Alt: free; Shift: set the initial angle θ(0) instead)';
     th.append(tt);
     th.addEventListener('pointerdown', (e) => this.start(e, 'tip'));
     svg.append(th);

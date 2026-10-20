@@ -37,9 +37,12 @@ export interface BodySpec {
   shape: Shape;
 }
 
-/** Loop-closing pin: point `(sa · l_a, 0)` of body `a` (or ground point (gx, gy) if a = −1) coincides with
- * point `(sb · l_b, 0)` of body `b`. */
+/** Loop closure between point `(sa · l_a, 0)` of body `a` (or ground point (gx, gy) if a = −1) and point
+ * `(sb · l_b, 0)` of body `b`: a **pin** makes them coincide (2 constraints); a **slot** lets b slide along the
+ * line through a with direction `angle` in a's frame (1 constraint). */
 export interface Closure {
+  kind: 'pin' | 'slot';
+  angle: number;
   a: number;
   sa: number;
   b: number;
@@ -60,7 +63,7 @@ export interface Mechanism {
 export const MAX_BODIES = 8;
 export const MAX_DOF = 6;
 export const MAX_CLOSURES = 4;
-export const DESC_VERSION = 2;
+export const DESC_VERSION = 3;
 export const PER_BODY = 18;
 export const PARAMS_PER_BODY = 5;
 
@@ -109,7 +112,8 @@ export function encode(mech: Mechanism): number[] {
       0,
     );
   }
-  for (const c of mech.closures) out.push(c.a, c.sa, c.b, c.sb, c.gx, c.gy);
+  for (const c of mech.closures)
+    out.push(c.kind === 'slot' ? 1 : 0, c.a, c.sa, c.b, c.sb, c.gx, c.gy, c.angle);
   return out;
 }
 
@@ -149,6 +153,16 @@ export function link(parent: number, joint: JointKind = 'revolute', patch: Parti
 }
 
 const HALF_PI = Math.PI / 2;
+export const pin = (a: number, sa: number, b: number, sb: number, gx = 0, gy = 0): Closure => ({
+  kind: 'pin',
+  angle: 0,
+  a,
+  sa,
+  b,
+  sb,
+  gx,
+  gy,
+});
 const cart = (patch: Partial<BodySpec> = {}) =>
   link(-1, 'prismatic', {
     m: 1,
@@ -272,9 +286,9 @@ export const PRESETS: Record<string, () => Mechanism> = {
     name: 'Four-bar linkage',
     g: 9.81,
     tool: 1,
-    closures: [{ a: 1, sa: 1, b: 2, sb: 1, gx: 0, gy: 0 }],
+    closures: [pin(1, 1, 2, 1)],
     bodies: [
-      link(-1, 'revolute', { l: 0.5, m: 0.5, q0: HALF_PI, beta: 0.05 }),
+      link(-1, 'revolute', { l: 0.5, m: 0.5, q0: HALF_PI, qTarget: 1.2, beta: 0.05 }),
       link(0, 'revolute', { l: 1.2, m: 1, actuated: false, q0: -1.2, beta: 0.01 }),
       link(-1, 'revolute', { l: 1, m: 0.8, mountX: 1, actuated: false, q0: 1.6, beta: 0.01 }),
     ],
@@ -282,12 +296,11 @@ export const PRESETS: Record<string, () => Mechanism> = {
   'Slider-crank': () => ({
     name: 'Slider-crank',
     g: 9.81,
-    tool: -1,
-    closures: [{ a: 1, sa: 1, b: 2, sb: 0, gx: 0, gy: 0 }],
+    tool: 1,
+    closures: [{ kind: 'slot', angle: 0, a: -1, sa: 0, b: 1, sb: 1, gx: 0, gy: 0 }],
     bodies: [
-      link(-1, 'revolute', { l: 0.4, m: 0.5, q0: 1, beta: 0.05 }),
+      link(-1, 'revolute', { l: 0.4, m: 0.5, q0: 1, qTarget: 2, beta: 0.05 }),
       link(0, 'revolute', { l: 1.2, m: 0.6, actuated: false, q0: -1.3, beta: 0.01 }),
-      cart({ mountX: 1.2, limit: 0.9, m: 0.8, actuated: false, beta: 0.2 }),
     ],
   }),
   'Gantry (PR)': () => ({
@@ -324,7 +337,7 @@ export function migrate(raw: unknown): Mechanism | null {
     name: m.name ?? 'Custom',
     g: m.g ?? 9.81,
     tool: m.tool ?? -1,
-    closures: m.closures ?? [],
+    closures: (m.closures ?? []).map((c) => ({ ...pin(c.a, c.sa, c.b, c.sb, c.gx, c.gy), ...c })),
     bodies,
   };
 }

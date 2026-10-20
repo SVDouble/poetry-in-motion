@@ -73,6 +73,8 @@ layout! {
     LQR_K: 2 * MAXN * MAXN,
     U_FF: MAXN,
     LQR_OK: 1,
+    /// Dimension r of the tangent coordinates ξ the LQR works in (n for open chains, n − rank A with loops).
+    LQR_DIM: 1,
     /// max |∂V/∂q_u(q*)| over unactuated joints (0 ⇔ q* is an equilibrium).
     EQ_RESIDUAL: 1,
     /// Energy of the unactuated motion relative to the target, and its scale.
@@ -88,10 +90,13 @@ layout! {
     KD: MAXN,
     UMAX: 1,
     CT_WN: 1,
+    /// 1 when computed torque can realise any acceleration on the constraint manifold.
+    CT_OK: 1,
     /// Loop closures: count, max |φ(q)| and the multipliers λ; Aᵀλ is the constraint generalised force.
     NC: 1,
+    NCON: 1,
     CONSTRAINT: 1,
-    LAMBDA: 2 * crate::mech::MAXC,
+    LAMBDA: crate::mech::MAXM,
     AT_LAMBDA: MAXN,
 }
 
@@ -157,6 +162,19 @@ pub fn json() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grouped_fields_are_adjacent() {
+        use super::off::*;
+        // `Sim::publish` writes these groups with a single copy each
+        assert_eq!([STEPS, NQ, NU, MODE, PHASE], [TIME + 1, TIME + 2, TIME + 3, TIME + 4, TIME + 5]);
+        assert_eq!([POWER, DISSIPATION, SKEW, DET_M], [ENERGY + 3, ENERGY + 4, ENERGY + 5, ENERGY + 6]);
+        assert_eq!([E_U, E_REF], [EQ_RESIDUAL + 1, EQ_RESIDUAL + 2]);
+        assert_eq!([IK, REACHABLE], [TARGET + 2, TARGET + 3]);
+        assert_eq!([CT_WN, CT_OK], [UMAX + 1, UMAX + 2]);
+        assert_eq!([NCON, CONSTRAINT], [NC + 1, NC + 2]);
+        assert_eq!(LQR_DIM, LQR_OK + 1);
+    }
+
     #[test]
     fn offsets_are_contiguous() {
         let mut expect = 0;

@@ -200,12 +200,16 @@ export function liveSections({ d, snap, mode, param }: LiveContext): SectionSpec
 function controlSection({ d, snap, mode }: LiveContext): SectionSpec {
   const n = d.n;
   const nu = d.nu;
-  const full = nu === n;
-  const under = nu > 0 && nu < n;
+  const loops = d.phi.length > 0;
+  const dof = n - d.phi.length;
+  const full = nu > 0 && nu >= dof;
+  const under = nu > 0 && nu < dof;
+  /** Writes `x` with the constraint term only when the mechanism has loops. */
+  const withA = (open: string, closed: string) => (loops ? closed : open);
   return {
     id: 'l-control',
     title: 'Control',
-    cite: 'MLS §4.5',
+    cite: loops ? 'MLS §4.5, ch. 6' : 'MLS §4.5',
     build(b) {
       if (nu === 0) {
         b.text(
@@ -214,47 +218,50 @@ function controlSection({ d, snap, mode }: LiveContext): SectionSpec {
         return;
       }
       const e = (i: number) => snap.v('Q_REF', i) - snap.v('Q', i);
-      if (d.closures.length) {
-        b.text(
-          'This mechanism contains closed loops. Joint-space PD (with or without gravity feed-forward) acts directly on the actuated joints; the model-based laws below (computed torque, LQR, swing-up) are written for the open-chain equations and would need the constrained model, so they are not offered here.',
-        );
-      }
       b.text(
-        'Every law below is computed from the same symbolic model: $M$, $C$, $N$ and $\\partial V / \\partial q$ are evaluated at the current state.',
+        `Every law below is computed from the same symbolic model: $M$, $C$, $N$${loops ? ', the constraint Jacobian $A$' : ''} and $\\partial V / \\partial q$, evaluated at the current state.${loops ? ' With loops, the actuators act together with the constraint forces: every law solves $B u - A^T\\lambda = f$ for the inputs $u$ that produce the desired generalised force $f$.' : ''}`,
       );
       b.math(
         String.raw`q^{*} = ${b.live.vec(n, (i) => snap.v('Q_TARGET', i))},\quad
         q_d = ${b.live.vec(n, (i) => snap.v('Q_REF', i))},\quad
         e = q_d - q = ${b.live.vec(n, e)}`,
-        { caption: 'target, smoothed reference (critically damped filter) and tracking error' },
+        {
+          caption: loops
+            ? 'target projected onto the constraint manifold, smoothed reference and tracking error'
+            : 'target, smoothed reference (critically damped filter) and tracking error',
+        },
       );
 
       b.math(
         String.raw`\textbf{PD:}\quad u = K_p\,e + K_v\,\dot e,\quad K_p = \omega_{pd}^2 \operatorname{diag} M(q^{*}),\ K_v = 2\omega_{pd} \operatorname{diag} M(q^{*})`,
-        {
-          active: () => mode() === MODE.PD,
-        },
+        { active: () => mode() === MODE.PD },
       );
       b.math(
         String.raw`K_p = \operatorname{diag}${b.live.vec(n, (i) => snap.v('KP', i))},\quad K_v = \operatorname{diag}${b.live.vec(n, (i) => snap.v('KD', i))}`,
         { active: () => mode() === MODE.PD || mode() === MODE.PD_GRAVITY },
       );
       b.text(
-        'With gravity, plain PD settles where $K_p e = \\partial V/\\partial q$: a steady-state error. Feeding the gravity term forward removes it:',
+        'With gravity, plain PD settles where the PD force balances gravity: a steady-state error. Feeding the gravity force forward removes it:',
       );
       b.math(
-        String.raw`\textbf{PD + gravity:}\quad u = K_p\,e + K_v\,\dot e + \frac{\partial V}{\partial q}(q)`,
-        {
-          active: () => mode() === MODE.PD_GRAVITY,
-        },
+        withA(
+          String.raw`\textbf{PD + gravity:}\quad u = K_p\,e + K_v\,\dot e + u_g,\quad B u_g = \frac{\partial V}{\partial q}(q)`,
+          String.raw`\textbf{PD + gravity:}\quad u = K_p\,e + K_v\,\dot e + u_g,\quad B u_g - A^{T}\lambda = \frac{\partial V}{\partial q}(q)`,
+        ),
+        { active: () => mode() === MODE.PD_GRAVITY },
       );
 
       if (full) {
         b.text(
-          'Computed torque inverts the whole model. Substituting it into $M\\ddot q + C\\dot q + N = \\tau$ and cancelling $M \\succ 0$ leaves linear, decoupled error dynamics that are the same in every configuration:',
+          loops
+            ? 'Computed torque on the constraint manifold. The actuated coordinates get the desired acceleration $v_a$; the constraints decide the rest ($A\\ddot q + \\dot A\\dot q = 0$); then the inputs that produce $M\\ddot q + C\\dot q + N$ together with the constraint forces are solved for. The error dynamics become linear and identical everywhere:'
+            : 'Computed torque inverts the whole model. Substituting it into $M\\ddot q + C\\dot q + N = \\tau$ and cancelling $M \\succ 0$ leaves linear, decoupled error dynamics that are the same in every configuration:',
         );
         b.math(
-          String.raw`\textbf{Computed torque:}\quad \tau = M(q)\big(\ddot q_d + K_v\dot e + K_p e\big) + C(q,\dot q)\,\dot q + N(q,\dot q)`,
+          withA(
+            String.raw`\textbf{Computed torque:}\quad \tau = M(q)\big(\ddot q_d + K_v\dot e + K_p e\big) + C(q,\dot q)\,\dot q + N(q,\dot q)`,
+            String.raw`\textbf{Computed torque:}\quad \begin{bmatrix} A \\ S_a \end{bmatrix}\ddot q_d = \begin{bmatrix} -\dot A\dot q \\ \ddot q_{d,a} + K_v\dot e_a + K_p e_a \end{bmatrix},\quad B u - A^{T}\lambda = M\ddot q_d + C\dot q + N`,
+          ),
           { active: () => mode() === MODE.COMPUTED_TORQUE },
         );
         b.math(
@@ -263,42 +270,55 @@ function controlSection({ d, snap, mode }: LiveContext): SectionSpec {
         );
       }
 
-      // LQR
+      // LQR in tangent coordinates (r = n for open chains)
+      const r = dof; // tangent dimension: n for open chains, n − rank A with loops
       const lqrActive = () =>
         mode() === MODE.LQR || (mode() === MODE.SWING_UP && snap.v('PHASE') === PHASE.BALANCE);
       b.text(
-        'Near an equilibrium $q^{*}$ the motion is approximately linear. With $x = (q - q^{*}, \\dot q)$, linearising $\\ddot q = M^{-1}(Bu - C\\dot q - N)$ gives ($C\\dot q$ is second order and drops out):',
+        loops
+          ? `Near an equilibrium $q^{*}$ the motion stays on the ${dof}-dimensional constraint manifold. Writing $q = q^{*} + Z\\xi$ with $Z$ an orthonormal basis of $\\ker A(q^{*})$, the state is $x = (\\xi, \\dot\\xi)$ and the linearisation of the constrained dynamics (computed numerically from the same model) is:`
+          : 'Near an equilibrium $q^{*}$ the motion is approximately linear. With $x = (q - q^{*}, \\dot q)$, linearising $\\ddot q = M^{-1}(Bu - C\\dot q - N)$ gives ($C\\dot q$ is second order and drops out):',
       );
       b.math(
-        String.raw`\dot x = A x + B_x (u - u^{*}),\quad A = \begin{bmatrix} 0 & I \\ -M^{-1}\frac{\partial^2 V}{\partial q^2} & -M^{-1}\operatorname{diag}\beta \end{bmatrix}_{q^{*}},\quad B_x = \begin{bmatrix} 0 \\ M^{-1}B \end{bmatrix}_{q^{*}}`,
+        withA(
+          String.raw`\dot x = A x + B_x (u - u^{*}),\quad A = \begin{bmatrix} 0 & I \\ -M^{-1}\frac{\partial^2 V}{\partial q^2} & -M^{-1}\operatorname{diag}\beta \end{bmatrix}_{q^{*}},\quad B_x = \begin{bmatrix} 0 \\ M^{-1}B \end{bmatrix}_{q^{*}}`,
+          String.raw`\dot x = A_\xi x + B_\xi (u - u^{*}),\qquad \ddot\xi = Z^{T}\ddot q\big(q^{*} + Z\xi,\ Z\dot\xi,\ u\big)`,
+        ),
         { active: lqrActive },
       );
       b.math(
-        String.raw`A = ${b.live.mat(2 * n, 2 * n, (i, j) => snap.v('LIN_A', i * 2 * n + j))},\quad B_x = ${b.live.mat(2 * n, nu, (i, j) => snap.v('LIN_B', i * nu + j))}`,
-        { active: lqrActive },
+        String.raw`A = ${b.live.mat(2 * r, 2 * r, (i, j) => snap.v('LIN_A', i * 2 * r + j))},\quad B_x = ${b.live.mat(2 * r, nu, (i, j) => snap.v('LIN_B', i * nu + j))}`,
+        {
+          active: lqrActive,
+        },
       );
       b.text(
-        'The gain minimises $\\int_0^\\infty x^T Q x + u^T R u\\,dt$ (discrete Riccati equation at the 1 kHz control rate, solved by doubling). The feed-forward $u^{*}$ holds the equilibrium: $B u^{*} = \\partial V/\\partial q(q^{*})$.',
+        `The gain minimises $\\int_0^\\infty x^T Q x + u^T R u\\,dt$ (discrete Riccati equation at the 1 kHz control rate, solved by doubling). The feed-forward $u^{*}$ holds the equilibrium: $${withA('B u^{*}', 'B u^{*} - A^T\\lambda^{*}')} = \\partial V/\\partial q(q^{*})$.`,
       );
       b.math(
-        String.raw`\textbf{LQR:}\quad u = u^{*} - K x,\quad K = ${b.live.mat(nu, 2 * n, (i, j) => snap.v('LQR_K', i * 2 * n + j))},\quad u^{*} = ${b.live.vec(nu, (i) => snap.v('U_FF', i))}`,
+        String.raw`\textbf{LQR:}\quad u = u^{*} - K x,\quad K = ${b.live.mat(nu, 2 * r, (i, j) => snap.v('LQR_K', i * 2 * r + j))},\quad u^{*} = ${b.live.vec(nu, (i) => snap.v('U_FF', i))}`,
         { active: lqrActive },
       );
       b.math(
-        String.raw`\max_{\text{passive } i}\left|\frac{\partial V}{\partial q_i}(q^{*})\right| = ${b.live.num(() => snap.v('EQ_RESIDUAL'), sci)}`,
+        String.raw`\left\| ${withA('B u^{*}', 'B u^{*} - A^{T}\\lambda^{*}')} - \frac{\partial V}{\partial q}(q^{*})\right\|_\infty = ${b.live.num(() => snap.v('EQ_RESIDUAL'), sci)}`,
         {
           caption:
-            'q* is an equilibrium only if this vanishes (the passive joints must be balanced by gravity alone)',
+            'q* is an equilibrium only if this vanishes (the passive joints must be balanced without inputs)',
         },
       );
 
       if (under) {
         const swinging = () => mode() === MODE.SWING_UP && snap.v('PHASE') === PHASE.SWING;
         b.text(
-          'Swing-up by energy shaping. The passive joints cannot be driven directly, but the actuated ones can pump energy into them. Freezing the actuated velocities, the energy of the passive motion relative to the target is',
+          loops
+            ? 'Swing-up by energy shaping. The energy relative to the target is $E = T + V - V(q^{*})$; the actuated joints pump energy into the passive motion:'
+            : 'Swing-up by energy shaping. The passive joints cannot be driven directly, but the actuated ones can pump energy into them. Freezing the actuated velocities, the energy of the passive motion relative to the target is',
         );
         b.math(
-          String.raw`E_u = \tfrac12\,\dot q_u^{T} M_{uu}\,\dot q_u + V(q) - V(q^{*}) = ${b.live.num(() => snap.v('E_U'))}\,\mathrm{J}`,
+          withA(
+            String.raw`E_u = \tfrac12\,\dot q_u^{T} M_{uu}\,\dot q_u + V(q) - V(q^{*}) = ${b.live.num(() => snap.v('E_U'))}\,\mathrm{J}`,
+            String.raw`E = T + V - V(q^{*}) = ${b.live.num(() => snap.v('E_U'))}\,\mathrm{J}`,
+          ),
           { active: swinging },
         );
         b.text(
@@ -309,10 +329,13 @@ function controlSection({ d, snap, mode }: LiveContext): SectionSpec {
           { active: swinging },
         );
         b.text(
-          'Collocated partial feedback linearisation (Spong) turns $v$ into torques: the passive rows give $\\ddot q_u$, the actuated rows give $\\tau_a$ ($h = C\\dot q + N$):',
+          'Collocated partial feedback linearisation (Spong) turns $v$ into inputs: solve the equations of motion for the passive accelerations and the inputs, with $\\ddot q_a = v$ imposed ($h = C\\dot q + N$):',
         );
         b.math(
-          String.raw`\ddot q_u = -M_{uu}^{-1}\big(h_u + M_{ua}\,v\big),\qquad \tau_a = M_{aa}\,v + M_{au}\,\ddot q_u + h_a`,
+          withA(
+            String.raw`\ddot q_u = -M_{uu}^{-1}\big(h_u + M_{ua}\,v\big),\qquad \tau_a = M_{aa}\,v + M_{au}\,\ddot q_u + h_a`,
+            String.raw`M\ddot q + h + A^{T}\lambda = B u,\quad A\ddot q + \dot A\dot q = 0,\quad \ddot q_a = v\ \Rightarrow\ (\ddot q_u, \lambda, u)`,
+          ),
           { active: swinging },
         );
         b.text(

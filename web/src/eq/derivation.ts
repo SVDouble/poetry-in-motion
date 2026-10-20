@@ -157,16 +157,25 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
     const m = d.phi.length;
     step('Loop-closure constraints', 'MLS §6.1', (b) => {
       b.text(
-        'Each loop-closing pin requires two points to coincide. Written in the tree coordinates, this gives <b>holonomic constraints</b> $\\varphi(q) = 0$:',
+        'Closing a loop ties two points together. Written in the tree coordinates, each closure gives <b>holonomic constraints</b> $\\varphi(q) = 0$: a <b>pin</b> makes the points coincide (two equations), a <b>slot</b> only forbids motion across the slot direction $n$ (one equation).',
       );
       d.closures.forEach((c, k) => {
         const where = (body: string, frac: number) =>
-          body === 's' ? String.raw`p^{s}` : String.raw`p_{${body}}(${frac === 1 ? 'l' : `${frac},l`})`;
-        b.math(String.raw`${where(c.a, c.sa)} = ${col(c.pa)},\quad ${where(c.b, c.sb)} = ${col(c.pb)}`, {
-          caption: `pin ${k + 1}: ${c.a === 's' ? 'ground' : `body ${c.a}`} ↔ body ${c.b}`,
-        });
+          body === 's'
+            ? String.raw`p^{s}`
+            : String.raw`p_{${body}}(${frac === 1 ? 'l' : String.raw`${frac}\,l`})`;
+        const law =
+          c.kind === 'pin'
+            ? String.raw`\varphi = p_a - p_b`
+            : String.raw`\varphi = n^{T}(p_b - p_a),\quad n = \begin{bmatrix} -\sin(\varphi_a + \alpha) \\ \cos(\varphi_a + \alpha) \end{bmatrix}`;
+        b.math(
+          String.raw`p_a = ${where(c.a, c.sa)} = ${col(c.pa)},\quad p_b = ${where(c.b, c.sb)} = ${col(c.pb)},\quad ${law}`,
+          {
+            caption: `${c.kind} ${k + 1}: ${c.a === 's' ? 'ground' : `body ${c.a}`} ↔ body ${c.b}`,
+          },
+        );
       });
-      b.math(String.raw`\varphi(q) = p_a - p_b = ${col(d.phi)} = 0`);
+      b.math(String.raw`\varphi(q) = ${col(d.phi)} = 0`);
       b.text(
         'Differentiating, admissible velocities satisfy $A(q)\\,\\dot q = 0$ with the constraint Jacobian',
       );

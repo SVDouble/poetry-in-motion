@@ -143,42 +143,28 @@ function build(c: Core, id: number, desc: number[]): void {
   }
 }
 
+type Handlers = { [K in ToWorker['type']]: (c: Core, msg: Extract<ToWorker, { type: K }>) => void };
+
+const handlers: Handlers = {
+  build: (c, m) => build(c, m.id, m.desc),
+  param: (c, m) => c.set_param(m.i, m.v),
+  mode: (c, m) => c.set_mode(m.mode),
+  input: (c, m) => c.set_input(m.i, m.v),
+  flag: (c, m) => c.set_flag(m.id, m.v),
+  target: (c, m) => c.set_target(m.i, m.v),
+  kick: (c, m) => c.kick(m.i, m.v),
+  state: (c, m) => c.set_state(m.i, m.q, m.qd),
+  reset: (c) => c.reset(),
+  run: (_c, m) => {
+    running = m.running;
+  },
+  speed: (_c, m) => {
+    speed = m.speed;
+  },
+};
+
 function handle(c: Core, msg: ToWorker): void {
-  switch (msg.type) {
-    case 'build':
-      build(c, msg.id, msg.desc);
-      break;
-    case 'param':
-      c.set_param(msg.i, msg.v);
-      break;
-    case 'mode':
-      c.set_mode(msg.mode);
-      break;
-    case 'input':
-      c.set_input(msg.i, msg.v);
-      break;
-    case 'flag':
-      c.set_flag(msg.id, msg.v);
-      break;
-    case 'target':
-      c.set_target(msg.i, msg.v);
-      break;
-    case 'kick':
-      c.kick(msg.i, msg.v);
-      break;
-    case 'state':
-      c.set_state(msg.i, msg.q, msg.qd);
-      break;
-    case 'reset':
-      c.reset();
-      break;
-    case 'run':
-      running = msg.running;
-      break;
-    case 'speed':
-      speed = msg.speed;
-      break;
-  }
+  (handlers[msg.type] as (c: Core, m: ToWorker) => void)(c, msg);
 }
 
 const queue: ToWorker[] = [];

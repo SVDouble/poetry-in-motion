@@ -64,6 +64,7 @@ export class RobotView {
   private readonly arrows = new Map<number, Arrow>();
   private readonly targets = new Map<number, THREE.Mesh>();
   private readonly pins: THREE.Group[] = [];
+  private readonly slots = new Map<number, THREE.Group>();
   private readonly toolBall: THREE.Mesh;
   private readonly toolTarget: THREE.Group;
   private readonly trail = new Trail(palette.accent, 600);
@@ -183,9 +184,22 @@ export class RobotView {
       }
     });
 
-    // loop-closing pins
+    // loop closures: a pin, or a slider block in a slot (the slot follows body a, or sits on the ground)
     for (const c of mech.closures) {
       const pin = new THREE.Group();
+      if (c.kind === 'slot') {
+        const slot = new THREE.Group();
+        const groove = new THREE.Mesh(new THREE.BoxGeometry(3, 0.05, 0.06), metal(0x3a4258, 0.5, 0.4));
+        groove.position.z = -0.12;
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(3, 0.012, 0.08), glow(palette.accent, 0.5));
+        edge.position.z = -0.08;
+        slot.add(groove, edge);
+        root.add(slot);
+        this.slots.set(this.pins.length, slot);
+        const block = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.12), metal(palette.accent, 0.3, 0.6));
+        block.position.z = 0.02;
+        pin.add(block);
+      }
       const disc = new THREE.Mesh(
         new THREE.CylinderGeometry(0.06, 0.06, 0.2, 32),
         metal(palette.accent, 0.3, 0.6),
@@ -386,6 +400,14 @@ export class RobotView {
     this.mech.closures.forEach((c, k) => {
       const [px, py] = this.port(c.b, c.sb, snap, params);
       this.pins[k]!.position.set(px, py, 0);
+      const slot = this.slots.get(k);
+      if (slot) {
+        const [ax, ay] = c.a < 0 ? [c.gx, c.gy] : this.port(c.a, c.sa, snap, params);
+        const dir = (c.a < 0 ? 0 : snap.frame(c.a + 1)[2]) + c.angle;
+        slot.position.set(ax, ay, 0);
+        slot.rotation.z = dir;
+        this.pins[k]!.rotation.z = dir;
+      }
     });
 
     this.frames[0]!.visible = this.showFrames;

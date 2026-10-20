@@ -44,7 +44,9 @@ pub struct Model {
     pub tool: Option<Tape>,
     /// Loop closures: φ (m), A (m × n), Ȧ q̇ (m); `m = 2 · closures`.
     pub constraints: Option<Tape>,
+    /// Loop closures, and the number of scalar constraint equations they give.
     pub nc: usize,
+    pub ncon: usize,
     /// LaTeX derivation as JSON (see `doc`).
     pub derivation: String,
 }
@@ -170,6 +172,7 @@ impl Model {
             tool,
             constraints,
             nc: d.desc.closures.len(),
+            ncon: d.phi.len(),
             derivation: doc::json(d),
             defaults,
         };

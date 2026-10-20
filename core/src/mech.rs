@@ -8,14 +8,16 @@
 
 use crate::cas::{Angle, Expr, Space};
 
-pub const DESC_VERSION: f64 = 2.0;
+pub const DESC_VERSION: f64 = 3.0;
 /// Maximum number of bodies (fixed ones included).
 pub const MAXB: usize = 8;
 pub const HEADER: usize = 5;
-/// Fields per loop closure: a, s_a, b, s_b, ground x, ground y.
-pub const PER_CLOSURE: usize = 6;
+/// Fields per loop closure: kind, a, s_a, b, s_b, ground x, ground y, slot angle.
+pub const PER_CLOSURE: usize = 8;
 /// Maximum number of loop closures.
 pub const MAXC: usize = 4;
+/// Maximum number of scalar constraint equations (two per pin).
+pub const MAXM: usize = 2 * MAXC;
 pub const PER_BODY: usize = 18;
 /// Coefficients per body: m, l, r, I, β.
 pub const PARAMS_PER_BODY: usize = 5;
@@ -51,10 +53,20 @@ pub struct BodyDesc {
     pub shape: u8,
 }
 
-/// A loop-closing revolute pin: the point `(s_a · l_a, 0)` of body `a` (or a fixed ground point) coincides
-/// with the point `(s_b · l_b, 0)` of body `b` — two holonomic constraints φ(q) = 0 (MLS ch. 6).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClosureKind {
+    /// Revolute pin: the two points coincide (two constraints).
+    Pin,
+    /// Pin in a slot: point b slides along the line through point a with direction `angle` in the frame
+    /// of body a (or the ground) — one constraint.
+    Slot { angle: f64 },
+}
+
+/// A loop closure between the point `(s_a · l_a, 0)` of body `a` (or a fixed ground point) and the point
+/// `(s_b · l_b, 0)` of body `b`, giving holonomic constraints φ(q) = 0 (MLS ch. 6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Closure {
+    pub kind: ClosureKind,
     pub a: Option<usize>,
     pub s_a: f64,
     pub b: usize,
@@ -124,12 +136,14 @@ impl Desc {
         let flat_c = flat.get(base..base + nc * PER_CLOSURE).ok_or("description truncated (closures)")?;
         let mut closures = Vec::with_capacity(nc);
         for c in flat_c.chunks(PER_CLOSURE) {
-            let a = if c[0] < 0.0 { None } else { Some(c[0] as usize) };
-            let b = c[2] as usize;
+            let kind =
+                if c[0].round() as i64 == 1 { ClosureKind::Slot { angle: c[7] } } else { ClosureKind::Pin };
+            let a = if c[1] < 0.0 { None } else { Some(c[1] as usize) };
+            let b = c[3] as usize;
             if a.is_some_and(|a| a >= n) || b >= n || a == Some(b) {
                 return Err("a loop closure must join two different existing bodies".into());
             }
-            closures.push(Closure { a, s_a: c[1], b, s_b: c[3], ground: [c[4], c[5]] });
+            closures.push(Closure { kind, a, s_a: c[2], b, s_b: c[4], ground: [c[5], c[6]] });
         }
         let d = Self { bodies, g: hdr[2], tool, closures };
         match d.n() {
@@ -278,8 +292,8 @@ pub struct Derived {
     pub dndq: Vec<Expr>,
     /// Scalar equations of motion: Σⱼ Mᵢⱼ q̈ⱼ + (C q̇)ᵢ + Nᵢ.
     pub eom: Vec<Expr>,
-    /// Loop closures: the two pinned points, the constraints φ(q) = p_a − p_b (2 per closure),
-    /// the constraint Jacobian A = ∂φ/∂q (row-major 2nc × n) and Ȧ q̇.
+    /// Loop closures: the two joined points, the constraints φ(q) (pin: p_a − p_b; slot: nᵀ(p_b − p_a)),
+    /// the constraint Jacobian A = ∂φ/∂q (row-major m × n) and Ȧ q̇.
     pub closure_points: Vec<[[Expr; 2]; 2]>,
     pub phi: Vec<Expr>,
     pub a_mat: Vec<Expr>,
@@ -446,7 +460,7 @@ pub fn derive(desc: &Desc) -> Derived {
         ToolDerived { body: tb, pose, jp, js, twists, p0, phi0 }
     });
 
-    // ---- loop closures: φ(q) = p_a(q) − p_b(q) = 0
+    // ---- loop closures: pins φ = p_a − p_b = 0, slots φ = nᵀ(p_b − p_a) = 0
     let point = |body: usize, frac: f64| -> [Expr; 2] {
         let x = if frac.abs() > 1e-12 { s.var(vars.l(body)).scale(frac) } else { s.zero() };
         transform(&s, &bodies[body].world, &x, &s.zero())
@@ -456,8 +470,19 @@ pub fn derive(desc: &Desc) -> Derived {
     for c in &desc.closures {
         let pa = c.a.map_or_else(|| [s.constant(c.ground[0]), s.constant(c.ground[1])], |a| point(a, c.s_a));
         let pb = point(c.b, c.s_b);
-        phi.push(pa[0].sub(&pb[0]));
-        phi.push(pa[1].sub(&pb[1]));
+        match c.kind {
+            ClosureKind::Pin => {
+                phi.push(pa[0].sub(&pb[0]));
+                phi.push(pa[1].sub(&pb[1]));
+            }
+            ClosureKind::Slot { angle } => {
+                let dir =
+                    c.a.map_or_else(|| zero_angle.clone(), |a| bodies[a].world.phi.clone()).plus_const(angle);
+                // normal of the slot: (−sin, cos) of its direction
+                let (nx, ny) = (s.sin(&dir).scale(-1.0), s.cos(&dir));
+                phi.push(nx.mul(&pb[0].sub(&pa[0])).add(&ny.mul(&pb[1].sub(&pa[1]))));
+            }
+        }
         closure_points.push([pa, pb]);
     }
     let a_mat: Vec<Expr> =
@@ -507,7 +532,7 @@ pub fn derive(desc: &Desc) -> Derived {
 pub mod presets {
     use core::f64::consts::{FRAC_PI_2, PI};
 
-    use super::{BodyDesc, Closure, Desc, JointKind};
+    use super::{BodyDesc, Closure, ClosureKind, Desc, JointKind};
 
     #[must_use]
     pub fn link(parent: Option<usize>, kind: JointKind, m: f64, l: f64) -> BodyDesc {
@@ -579,8 +604,28 @@ pub mod presets {
         rocker.mount_xy = [1.0, 0.0];
         rocker.actuated = false;
         rocker.q0 = 1.6;
-        let closure = Closure { a: Some(1), s_a: 1.0, b: 2, s_b: 1.0, ground: [0.0; 2] };
+        let closure =
+            Closure { kind: ClosureKind::Pin, a: Some(1), s_a: 1.0, b: 2, s_b: 1.0, ground: [0.0; 2] };
         Desc { bodies: vec![crank, coupler, rocker], g: 9.81, tool: Some(1), closures: vec![closure] }
+    }
+
+    /// Slider-crank: crank on the ground, connecting rod whose tip slides in a horizontal ground slot.
+    #[must_use]
+    pub fn slider_crank() -> Desc {
+        let mut crank = link(None, JointKind::Revolute, 0.5, 0.4);
+        crank.q0 = 1.0;
+        let mut rod = link(Some(0), JointKind::Revolute, 0.6, 1.2);
+        rod.actuated = false;
+        rod.q0 = -1.3;
+        let slot = Closure {
+            kind: ClosureKind::Slot { angle: 0.0 },
+            a: None,
+            s_a: 0.0,
+            b: 1,
+            s_b: 1.0,
+            ground: [0.0; 2],
+        };
+        Desc { bodies: vec![crank, rod], g: 9.81, tool: Some(1), closures: vec![slot] }
     }
 
     /// Acrobot: actuated elbow, passive shoulder; target is the upright configuration.

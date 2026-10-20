@@ -49,6 +49,9 @@ export interface ToolInfo {
 }
 
 export interface ClosureInfo {
+  kind: 'pin' | 'slot';
+  /** Slot direction in the frame of body a (rad). */
+  angle: number;
   /** Body label, or "s" for a ground point. */
   a: string;
   b: string;

@@ -246,3 +246,75 @@ fn mount_ports_stay_symbolic() {
     let m = Model::from_desc(&d);
     assert!(m.derivation.contains(r"\\frac{1}{2} l_{1}"), "{}", &m.derivation[..400]);
 }
+
+fn crank_target(s: &mut Sim, v: f64) {
+    s.set_target(0, v);
+    s.step_n(1);
+}
+
+#[test]
+fn computed_torque_drives_a_four_bar_through_its_crank() {
+    let mut s = sim(&presets::four_bar());
+    s.set_mode(control::COMPUTED_TORQUE);
+    crank_target(&mut s, 1.2);
+    assert!(s.ctrl.ct_ok, "one actuator must suffice for a 1-DOF loop");
+    s.step_n(5_000);
+    assert!((s.q[0] - 1.2).abs() < 1e-3, "crank at {}", s.q[0]);
+    assert!(s.publish()[off::CONSTRAINT] < 1e-6);
+}
+
+#[test]
+fn pd_with_gravity_compensation_holds_a_four_bar_exactly() {
+    let mut s = sim(&presets::four_bar());
+    s.set_mode(control::PD_GRAVITY);
+    crank_target(&mut s, 1.9);
+    s.step_n(10_000);
+    assert!((s.q[0] - 1.9).abs() < 1e-3, "crank at {}", s.q[0]);
+}
+
+#[test]
+fn lqr_on_the_constraint_manifold_stabilises_a_four_bar() {
+    let mut s = sim(&presets::four_bar());
+    s.set_mode(control::LQR);
+    crank_target(&mut s, 1.4);
+    s.kick(0, 1.0);
+    s.step_n(8_000);
+    assert!((s.q[0] - 1.4).abs() < 1e-3, "crank at {}", s.q[0]);
+    assert_eq!(s.publish()[off::LQR_DIM], 1.0, "a four-bar has one tangent direction");
+}
+
+#[test]
+fn inverse_kinematics_moves_the_coupler_of_a_four_bar() {
+    let mut s = sim(&presets::four_bar());
+    s.set_mode(control::COMPUTED_TORQUE);
+    s.step_n(1);
+    let o = s.publish().to_vec();
+    // a nearby point on the coupler curve: move the crank a little and read the tool position
+    let (x0, y0) = (o[off::TOOL_P], o[off::TOOL_P + 1]);
+    s.set_flag(Flag::TargetX, x0 + 0.05);
+    s.set_flag(Flag::TargetY, y0 - 0.02);
+    s.set_flag(Flag::Ik, 1.0);
+    s.step_n(5_000);
+    let o = s.publish().to_vec();
+    let moved = (o[off::TOOL_P] - x0).hypot(o[off::TOOL_P + 1] - y0);
+    assert!(moved > 0.02, "tool did not move ({moved})");
+    assert!(o[off::CONSTRAINT] < 1e-6);
+}
+
+#[test]
+fn slider_crank_slot_conserves_energy_and_stays_in_the_slot() {
+    let mut s = sim(&frictionless(presets::slider_crank()));
+    assert_eq!(s.model.ncon, 1, "a slot is one constraint");
+    s.kick(0, 4.0);
+    let e0 = total_energy(&mut s);
+    let mut worst: f64 = 0.0;
+    for _ in 0..5_000 {
+        s.step();
+        worst = worst.max(s.publish()[off::CONSTRAINT]);
+    }
+    let drift = (total_energy(&mut s) - e0).abs() / e0.abs().max(1.0);
+    assert!(drift < 1e-4, "energy drift {drift:e}");
+    assert!(worst < 1e-6, "left the slot by {worst:e} m");
+    // the rod tip (tool) stays on y = 0
+    assert!(s.publish()[off::TOOL_P + 1].abs() < 1e-6);
+}

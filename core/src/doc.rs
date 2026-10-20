@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use crate::cas::latex::{Names, Printer, angle_const};
 use crate::cas::{Angle, Expr};
-use crate::mech::{Derived, JointKind};
+use crate::mech::{ClosureKind, Derived, JointKind};
 
 /// LaTeX names of every polynomial variable of a derived mechanism.
 #[must_use]
@@ -271,7 +271,9 @@ pub fn json(d: &Derived) -> String {
         .zip(&d.closure_points)
         .map(|(c, [pa, pb])| {
             format!(
-                "{{\"a\":\"{}\",\"b\":\"{}\",\"sa\":{},\"sb\":{},\"pa\":{},\"pb\":{}}}",
+                "{{\"kind\":\"{}\",\"angle\":{},\"a\":\"{}\",\"b\":\"{}\",\"sa\":{},\"sb\":{},\"pa\":{},\"pb\":{}}}",
+                if matches!(c.kind, ClosureKind::Pin) { "pin" } else { "slot" },
+                if let ClosureKind::Slot { angle } = c.kind { angle } else { 0.0 },
                 c.a.map_or_else(|| "s".to_string(), |a| (a + 1).to_string()),
                 c.b + 1,
                 c.s_a,
