@@ -21,8 +21,11 @@ pub mod lqr;
 pub mod mat;
 pub mod mech;
 pub mod model;
+pub mod plan;
+pub mod qp;
 pub mod sim;
 pub mod tape;
+pub mod world;
 
 /// Maximum number of joints (generalised coordinates) of a mechanism.
 pub const MAXN: usize = 6;

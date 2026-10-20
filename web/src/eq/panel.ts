@@ -75,7 +75,10 @@ export class EquationPanel {
   private sections: Section[] = [];
   private observer: IntersectionObserver;
 
-  constructor(private readonly root: HTMLElement) {
+  private root: HTMLElement;
+
+  constructor(private readonly home: HTMLElement) {
+    this.root = home;
     this.observer = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -87,8 +90,10 @@ export class EquationPanel {
     );
   }
 
-  mount(specs: SectionSpec[]): void {
-    this.clear();
+  /** Render `specs` into `into`, or into the panel's own element (cleared first). */
+  mount(specs: SectionSpec[], into?: HTMLElement): void {
+    this.clear(!into);
+    this.root = into ?? this.home;
     const openState = loadOpenState();
     for (const spec of specs) {
       const details = document.createElement('details');
@@ -111,10 +116,10 @@ export class EquationPanel {
     }
   }
 
-  clear(): void {
+  clear(empty = true): void {
     this.observer.disconnect();
     this.sections = [];
-    this.root.replaceChildren();
+    if (empty) this.home.replaceChildren();
   }
 
   update(): void {

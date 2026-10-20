@@ -1,500 +1,426 @@
-//! Generic controllers for any built mechanism — open chains and closed loops alike (MLS ch. 4 §5, ch. 6).
+//! Controllers as plug-ins.
 //!
-//! | mode | law | applies to |
-//! |---|---|---|
-//! | passive | u = 0 | all |
-//! | PD | u = K_p e + K_v ė | actuated joints |
-//! | PD + gravity | PD + u_g, with B u_g − Aᵀλ = ∂V/∂q | actuated joints |
-//! | computed torque | B u − Aᵀλ = M q̈_d + C q̇ + N, q̈_d consistent with A q̈ + Ȧ q̇ = 0 | [B −Aᵀ] spans ℝⁿ |
-//! | LQR | u = u* − K x, x in tangent coordinates of the constraint manifold | any, about an equilibrium |
-//! | swing-up | energy pumping via partial feedback linearisation, LQR catch | underactuated |
-//!
-//! With no loops, A is empty and the laws reduce to their textbook open-chain forms.
+//! Each controller is a small struct implementing [`Controller`]; its tunable
+//! parameters and the live values it reports (telemetry) are declared in [`SPECS`], which the browser reads
+//! to render parameters and explanation pages generically. Everything mechanism-specific a controller needs
+//! (targets, references, equilibrium, linearisation, the external push, secondary goals) lives in the shared
+//! [`Plan`]; the model provides M, C, N, the constraints and the tool kinematics.
 
-use crate::MAXN;
-use crate::dynamics::{self, Constraints, MAXK, Terms, VecN, inverse_dynamics, lstsq, mat_vec};
-use crate::lqr::{c2d, dlqr};
-use crate::mat::{DMat, solve_dense};
+mod joint;
+mod optimal;
+mod swing;
+mod task;
+
+use std::fmt::Write;
+
+use crate::dynamics::{Constraints, Terms, VecN};
 use crate::model::Model;
+use crate::plan::{Plan, Tool};
 
-pub const PASSIVE: u32 = 0;
-pub const PD: u32 = 1;
-pub const PD_GRAVITY: u32 = 2;
-pub const COMPUTED_TORQUE: u32 = 3;
-pub const LQR: u32 = 4;
-pub const SWING_UP: u32 = 5;
-
-pub const PHASE_IDLE: u32 = 0;
-pub const PHASE_SWING: u32 = 1;
-pub const PHASE_BALANCE: u32 = 2;
-
-/// Wrap an angle to (−π, π].
-#[must_use]
-pub fn wrap(a: f64) -> f64 {
-    use core::f64::consts::{PI, TAU};
-    let w = (a + PI).rem_euclid(TAU) - PI;
-    if w <= -PI { w + TAU } else { w }
-}
-
-/// Everything a controller may look at during one control step.
+/// Everything a controller may read during one control step.
 #[derive(Debug)]
 pub struct Ctx<'a> {
-    pub p: &'a [f64],
     pub q: &'a [f64],
     pub qd: &'a [f64],
     pub terms: &'a Terms,
-    /// Loop-closure constraints at this state (`None` for open chains).
+    /// Loop-closure constraints (`None` for open chains).
     pub k: Option<&'a Constraints>,
+    /// Tool kinematics (`None` without a tool point).
+    pub tool: Option<&'a Tool>,
+    /// This controller's parameters, in the order of its [`Spec::params`].
+    pub params: &'a [f64],
     pub dt: f64,
+    /// Actuator saturation |uᵢ| ≤ umax (MPC plans with it).
+    pub umax: f64,
 }
 
-#[derive(Clone, Debug)]
-pub struct LqrDesign {
-    /// Tangent basis Z (n × r) of the constraint manifold at q* (identity for open chains).
-    pub z: DMat,
-    /// Linearisation ẋ = A x + B u in tangent coordinates x = (ξ, ξ̇), q ≈ q* + Z ξ.
-    pub a: DMat,
-    pub b: DMat,
-    pub k: DMat,
+pub trait Controller: std::fmt::Debug {
+    /// Recompute gains after parameters, targets or the model changed.
+    fn design(&mut self, _plan: &Plan, _model: &mut Model, _params: &[f64], _dt: f64) {}
+    /// Forget internal state (after a reset or a jump of the state).
+    fn reset(&mut self) {}
+    /// Actuator inputs u for this step.
+    fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN;
+    /// Live values shown on the controller's page (see [`Spec::telemetry`]).
+    fn telemetry(&self, _t: &mut Telemetry<'_>) {}
+    /// Controller phase (swing-up: 1 pumping, 2 catching).
+    fn phase(&self) -> u32 {
+        0
+    }
 }
 
-#[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)] // independent switches, not a hidden state machine
-pub struct Ctrl {
-    /// Requested target, and the nearest configuration on the constraint manifold (the one used).
-    pub q_target: VecN,
-    pub q_star: VecN,
-    pub tool_target: [f64; 2],
-    /// Track `tool_target` by inverse kinematics instead of `q_target`.
-    pub ik: bool,
-    pub ik_goal: VecN,
-    pub reachable: bool,
-    pub q_ref: VecN,
-    pub qd_ref: VecN,
-    pub qdd_ref: VecN,
-    pub ref_wn: f64,
-    pub ct_wn: f64,
-    pub pd_wn: f64,
-    pub kp: VecN,
-    pub kd: VecN,
-    /// Computed torque can realise any acceleration on the manifold ([B −Aᵀ] spans ℝⁿ).
-    pub ct_ok: bool,
-    pub lqr: Option<LqrDesign>,
-    pub lqr_qx: f64,
-    pub lqr_qv: f64,
-    pub lqr_r: f64,
-    /// Feed-forward holding q*: B u* − Aᵀλ = ∂V/∂q(q*), and its residual (0 ⇔ q* is an equilibrium).
-    pub u_ff: VecN,
-    pub eq_residual: f64,
-    pub phase: u32,
-    /// Energy relative to the target: of the passive motion for open chains, total for loops.
-    pub e_u: f64,
-    pub e_ref: f64,
-    pub v_target: f64,
-    pub k_e: f64,
-    pub k_c: f64,
-    pub k_v: f64,
-    pub a_max: f64,
-    pub coupling: f64,
-    initialised: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Kind {
+    Passive = 0,
+    Pd = 1,
+    PdGravity = 2,
+    ComputedTorque = 3,
+    Passivity = 4,
+    Vmc = 5,
+    Impedance = 6,
+    Admittance = 7,
+    Lqr = 8,
+    Mpc = 9,
+    SwingUp = 10,
 }
 
-impl Ctrl {
+impl Kind {
+    pub const ALL: [Self; 11] = [
+        Self::Passive,
+        Self::Pd,
+        Self::PdGravity,
+        Self::ComputedTorque,
+        Self::Passivity,
+        Self::Vmc,
+        Self::Impedance,
+        Self::Admittance,
+        Self::Lqr,
+        Self::Mpc,
+        Self::SwingUp,
+    ];
+
     #[must_use]
-    pub fn new(model: &Model) -> Self {
-        let mut q_target = [0.0; MAXN];
-        q_target[..model.n].copy_from_slice(&model.q_target);
-        Self {
-            q_target,
-            q_star: q_target,
-            tool_target: [0.0; 2],
-            ik: false,
-            ik_goal: q_target,
-            reachable: true,
-            q_ref: [0.0; MAXN],
-            qd_ref: [0.0; MAXN],
-            qdd_ref: [0.0; MAXN],
-            ref_wn: 4.0,
-            ct_wn: 12.0,
-            pd_wn: 6.0,
-            kp: [0.0; MAXN],
-            kd: [0.0; MAXN],
-            ct_ok: false,
-            lqr: None,
-            lqr_qx: 10.0,
-            lqr_qv: 1.0,
-            lqr_r: 1.0,
-            u_ff: [0.0; MAXN],
-            eq_residual: 0.0,
-            phase: PHASE_IDLE,
-            e_u: 0.0,
-            e_ref: 1.0,
-            v_target: 0.0,
-            k_e: 12.0,
-            k_c: 2.0,
-            k_v: 2.5,
-            a_max: 12.0,
-            coupling: 1.0,
-            initialised: false,
+    pub fn from_u32(v: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| *k as u32 == v)
+    }
+
+    #[must_use]
+    pub fn spec(self) -> &'static Spec {
+        &SPECS[self as usize]
+    }
+
+    #[must_use]
+    pub fn defaults(self) -> Vec<f64> {
+        self.spec().params.iter().map(|p| p.default).collect()
+    }
+
+    /// A fresh controller of this kind.
+    #[must_use]
+    pub fn create(self) -> Box<dyn Controller> {
+        match self {
+            Self::Passive => Box::new(joint::Passive),
+            Self::Pd => Box::new(joint::Pd::new(false)),
+            Self::PdGravity => Box::new(joint::Pd::new(true)),
+            Self::ComputedTorque => Box::new(joint::ComputedTorque::default()),
+            Self::Passivity => Box::new(joint::Passivity::default()),
+            Self::Vmc => Box::new(task::Vmc::default()),
+            Self::Impedance => Box::new(task::Impedance::default()),
+            Self::Admittance => Box::new(task::Admittance::default()),
+            Self::Lqr => Box::new(optimal::Lqr::default()),
+            Self::Mpc => Box::new(optimal::Mpc::default()),
+            Self::SwingUp => Box::new(swing::SwingUp::default()),
         }
     }
 
-    /// Restart the reference at the current configuration (after reset or mode change).
-    pub fn sync(&mut self, q: &[f64]) {
-        let n = q.len().min(MAXN);
-        self.q_ref[..n].copy_from_slice(&q[..n]);
-        self.qd_ref = [0.0; MAXN];
-        self.qdd_ref = [0.0; MAXN];
-        self.ik_goal[..n].copy_from_slice(&q[..n]);
-        self.initialised = true;
-    }
-
-    /// Recompute everything that depends on parameters or targets: q* on the manifold, feed-forward, gains,
-    /// controller availability and the LQR.
-    pub fn design(&mut self, model: &mut Model, p: &[f64], dt: f64) {
-        let n = model.n;
-        let zero = [0.0; MAXN];
-        // q* on the manifold: keep the actuated coordinates where the user put them if the loops allow it, and
-        // start the passive ones from the current configuration so q* stays in the same assembly mode
-        let mut seed = self.q_target;
-        if model.closed() && self.initialised {
-            for &i in &model.unactuated {
-                seed[i] = self.q_ref[i];
-            }
-        }
-        let (mut qs, mut v0) = (seed, zero);
-        dynamics::project_holding(model, &mut qs, &mut v0, &model.actuated.clone());
-        if dynamics::constraints(model, &qs, &zero).is_some_and(|k| k.max_violation() > 1e-9) {
-            (qs, v0) = (seed, zero);
-            dynamics::project(model, &mut qs, &mut v0);
-        }
-        self.q_star = qs;
-        let t = Terms::eval(&mut model.dynamics, n, &qs, &zero);
-        let k = dynamics::constraints(model, &qs, &zero);
-        let mut dv = [0.0; MAXN];
-        model.gravity.eval(&qs, &zero, &mut dv);
-        (self.u_ff, self.eq_residual) = inverse_dynamics(model, k.as_ref(), &dv);
-        let mut en = [0.0; 2];
-        model.energy.eval(&qs, &zero, &mut en);
-        self.v_target = en[1];
-
-        for i in 0..n {
-            let mii = t.m[i * n + i].max(1e-9);
-            self.kp[i] = self.pd_wn * self.pd_wn * mii;
-            self.kd[i] = 2.0 * self.pd_wn * mii;
-        }
-        // computed torque needs B u − Aᵀλ to reach every generalised force
-        self.ct_ok = model.nu > 0
-            && (0..n).all(|i| {
-                let e: VecN = core::array::from_fn(|j| f64::from(u8::from(i == j)));
-                inverse_dynamics(model, k.as_ref(), &e).1 < 1e-6
-            });
-
-        // energy scale of the swing-up: twice the gravitational "height energy" of the passive bodies
-        let vars = model.vars;
-        let passive: Vec<usize> = if model.closed() { (0..n).collect() } else { model.unactuated.clone() };
-        self.e_ref = passive
-            .iter()
-            .map(|&j| model.coord_body[j])
-            .map(|i| 2.0 * p[vars.m(i)] * p[vars.g()] * p[vars.r(i)].abs())
-            .sum::<f64>()
-            .max(1e-6);
-        self.coupling = model
-            .unactuated
-            .iter()
-            .flat_map(|&u| model.actuated.iter().map(move |&a| (u, a)))
-            .map(|(u, a)| t.m[u * n + a].abs())
-            .fold(0.0, f64::max)
-            .max(1e-6);
-
-        self.lqr = self.design_lqr(model, k.as_ref(), dt);
-    }
-
-    /// LQR in tangent coordinates: q = proj(q* + Z ξ), q̇ = Z ξ̇, linearised by central differences of the
-    /// constrained forward dynamics (exact structure for open chains, where Z = I).
-    fn design_lqr(&self, model: &mut Model, k: Option<&Constraints>, dt: f64) -> Option<LqrDesign> {
-        let (n, nu) = (model.n, model.nu);
-        if nu == 0 {
-            return None;
-        }
-        let z = k.map_or_else(|| DMat::identity(n), Constraints::tangent_basis);
-        let r = z.cols;
-        if r == 0 {
-            return None;
-        }
-        let (qs, u_ff) = (self.q_star, self.u_ff);
-        let mut f = |xi: &[f64], xid: &[f64], du: &[f64]| -> Vec<f64> {
-            let mut q: VecN = core::array::from_fn(|i| {
-                if i < n { qs[i] + (0..r).map(|c| z[(i, c)] * xi[c]).sum::<f64>() } else { 0.0 }
-            });
-            let mut qd: VecN =
-                core::array::from_fn(|i| if i < n { (0..r).map(|c| z[(i, c)] * xid[c]).sum() } else { 0.0 });
-            dynamics::project(model, &mut q, &mut qd);
-            let tau: VecN = core::array::from_fn(|i| {
-                if i < n { (0..nu).map(|a| model.b[i * nu + a] * (u_ff[a] + du[a])).sum() } else { 0.0 }
-            });
-            let (qdd, _) = dynamics::accel(model, &q, &qd, &tau, true);
-            (0..r).map(|c| (0..n).map(|i| z[(i, c)] * qdd[i]).sum()).collect()
-        };
-        // central differences around (ξ, ξ̇, u) = (0, 0, u*)
-        let h = 1e-6;
-        let mut column = |which: usize, j: usize| -> Vec<f64> {
-            let mut plus = [vec![0.0; r], vec![0.0; r], vec![0.0; nu]];
-            let mut minus = plus.clone();
-            plus[which][j] = h;
-            minus[which][j] = -h;
-            let fp = f(&plus[0], &plus[1], &plus[2]);
-            let fm = f(&minus[0], &minus[1], &minus[2]);
-            fp.iter().zip(&fm).map(|(a, b)| (a - b) / (2.0 * h)).collect()
-        };
-        let fx: Vec<Vec<f64>> = (0..r).map(|j| column(0, j)).collect();
-        let fv: Vec<Vec<f64>> = (0..r).map(|j| column(1, j)).collect();
-        let fu: Vec<Vec<f64>> = (0..nu).map(|j| column(2, j)).collect();
-        let a = DMat::from_fn(2 * r, 2 * r, |i, j| match (i < r, j < r) {
-            (true, true) => 0.0,
-            (true, false) => f64::from(u8::from(j - r == i)),
-            (false, true) => fx[j][i - r],
-            (false, false) => fv[j - r][i - r],
-        });
-        let b = DMat::from_fn(2 * r, nu, |i, j| if i < r { 0.0 } else { fu[j][i - r] });
-        let q = DMat::from_fn(2 * r, 2 * r, |i, j| {
-            if i != j {
-                0.0
-            } else if i < r {
-                self.lqr_qx * dt
+    /// Can this controller run on the built mechanism? `Err` explains why not.
+    ///
+    /// # Errors
+    /// A short human-readable reason.
+    pub fn applicable(self, model: &Model, plan: &Plan) -> Result<(), &'static str> {
+        let actuated = || if model.nu > 0 { Ok(()) } else { Err("no joint is actuated") };
+        let full =
+            || if plan.ct_ok { Ok(()) } else { Err("needs an independent actuator per degree of freedom") };
+        let tool = || if model.has_tool() { Ok(()) } else { Err("needs a tool point") };
+        match self {
+            Self::Passive => Ok(()),
+            Self::Pd | Self::PdGravity | Self::Lqr | Self::Mpc => actuated(),
+            Self::ComputedTorque | Self::Passivity => full(),
+            Self::Vmc => tool().and_then(|()| actuated()),
+            Self::Impedance | Self::Admittance => tool().and_then(|()| full()),
+            Self::SwingUp => actuated().and(if plan.ct_ok {
+                Err("for underactuated systems (this one is fully actuated)")
             } else {
-                self.lqr_qv * dt
-            }
-        });
-        let rr = DMat::identity(nu).scale(self.lqr_r * dt);
-        let (ad, bd) = c2d(&a, &b, dt);
-        dlqr(&ad, &bd, &q, &rr).map(|k| LqrDesign { z, a, b, k })
-    }
-
-    fn error(model: &Model, i: usize, q: f64, target: f64) -> f64 {
-        if model.revolute[i] { wrap(target - q) } else { target - q }
-    }
-
-    fn lqr_law(&self, model: &Model, q: &[f64], qd: &[f64], u: &mut VecN) {
-        let Some(l) = &self.lqr else { return };
-        let (n, r) = (model.n, l.z.cols);
-        let dq: VecN =
-            core::array::from_fn(|i| if i < n { -Self::error(model, i, q[i], self.q_star[i]) } else { 0.0 });
-        let mut x = vec![0.0; 2 * r];
-        for c in 0..r {
-            x[c] = (0..n).map(|i| l.z[(i, c)] * dq[i]).sum();
-            x[r + c] = (0..n).map(|i| l.z[(i, c)] * qd[i]).sum();
-        }
-        for a in 0..model.nu {
-            u[a] = self.u_ff[a] - (0..2 * r).map(|j| l.k[(a, j)] * x[j]).sum::<f64>();
+                Ok(())
+            }),
         }
     }
+}
 
-    /// One damped-least-squares step of inverse kinematics on `ik_goal`: move the tool towards `tool_target`
-    /// while keeping the loops closed, i.e. solve `[A; J] Δq ≈ [−φ; e]`.
-    fn ik_step(&mut self, model: &mut Model) {
-        let n = model.n;
-        let zero = [0.0; MAXN];
-        for _ in 0..2 {
-            let Some(tool) = &mut model.tool else { return };
-            let mut buf = [0.0; 2 + 2 * MAXN];
-            tool.eval(&self.ik_goal[..n], &zero, &mut buf);
-            let e = [self.tool_target[0] - buf[0], self.tool_target[1] - buf[1]];
-            let k = dynamics::constraints(model, &self.ik_goal, &zero);
-            let m = k.as_ref().map_or(0, |k| k.m);
-            let rows = m + 2;
-            // S = [A; J], rhs = [−φ; e]; Δq = Sᵀ (S Sᵀ + λ² I)⁻¹ rhs
-            let mut s = [0.0; MAXK * MAXN];
-            let mut rhs = [0.0; MAXK];
-            if let Some(k) = &k {
-                s[..m * n].copy_from_slice(&k.a[..m * n]);
-                for r in 0..m {
-                    rhs[r] = -k.phi[r];
-                }
+/// A tunable parameter. `redesign`: changing it requires [`Controller::design`] (gains, QP matrices).
+#[derive(Debug)]
+pub struct Param {
+    pub key: &'static str,
+    pub tex: &'static str,
+    pub default: f64,
+    pub min: f64,
+    pub max: f64,
+    pub log: bool,
+    pub unit: &'static str,
+    pub redesign: bool,
+}
+
+const fn param(key: &'static str, tex: &'static str, default: f64, min: f64, max: f64) -> Param {
+    Param { key, tex, default, min, max, log: false, unit: "", redesign: false }
+}
+
+impl Param {
+    const fn log(mut self) -> Self {
+        self.log = true;
+        self
+    }
+    const fn unit(mut self, unit: &'static str) -> Self {
+        self.unit = unit;
+        self
+    }
+    const fn redesign(mut self) -> Self {
+        self.redesign = true;
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct Spec {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub family: &'static str,
+    pub params: &'static [Param],
+    /// `(name, length)` of each telemetry field, laid out consecutively.
+    pub telemetry: &'static [(&'static str, usize)],
+}
+
+impl Spec {
+    /// `(offset, length)` of telemetry field `name` within the slot's telemetry block.
+    #[must_use]
+    pub fn telemetry_field(&self, name: &str) -> Option<(usize, usize)> {
+        let mut off = 0;
+        for &(key, len) in self.telemetry {
+            if key == name {
+                return Some((off, len));
             }
-            s[m * n..(m + 2) * n].copy_from_slice(&buf[2..2 + 2 * n]);
-            rhs[m] = e[0];
-            rhs[m + 1] = e[1];
-            let mut sst = [0.0; MAXK * MAXK];
-            for i in 0..rows {
-                for j in 0..rows {
-                    sst[i * rows + j] = (0..n).map(|c| s[i * n + c] * s[j * n + c]).sum::<f64>()
-                        + if i == j { if i < m { 1e-9 } else { 0.01 } } else { 0.0 };
-                }
-            }
-            if !solve_dense(rows, &mut sst[..rows * rows], &mut rhs[..rows]) {
-                return;
-            }
-            for c in 0..n {
-                let step: f64 = (0..rows).map(|i| s[i * n + c] * rhs[i]).sum();
-                self.ik_goal[c] += step.clamp(-0.05, 0.05);
-            }
-            self.reachable = e[0].hypot(e[1]) < 2e-3;
+            off += len;
         }
+        None
+    }
+}
+
+const N: usize = crate::MAXN;
+
+pub static SPECS: [Spec; 11] = [
+    Spec { key: "passive", name: "Passive", family: "none", params: &[], telemetry: &[] },
+    Spec {
+        key: "pd",
+        name: "PD",
+        family: "joint",
+        params: &[
+            param("wn", r"\omega_{n}", 6.0, 0.5, 30.0).log().unit("rad/s"),
+            param("zeta", r"\zeta", 1.0, 0.1, 2.0),
+        ],
+        telemetry: &[("kp", N), ("kd", N)],
+    },
+    Spec {
+        key: "pd_gravity",
+        name: "PD + gravity",
+        family: "joint",
+        params: &[
+            param("wn", r"\omega_{n}", 6.0, 0.5, 30.0).log().unit("rad/s"),
+            param("zeta", r"\zeta", 1.0, 0.1, 2.0),
+        ],
+        telemetry: &[("kp", N), ("kd", N), ("ug", N)],
+    },
+    Spec {
+        key: "computed_torque",
+        name: "Computed torque",
+        family: "joint",
+        params: &[
+            param("wn", r"\omega_{c}", 12.0, 1.0, 40.0).log().unit("rad/s"),
+            param("zeta", r"\zeta", 1.0, 0.1, 2.0),
+        ],
+        telemetry: &[("qdd", N)],
+    },
+    Spec {
+        key: "passivity",
+        name: "Passivity-based",
+        family: "energy",
+        params: &[
+            param("lambda", r"\lambda", 8.0, 0.5, 40.0).log().unit("1/s"),
+            param("kd", r"k_{D}", 10.0, 0.5, 60.0).log().unit("1/s"),
+        ],
+        telemetry: &[("s", N), ("lyap", 1), ("lyap_dot", 1)],
+    },
+    Spec {
+        key: "vmc",
+        name: "Virtual model (energy shaping)",
+        family: "energy",
+        params: &[
+            param("k", "K", 300.0, 10.0, 3000.0).log().unit("N/m"),
+            param("zeta", r"\zeta", 0.7, 0.05, 2.0),
+            param("null", r"k_{\perp}", 1.0, 0.0, 1.0),
+        ],
+        telemetry: &[
+            ("x", 2),
+            ("xd", 2),
+            ("force", 2),
+            ("tau_task", N),
+            ("tau_null", N),
+            ("projector", N * N),
+            ("leak", 1),
+            ("w", 1),
+            ("lyap", 1),
+            ("lyap_dot", 1),
+        ],
+    },
+    Spec {
+        key: "impedance",
+        name: "Impedance",
+        family: "interaction",
+        params: &[
+            param("mass", r"\Lambda_{d}", 1.0, 0.05, 10.0).log().unit("kg"),
+            param("k", "K_{d}", 300.0, 1.0, 3000.0).log().unit("N/m"),
+            param("zeta", r"\zeta", 0.7, 0.05, 2.0),
+            param("null", r"k_{\perp}", 1.0, 0.0, 1.0),
+        ],
+        telemetry: &[
+            ("x", 2),
+            ("xd", 2),
+            ("e", 2),
+            ("fext", 2),
+            ("xdd_cmd", 2),
+            ("tau_null", N),
+            ("leak", 1),
+            ("w", 1),
+        ],
+    },
+    Spec {
+        key: "admittance",
+        name: "Admittance",
+        family: "interaction",
+        params: &[
+            param("mass", r"\Lambda_{d}", 2.0, 0.05, 10.0).log().unit("kg"),
+            param("k", "K_{d}", 100.0, 0.0, 3000.0).unit("N/m"),
+            param("zeta", r"\zeta", 0.7, 0.05, 2.0),
+            param("wn_in", r"\omega_{\text{in}}", 20.0, 2.0, 60.0).log().unit("rad/s"),
+        ],
+        telemetry: &[("xv", 2), ("xv_dot", 2), ("fext", 2), ("x", 2)],
+    },
+    Spec {
+        key: "lqr",
+        name: "LQR",
+        family: "optimal",
+        params: &[
+            param("qx", "Q_{x}", 10.0, 0.1, 1000.0).log().redesign(),
+            param("qv", r"Q_{\dot x}", 1.0, 0.01, 100.0).log().redesign(),
+            param("r", "R", 1.0, 0.001, 100.0).log().redesign(),
+        ],
+        telemetry: &[("k", N * 2 * N), ("cost", 1)],
+    },
+    Spec {
+        key: "mpc",
+        name: "Model predictive (MPC)",
+        family: "optimal",
+        params: &[
+            param("horizon", "N", 25.0, 5.0, 60.0).redesign(),
+            param("step", r"\Delta t", 0.02, 0.005, 0.1).unit("s").redesign(),
+            param("qx", "Q_{x}", 10.0, 0.1, 1000.0).log().redesign(),
+            param("qv", r"Q_{\dot x}", 1.0, 0.01, 100.0).log().redesign(),
+            param("r", "R", 1.0, 0.001, 100.0).log().redesign(),
+            param("iters", r"i_{\max}", 80.0, 5.0, 400.0).log(),
+        ],
+        telemetry: &[
+            ("plan", 60),
+            ("predicted", 60),
+            ("cost", 1),
+            ("iterations", 1),
+            ("active", 1),
+            ("size", 1),
+        ],
+    },
+    Spec {
+        key: "swing_up",
+        name: "Energy swing-up",
+        family: "underactuated",
+        params: &[
+            param("ke", "k_{E}", 12.0, 0.0, 40.0),
+            param("kc", "k_{c}", 2.0, 0.0, 10.0),
+            param("kv", "k_{v}", 2.5, 0.0, 10.0),
+            param("amax", r"a_{\max}", 12.0, 1.0, 40.0),
+        ],
+        telemetry: &[("energy", 1), ("energy_ref", 1)],
+    },
+];
+
+/// Writes a controller's telemetry fields by name into its slot of the snapshot.
+#[derive(Debug)]
+pub struct Telemetry<'a> {
+    spec: &'static Spec,
+    buf: &'a mut [f64],
+}
+
+impl<'a> Telemetry<'a> {
+    #[must_use]
+    pub fn new(kind: Kind, buf: &'a mut [f64]) -> Self {
+        Self { spec: kind.spec(), buf }
     }
 
-    fn advance_reference(&mut self, model: &mut Model, dt: f64) {
-        let n = model.n;
-        let use_ik = self.ik && model.has_tool() && self.ct_ok;
-        if use_ik {
-            self.ik_step(model);
-        }
-        let wn = self.ref_wn;
-        for i in 0..n {
-            let goal = if use_ik { self.ik_goal[i] } else { self.q_star[i] };
-            // the 2π-equivalent goal closest to the reference (no needless full turns)
-            let goal = self.q_ref[i] + Self::error(model, i, self.q_ref[i], goal);
-            self.qdd_ref[i] = wn * wn * (goal - self.q_ref[i]) - 2.0 * wn * self.qd_ref[i];
-            self.qd_ref[i] += self.qdd_ref[i] * dt;
-            self.q_ref[i] += self.qd_ref[i] * dt;
-        }
-    }
-
-    /// Returns u (actuator space) for the given mode.
-    pub fn update(&mut self, mode: u32, model: &mut Model, ctx: &Ctx<'_>) -> VecN {
-        let (n, nu) = (model.n, model.nu);
-        let (q, qd, t) = (ctx.q, ctx.qd, ctx.terms);
-        if !self.initialised {
-            self.sync(q);
-        }
-        self.advance_reference(model, ctx.dt);
-
-        // energy relative to the target (passive motion for open chains, total with loops)
-        let mut en = [0.0; 2];
-        model.energy.eval(q, qd, &mut en);
-        let ke = if model.closed() {
-            en[0]
-        } else {
-            let un = &model.unactuated;
-            un.iter()
-                .flat_map(|&i| un.iter().map(move |&j| (i, j)))
-                .map(|(i, j)| 0.5 * t.m[i * n + j] * qd[i] * qd[j])
-                .sum()
+    pub fn put(&mut self, name: &str, v: &[f64]) {
+        let Some((off, len)) = self.spec.telemetry_field(name) else {
+            debug_assert!(false, "unknown telemetry field {name}");
+            return;
         };
-        self.e_u = ke + en[1] - self.v_target;
-
-        let e: VecN =
-            core::array::from_fn(|i| if i < n { Self::error(model, i, q[i], self.q_ref[i]) } else { 0.0 });
-        let ed: VecN = core::array::from_fn(|i| if i < n { self.qd_ref[i] - qd[i] } else { 0.0 });
-        let mut u = [0.0; MAXN];
-        self.phase = PHASE_IDLE;
-        match mode {
-            PD | PD_GRAVITY => {
-                for (a, &i) in model.actuated.iter().enumerate() {
-                    u[a] = self.kp[i] * e[i] + self.kd[i] * ed[i];
-                }
-                if mode == PD_GRAVITY {
-                    let mut dv = [0.0; MAXN];
-                    model.gravity.eval(q, qd, &mut dv);
-                    let (ug, _) = inverse_dynamics(model, ctx.k, &dv);
-                    for a in 0..nu {
-                        u[a] += ug[a];
-                    }
-                }
-            }
-            COMPUTED_TORQUE if self.ct_ok => {
-                // task: q̈_a = v_a on the actuated coordinates; with loops the rest follows from A q̈ + Ȧ q̇ = 0
-                let (kp, kv) = (self.ct_wn * self.ct_wn, 2.0 * self.ct_wn);
-                let v: VecN = core::array::from_fn(|i| self.qdd_ref[i] + kv * ed[i] + kp * e[i]);
-                let m = ctx.k.map_or(0, |k| k.m);
-                let mut g = [0.0; MAXK * MAXN];
-                let mut b = [0.0; MAXK];
-                if let Some(k) = ctx.k {
-                    g[..m * n].copy_from_slice(&k.a[..m * n]);
-                    for r in 0..m {
-                        b[r] = -k.adq[r];
-                    }
-                }
-                for (a, &i) in model.actuated.iter().enumerate() {
-                    g[(m + a) * n + i] = 1.0;
-                    b[m + a] = v[i];
-                }
-                let (x, _) = lstsq(m + nu, n, &g, &b);
-                let qdd: VecN = core::array::from_fn(|i| x[i]);
-                let mqdd = mat_vec(n, &t.m, &qdd);
-                let h = t.h(n, qd);
-                let rhs: VecN = core::array::from_fn(|i| mqdd[i] + h[i]);
-                (u, _) = inverse_dynamics(model, ctx.k, &rhs);
-            }
-            LQR if self.lqr.is_some() => {
-                self.lqr_law(model, q, qd, &mut u);
-                self.phase = PHASE_BALANCE;
-            }
-            SWING_UP if nu > 0 && !self.ct_ok => self.swing_up(model, ctx, &mut u),
-            _ => {}
-        }
-        u
+        let k = v.len().min(len);
+        self.buf[off..off + k].copy_from_slice(&v[..k]);
     }
+}
 
-    fn swing_up(&mut self, model: &Model, ctx: &Ctx<'_>, u: &mut VecN) {
-        let (q, qd) = (ctx.q, ctx.qd);
-        let watched: Vec<usize> =
-            if model.closed() { (0..model.n).collect() } else { model.unactuated.clone() };
-        let err = |i: usize| Self::error(model, i, q[i], self.q_star[i]).abs();
-        let near = watched.iter().all(|&i| err(i) < 0.35 && qd[i].abs() < 4.0);
-        let far = watched.iter().any(|&i| err(i) > 0.7);
-        if self.phase == PHASE_BALANCE && far || self.phase != PHASE_BALANCE && !near {
-            self.phase = PHASE_SWING;
-        } else if near && self.lqr.is_some() {
-            self.phase = PHASE_BALANCE;
-        }
-        if self.phase == PHASE_BALANCE {
-            self.lqr_law(model, q, qd, u);
-        } else {
-            self.pump(model, ctx, u);
-        }
+/// Telemetry slots must fit this many values.
+pub const TELEMETRY_LEN: usize = 160;
+
+/// JSON description of every controller (for the browser).
+#[must_use]
+pub fn specs_json() -> String {
+    let mut out = String::from("[");
+    for (i, s) in SPECS.iter().enumerate() {
+        let params: Vec<String> = s
+            .params
+            .iter()
+            .map(|p| {
+                format!(
+                    "{{\"key\":\"{}\",\"tex\":\"{}\",\"default\":{},\"min\":{},\"max\":{},\"log\":{},\"unit\":\"{}\"}}",
+                    p.key,
+                    p.tex.replace('\\', "\\\\"),
+                    p.default,
+                    p.min,
+                    p.max,
+                    p.log,
+                    p.unit
+                )
+            })
+            .collect();
+        let mut off = 0;
+        let tele: Vec<String> = s
+            .telemetry
+            .iter()
+            .map(|(k, len)| {
+                let e = format!("\"{k}\":[{off},{len}]");
+                off += len;
+                e
+            })
+            .collect();
+        let _ = write!(
+            out,
+            "{}{{\"id\":{i},\"key\":\"{}\",\"name\":\"{}\",\"family\":\"{}\",\"params\":[{}],\"telemetry\":{{{}}}}}",
+            if i > 0 { "," } else { "" },
+            s.key,
+            s.name,
+            s.family,
+            params.join(","),
+            tele.join(",")
+        );
     }
+    out.push(']');
+    out
+}
 
-    /// Energy pumping: choose the actuated acceleration v so the power the actuated motion feeds into the
-    /// passive coordinates, −q̇_uᵀ M_ua v, drives E → E*; then realise v by collocated partial feedback
-    /// linearisation, generalised to loops: solve
-    /// `M q̈ + h + Aᵀλ = B u`, `A q̈ + Ȧ q̇ = 0`, `q̈_a = v` for (q̈_u, λ, u).
-    fn pump(&self, model: &Model, ctx: &Ctx<'_>, u: &mut VecN) {
-        let (q, qd, t) = (ctx.q, ctx.qd, ctx.terms);
-        let n = model.n;
-        let (act, un) = (&model.actuated, &model.unactuated);
-        let at_rest = qd[..n].iter().all(|v| v.abs() < 1e-3);
-        let mut v = [0.0; MAXN];
-        for (a, &i) in act.iter().enumerate() {
-            let w: f64 = -un.iter().map(|&k| t.m[k * n + i] * qd[k]).sum::<f64>();
-            let pump = self.k_e * (-self.e_u / self.e_ref) * w / self.coupling;
-            let centre = self.k_c * Self::error(model, i, q[i], self.q_star[i]) - self.k_v * qd[i];
-            let mut va = pump + centre;
-            if at_rest && self.e_u < -0.5 * self.e_ref {
-                va += 0.5 * self.a_max; // break the symmetry when resting at the bottom
-            }
-            v[a] = va.clamp(-self.a_max, self.a_max);
-        }
-        // unknowns x = (q̈_u, λ, u); rows: n dynamics + m constraints
-        let h = t.h(n, qd);
-        let m = ctx.k.map_or(0, |k| k.m);
-        let (nuu, nu) = (un.len(), act.len());
-        let (rows, cols) = (n + m, nuu + m + nu);
-        let mut g = [0.0; MAXK * (MAXN + MAXK)];
-        let mut rhs = [0.0; MAXK];
-        let a_of = |r: usize, j: usize| ctx.k.map_or(0.0, |k| k.a[r * n + j]);
-        for i in 0..n {
-            for (c, &j) in un.iter().enumerate() {
-                g[i * cols + c] = t.m[i * n + j];
-            }
-            for r in 0..m {
-                g[i * cols + nuu + r] = a_of(r, i);
-            }
-            for a in 0..nu {
-                g[i * cols + nuu + m + a] = -model.b[i * nu + a];
-            }
-            rhs[i] = -h[i] - act.iter().enumerate().map(|(a, &j)| t.m[i * n + j] * v[a]).sum::<f64>();
-        }
-        for r in 0..m {
-            for (c, &j) in un.iter().enumerate() {
-                g[(n + r) * cols + c] = a_of(r, j);
-            }
-            rhs[n + r] = -ctx.k.map_or(0.0, |k| k.adq[r])
-                - act.iter().enumerate().map(|(a, &j)| a_of(r, j) * v[a]).sum::<f64>();
-        }
-        let (x, _) = lstsq(rows, cols, &g, &rhs);
-        for a in 0..nu {
-            u[a] = x[nuu + m + a];
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_is_consistent() {
+        for (i, k) in Kind::ALL.iter().enumerate() {
+            assert_eq!(*k as usize, i);
+            let len: usize = k.spec().telemetry.iter().map(|(_, l)| l).sum();
+            assert!(len <= TELEMETRY_LEN, "{} telemetry too long ({len})", k.spec().key);
         }
     }
 }

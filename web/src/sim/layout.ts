@@ -8,7 +8,7 @@ export const FIELDS = [
   'STEPS',
   'NQ',
   'NU',
-  'MODE',
+  'KIND',
   'PHASE',
   'Q',
   'QD',
@@ -36,29 +36,41 @@ export const FIELDS = [
   'JS',
   'LIN_A',
   'LIN_B',
-  'LQR_K',
   'U_FF',
-  'LQR_OK',
-  'LQR_DIM',
   'EQ_RESIDUAL',
-  'E_U',
-  'E_REF',
+  'DOF',
+  'CT_OK',
   'TARGET',
-  'IK',
+  'USE_TOOL',
   'REACHABLE',
   'Q_TARGET',
   'Q_REF',
   'QD_REF',
-  'KP',
-  'KD',
+  'X_REF',
+  'FEXT',
+  'MANIPULABILITY',
   'UMAX',
-  'CT_WN',
-  'CT_OK',
   'NC',
   'NCON',
   'CONSTRAINT',
   'LAMBDA',
   'AT_LAMBDA',
+  'SLOT',
+] as const;
+
+/** Fields of one slot block (primary and shadows). */
+export const SLOT_FIELDS = [
+  'KIND',
+  'PHASE',
+  'ERR_Q',
+  'ERR_X',
+  'EFFORT',
+  'ENERGY',
+  'Q',
+  'U',
+  'FRAMES',
+  'TOOL',
+  'TELEMETRY',
 ] as const;
 
 export const FLAGS = [
@@ -66,56 +78,121 @@ export const FLAGS = [
   'Umax',
   'TargetX',
   'TargetY',
-  'Ik',
+  'UseTool',
   'RefWn',
-  'CtWn',
-  'PdWn',
-  'LqrQx',
-  'LqrQv',
-  'LqrR',
-  'SwingGain',
+  'PushX',
+  'PushY',
+  'PushOn',
+  'PushK',
+  'Posture',
+  'Manipulability',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];
+export type SlotField = (typeof SLOT_FIELDS)[number];
 export type Flag = (typeof FLAGS)[number];
 
 export interface Layout {
   len: number;
   maxn: number;
+  /** Simulation slots: the primary (0) and the shadows. */
+  slots: number;
+  slotLen: number;
   off: Record<Field, number>;
+  slot: Record<SlotField, number>;
   flag: Record<Flag, number>;
 }
 
 interface RawLayout {
   len: number;
   maxn: number;
+  slots: number;
+  slotLen: number;
   fields: Record<string, [number, number]>;
+  slot: Record<string, [number, number]>;
   flags: Record<string, number>;
+}
+
+function pick<K extends string>(
+  keys: readonly K[],
+  raw: Record<string, unknown>,
+  what: string,
+  at: (v: never) => number,
+) {
+  const out = {} as Record<K, number>;
+  for (const k of keys) {
+    const v = raw[k];
+    if (v === undefined) throw new Error(`snapshot layout is missing ${what} ${k} — rebuild the wasm core`);
+    out[k] = at(v as never);
+  }
+  return out;
 }
 
 export function parseLayout(json: string): Layout {
   const raw = JSON.parse(json) as RawLayout;
-  const off = {} as Record<Field, number>;
-  for (const f of FIELDS) {
-    const entry = raw.fields[f];
-    if (!entry) throw new Error(`snapshot layout is missing field ${f} — rebuild the wasm core`);
-    off[f] = entry[0];
+  const first = (e: [number, number]) => e[0];
+  return {
+    len: raw.len,
+    maxn: raw.maxn,
+    slots: raw.slots,
+    slotLen: raw.slotLen,
+    off: pick(FIELDS, raw.fields, 'field', first),
+    slot: pick(SLOT_FIELDS, raw.slot, 'slot field', first),
+    flag: pick(FLAGS, raw.flags, 'flag', (v: number) => v),
+  };
+}
+
+/** One slot's block of the snapshot: its controller, errors, pose and telemetry. */
+export class SlotView {
+  constructor(
+    private readonly snap: Snapshot,
+    readonly index: number,
+  ) {}
+
+  private get base(): number {
+    const l = this.snap.layout;
+    return l.off.SLOT + this.index * l.slotLen;
   }
-  const flag = {} as Record<Flag, number>;
-  for (const f of FLAGS) {
-    const id = raw.flags[f];
-    if (id === undefined) throw new Error(`snapshot layout is missing flag ${f} — rebuild the wasm core`);
-    flag[f] = id;
+
+  /** Controller kind, or −1 when the slot is off. */
+  get kind(): number {
+    return this.v('KIND');
   }
-  return { len: raw.len, maxn: raw.maxn, off, flag };
+
+  get on(): boolean {
+    return this.kind >= 0;
+  }
+
+  v(f: SlotField, i = 0): number {
+    return this.snap.data[this.base + this.snap.layout.slot[f] + i] ?? Number.NaN;
+  }
+
+  /** Telemetry value at offset `at` (see the controller's spec). */
+  tele(at: number): number {
+    return this.v('TELEMETRY', at);
+  }
+
+  frame(k: number): [number, number, number] {
+    const o = this.base + this.snap.layout.slot.FRAMES + 3 * k;
+    const d = this.snap.data;
+    return [d[o] ?? 0, d[o + 1] ?? 0, d[o + 2] ?? 0];
+  }
 }
 
 /** Read helpers over the most recent snapshot. */
 export class Snapshot {
   data: Float64Array;
 
+  readonly slots: SlotView[];
+
   constructor(readonly layout: Layout) {
     this.data = new Float64Array(layout.len);
+    this.slots = Array.from({ length: layout.slots }, (_, i) => new SlotView(this, i));
+  }
+
+  /** The slot running controller `kind`, if any (the primary first). */
+  slotOf(kind: number): SlotView | undefined {
+    return this.slots.find((s) => s.kind === kind);
   }
 
   get n(): number {

@@ -1,21 +1,26 @@
-//! Layout of the flat `f64` snapshot shared with JavaScript, and the ids of tunable flags.
+//! Layout of the flat `f64` snapshot shared with JavaScript, and the ids of the global flags.
 //!
-//! This file is the single source of truth: the browser receives it as JSON (`layout_json`).
+//! The snapshot holds the full state of the primary simulation, then one compact block per slot (primary
+//! and shadows) with that slot's controller telemetry. This file is the single source of truth: the browser
+//! receives it as JSON (`layout_json`).
 
 use crate::MAXN;
+use crate::control::TELEMETRY_LEN;
+use crate::mech::{MAXB, MAXM};
 
 /// Frames in a snapshot: the spatial frame, one per body and the tool.
-pub const MAXF: usize = crate::mech::MAXB + 2;
+pub const MAXF: usize = MAXB + 2;
+/// Simulation slots: the primary and up to four shadows.
+pub const SLOTS: usize = 5;
 
 macro_rules! layout {
-    ($($(#[$doc:meta])* $name:ident : $len:expr),* $(,)?) => {
-        /// Offsets into the snapshot buffer.
-        pub mod off {
+    ($module:ident, $fields:ident; $($(#[$doc:meta])* $name:ident : $len:expr),* $(,)?) => {
+        pub mod $module {
             use super::*;
             layout!(@acc 0usize; $($(#[$doc])* $name : $len),*);
         }
         /// `(name, offset, length)` of every field.
-        pub const FIELDS: &[(&str, usize, usize)] = &[$((stringify!($name), off::$name, $len)),*];
+        pub const $fields: &[(&str, usize, usize)] = &[$((stringify!($name), $module::$name, $len)),*];
     };
     (@acc $o:expr; $(#[$doc:meta])* $name:ident : $len:expr $(, $(#[$rd:meta])* $rest:ident : $rl:expr)*) => {
         $(#[$doc])*
@@ -23,25 +28,21 @@ macro_rules! layout {
         layout!(@acc $o + $len; $($(#[$rd])* $rest : $rl),*);
     };
     (@acc $o:expr;) => {
-        /// Total length of the snapshot.
+        /// Total length.
         pub const LEN: usize = $o;
     };
 }
 
-layout! {
-    TIME: 1,
-    STEPS: 1,
-    NQ: 1,
-    NU: 1,
-    MODE: 1,
-    /// Controller phase (0 idle, 1 swing-up, 2 LQR catch / balance).
-    PHASE: 1,
+// Fields on one line are written together by `Sim::publish` (see the adjacency test below).
+layout! { off, FIELDS;
+    TIME: 1, STEPS: 1, NQ: 1, NU: 1, KIND: 1, PHASE: 1,
     Q: MAXN,
     QD: MAXN,
     QDD: MAXN,
     U: MAXN,
     /// Total generalised force τ = B u + τ_ext.
     TAU: MAXN,
+    /// Environment forces: end stops and the push on the tool, Jᵀ F_ext.
     TAU_EXT: MAXN,
     M: MAXN * MAXN,
     C: MAXN * MAXN,
@@ -50,79 +51,69 @@ layout! {
     MQDD: MAXN,
     CQD: MAXN,
     MDOT: MAXN * MAXN,
-    /// [T, V, T + V]
-    ENERGY: 3,
-    /// q̇ᵀ τ (power delivered by actuators and the environment).
-    POWER: 1,
-    /// q̇ᵀ diag(β) q̇ (power dissipated by friction).
-    DISSIPATION: 1,
-    /// max |(Ṁ − 2C) + (Ṁ − 2C)ᵀ| — zero by MLS Lemma 4.2.
-    SKEW: 1,
-    DET_M: 1,
-    /// Eigenvalues of M, ascending.
+    /// [T, V, T + V], q̇ᵀτ, q̇ᵀdiag(β)q̇, max |(Ṁ − 2C) + (Ṁ − 2C)ᵀ|, det M
+    ENERGY: 3, POWER: 1, DISSIPATION: 1, SKEW: 1, DET_M: 1,
     EIG_M: MAXN,
-    /// (x, y, φ) of the frames s, 1 … n, t.
+    /// (x, y, φ) of the frames s, 1 … nb, t.
     FRAMES: 3 * MAXF,
-    COMS: 2 * crate::mech::MAXB,
+    COMS: 2 * MAXB,
     TOOL_P: 2,
     JP: 2 * MAXN,
     JS: 3 * MAXN,
-    /// LQR linearisation about q*: A (2n × 2n), B (2n × nu), gain K (nu × 2n), feed-forward u*.
+    /// Linearisation about q* in tangent coordinates (2r × 2r and 2r × nu), r = DOF.
     LIN_A: 4 * MAXN * MAXN,
     LIN_B: 2 * MAXN * MAXN,
-    LQR_K: 2 * MAXN * MAXN,
+    /// Feed-forward u* holding q*, and the equilibrium residual ‖B u* − Aᵀλ − ∂V/∂q‖.
     U_FF: MAXN,
-    LQR_OK: 1,
-    /// Dimension r of the tangent coordinates ξ the LQR works in (n for open chains, n − rank A with loops).
-    LQR_DIM: 1,
-    /// max |∂V/∂q_u(q*)| over unactuated joints (0 ⇔ q* is an equilibrium).
-    EQ_RESIDUAL: 1,
-    /// Energy of the unactuated motion relative to the target, and its scale.
-    E_U: 1,
-    E_REF: 1,
-    TARGET: 2,
-    IK: 1,
-    REACHABLE: 1,
+    EQ_RESIDUAL: 1, DOF: 1, CT_OK: 1,
+    /// Tool target, following it (1/0), and whether IK reaches it.
+    TARGET: 2, USE_TOOL: 1, REACHABLE: 1,
     Q_TARGET: MAXN,
     Q_REF: MAXN,
     QD_REF: MAXN,
-    KP: MAXN,
-    KD: MAXN,
-    UMAX: 1,
-    CT_WN: 1,
-    /// 1 when computed torque can realise any acceleration on the constraint manifold.
-    CT_OK: 1,
-    /// Loop closures: count, max |φ(q)| and the multipliers λ; Aᵀλ is the constraint generalised force.
-    NC: 1,
-    NCON: 1,
-    CONSTRAINT: 1,
-    LAMBDA: crate::mech::MAXM,
+    /// Task reference x_d and the external force on the tool.
+    X_REF: 2, FEXT: 2, MANIPULABILITY: 1, UMAX: 1,
+    /// Loop closures, constraint equations, max |φ(q)|.
+    NC: 1, NCON: 1, CONSTRAINT: 1,
+    LAMBDA: MAXM,
     AT_LAMBDA: MAXN,
+    /// One block per slot (see `slot`).
+    SLOT: SLOTS * slot::LEN,
 }
 
-/// Ids accepted by `set_flag`.
+layout! { slot, SLOT_FIELDS;
+    /// Controller kind (−1 when the slot is off), phase, ‖q − q*‖, ‖x − x_d‖, ‖u‖.
+    KIND: 1, PHASE: 1, ERR_Q: 1, ERR_X: 1, EFFORT: 1,
+    ENERGY: 3,
+    Q: MAXN,
+    U: MAXN,
+    FRAMES: 3 * MAXF,
+    TOOL: 2,
+    TELEMETRY: TELEMETRY_LEN,
+}
+
+/// Ids accepted by `set_flag` (global settings, applied to every slot).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Flag {
     /// 0 disables the C q̇ term in the simulation (non-physical "what-if").
     Coriolis = 0,
-    /// Actuator saturation |u_i| ≤ umax.
+    /// Actuator saturation |uᵢ| ≤ umax.
     Umax = 1,
     TargetX = 2,
     TargetY = 3,
-    /// 1: track the tool target by inverse kinematics; 0: track the joint targets.
-    Ik = 4,
-    /// Natural frequency of the reference filter (rad/s).
+    /// 1: follow the tool target; 0: follow the joint targets q*.
+    UseTool = 4,
+    /// Natural frequency of the reference filters (rad/s).
     RefWn = 5,
-    /// Closed-loop natural frequency of computed torque (rad/s).
-    CtWn = 6,
-    /// Natural frequency used to scale the PD gains (rad/s).
-    PdWn = 7,
-    LqrQx = 8,
-    LqrQv = 9,
-    LqrR = 10,
-    /// Energy-pumping gain of the swing-up.
-    SwingGain = 11,
+    /// Push on the tool: pointer position, on/off, stiffness (N/m).
+    PushX = 6,
+    PushY = 7,
+    PushOn = 8,
+    PushK = 9,
+    /// Secondary goals in the task null space.
+    Posture = 10,
+    Manipulability = 11,
 }
 
 impl Flag {
@@ -131,14 +122,14 @@ impl Flag {
         Self::Umax,
         Self::TargetX,
         Self::TargetY,
-        Self::Ik,
+        Self::UseTool,
         Self::RefWn,
-        Self::CtWn,
-        Self::PdWn,
-        Self::LqrQx,
-        Self::LqrQv,
-        Self::LqrR,
-        Self::SwingGain,
+        Self::PushX,
+        Self::PushY,
+        Self::PushOn,
+        Self::PushK,
+        Self::Posture,
+        Self::Manipulability,
     ];
 
     #[must_use]
@@ -147,41 +138,48 @@ impl Flag {
     }
 }
 
+fn fields_json(fields: &[(&str, usize, usize)]) -> String {
+    fields.iter().map(|(n, o, l)| format!("\"{n}\":[{o},{l}]")).collect::<Vec<_>>().join(",")
+}
+
 /// JSON description of the layout and flags for the JavaScript side.
 #[must_use]
 pub fn json() -> String {
-    let fields: Vec<String> = FIELDS.iter().map(|(n, o, l)| format!("\"{n}\":[{o},{l}]")).collect();
     let flags: Vec<String> = Flag::ALL.iter().map(|f| format!("\"{f:?}\":{}", *f as u32)).collect();
     format!(
-        "{{\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"fields\":{{{}}},\"flags\":{{{}}}}}",
+        "{{\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"slots\":{SLOTS},\"slotLen\":{},\"fields\":{{{}}},\"slot\":{{{}}},\"flags\":{{{}}}}}",
         off::LEN,
-        fields.join(","),
+        slot::LEN,
+        fields_json(FIELDS),
+        fields_json(SLOT_FIELDS),
         flags.join(",")
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::off::*;
+    use super::slot;
+
     #[test]
     fn grouped_fields_are_adjacent() {
-        use super::off::*;
-        // `Sim::publish` writes these groups with a single copy each
-        assert_eq!([STEPS, NQ, NU, MODE, PHASE], [TIME + 1, TIME + 2, TIME + 3, TIME + 4, TIME + 5]);
+        assert_eq!([STEPS, NQ, NU, KIND, PHASE], [TIME + 1, TIME + 2, TIME + 3, TIME + 4, TIME + 5]);
         assert_eq!([POWER, DISSIPATION, SKEW, DET_M], [ENERGY + 3, ENERGY + 4, ENERGY + 5, ENERGY + 6]);
-        assert_eq!([E_U, E_REF], [EQ_RESIDUAL + 1, EQ_RESIDUAL + 2]);
-        assert_eq!([IK, REACHABLE], [TARGET + 2, TARGET + 3]);
-        assert_eq!([CT_WN, CT_OK], [UMAX + 1, UMAX + 2]);
+        assert_eq!([DOF, CT_OK], [EQ_RESIDUAL + 1, EQ_RESIDUAL + 2]);
+        assert_eq!([USE_TOOL, REACHABLE], [TARGET + 2, TARGET + 3]);
+        assert_eq!([FEXT, MANIPULABILITY, UMAX], [X_REF + 2, X_REF + 4, X_REF + 5]);
         assert_eq!([NCON, CONSTRAINT], [NC + 1, NC + 2]);
-        assert_eq!(LQR_DIM, LQR_OK + 1);
+        assert_eq!([slot::PHASE, slot::ERR_Q, slot::ERR_X, slot::EFFORT], [1, 2, 3, 4]);
     }
 
     #[test]
     fn offsets_are_contiguous() {
-        let mut expect = 0;
-        for (_, o, l) in super::FIELDS {
-            assert_eq!(*o, expect);
-            expect += l;
+        for fields in [super::FIELDS, super::SLOT_FIELDS] {
+            let mut expect = 0;
+            for (_, o, l) in fields {
+                assert_eq!(*o, expect);
+                expect += l;
+            }
         }
-        assert_eq!(expect, super::off::LEN);
     }
 }

@@ -70,6 +70,7 @@ export class RobotView {
   private readonly trail = new Trail(palette.accent, 600);
   private readonly frames: THREE.Group[] = [];
   private readonly gArrow: Arrow;
+  private readonly spring: THREE.Line;
   private readonly coord: number[];
   private readonly actuator: number[];
   showFrames = true;
@@ -235,6 +236,14 @@ export class RobotView {
     this.toolTarget.position.z = 0.4;
     root.add(this.toolTarget, this.trail);
 
+    // the push on the tool: a spring from the tool to the pointer
+    const springGeo = new THREE.BufferGeometry();
+    springGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    this.spring = new THREE.Line(springGeo, new THREE.LineBasicMaterial({ color: palette.input }));
+    this.spring.frustumCulled = false;
+    this.spring.visible = false;
+    root.add(this.spring);
+
     this.gArrow = new Arrow(palette.gravity, 0.01, 0.05);
     this.gArrow.angle = -Math.PI / 2;
     this.gArrow.set(0.35);
@@ -341,7 +350,18 @@ export class RobotView {
     return compose(snap.frame(b.parent + 1), [b.mountS * lp, 0, b.mountAngle]);
   }
 
-  update(snap: Snapshot, params: number[], ik: boolean, running = true): void {
+  /** Show the push spring from the tool to `at` (world), or hide it. */
+  push(at: [number, number] | null, snap: Snapshot): void {
+    this.spring.visible = at !== null;
+    if (!at) return;
+    const pos = this.spring.geometry.getAttribute('position') as THREE.BufferAttribute;
+    pos.setXYZ(0, snap.v('TOOL_P'), snap.v('TOOL_P', 1), 0.45);
+    pos.setXYZ(1, at[0], at[1], 0.45);
+    pos.needsUpdate = true;
+  }
+
+  update(snap: Snapshot, params: number[], running = true): void {
+    const ik = running && snap.v('USE_TOOL') !== 0;
     const nb = this.mech.bodies.length;
     const umax = snap.v('UMAX') || 1;
     this.mech.bodies.forEach((spec, i) => {
@@ -392,7 +412,7 @@ export class RobotView {
       const tgt = this.targets.get(body);
       const j = this.coord[body]!;
       if (tgt && j >= 0) {
-        tgt.visible = spec.actuated && snap.v('MODE') !== 0;
+        tgt.visible = spec.actuated && snap.v('KIND') !== 0;
         tgt.position.set(snap.v('Q_TARGET', j), spec.shape === 'block' ? -BLOCK.h / 2 - 0.02 : 0.08, 0.3);
       }
     }

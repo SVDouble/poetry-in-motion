@@ -136,7 +136,7 @@ export class Plots {
     const h = this.host.clientHeight - Number.parseFloat(cs.paddingTop) - Number.parseFloat(cs.paddingBottom);
     const cols = w > 900 ? n : w > 560 ? Math.min(2, n) : 1;
     const gap = 10;
-    const pw = Math.floor((w - gap * (cols - 1)) / cols);
+    const pw = Math.floor((w - gap * (cols - 1)) / cols) - 1; // 1 px slack: sub-pixel widths must not wrap
     const ph = cols === n ? h : 150;
     for (const p of this.plots) p.resize(pw, Math.max(110, ph - 44));
   }

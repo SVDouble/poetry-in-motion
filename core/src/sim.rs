@@ -1,17 +1,22 @@
-//! Fixed-step simulator for any built mechanism: control (zero-order hold) + RK4 + snapshot publication.
+//! One simulation: a mechanism, its state, a plan and one controller. Fixed-step control (zero-order hold)
+//! and RK4 integration; publishes the full snapshot (primary) or a compact slot block (any slot).
 
 use crate::MAXN;
-use crate::control::{Ctrl, Ctx};
+use crate::control::{Controller, Ctx, Kind, Telemetry};
 use crate::dynamics::{self, MatN, Terms, VecM, VecN, mat_vec, sym_eigenvalues};
-use crate::layout::{Flag, MAXF, off};
+use crate::layout::{Flag, MAXF, off, slot};
 use crate::mech::MAXM;
 use crate::model::Model;
+use crate::plan::{Plan, Tool, manipulability};
+
+/// Largest force of the push on the tool (N): a hand, not a winch.
+pub const PUSH_MAX: f64 = 30.0;
 
 /// End-stop stiffness (N/m) and damping (N s/m) of prismatic joints with limits.
 const STOP_K: f64 = 2.0e4;
 const STOP_C: f64 = 300.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Sim {
     pub model: Model,
     pub p: Vec<f64>,
@@ -19,53 +24,83 @@ pub struct Sim {
     pub qd: VecN,
     /// Manual (user) input, added to the controller output in actuator space.
     pub u_manual: VecN,
-    pub mode: u32,
     pub coriolis: bool,
     pub umax: f64,
     pub dt: f64,
     pub t: f64,
     pub steps: u64,
-    pub ctrl: Ctrl,
+    pub plan: Plan,
+    pub kind: Kind,
+    ctrl: Box<dyn Controller>,
     u: VecN,
     tau_u: VecN,
     tau_ext: VecN,
     lambda: VecM,
-    dirty: bool,
+    tool: Option<Tool>,
+    plan_dirty: bool,
+    ctrl_dirty: bool,
     aux: Vec<f64>,
-    out: Box<[f64]>,
 }
 
 impl Sim {
     #[must_use]
-    pub fn new(model: Model) -> Self {
+    pub fn new(model: Model, kind: Kind) -> Self {
         let mut sim = Self {
-            ctrl: Ctrl::new(&model),
+            plan: Plan::new(&model),
             p: model.defaults.clone(),
-            aux: vec![0.0; model.aux_off.len],
             model,
             q: [0.0; MAXN],
             qd: [0.0; MAXN],
             u_manual: [0.0; MAXN],
-            mode: 0,
             coriolis: true,
-            umax: 80.0,
+            umax: 120.0,
             dt: 1e-3,
             t: 0.0,
             steps: 0,
+            kind,
+            ctrl: kind.create(),
             u: [0.0; MAXN],
             tau_u: [0.0; MAXN],
             tau_ext: [0.0; MAXN],
             lambda: [0.0; MAXM],
-            dirty: true,
-            out: vec![0.0; off::LEN].into_boxed_slice(),
+            tool: None,
+            plan_dirty: true,
+            ctrl_dirty: true,
+            aux: Vec::new(),
         };
+        sim.aux = vec![0.0; sim.model.aux_off.len];
         sim.reset();
+        sim.refresh_plan();
         sim
+    }
+
+    /// An independent copy with the same model, settings and state, running controller `kind`.
+    #[must_use]
+    pub fn fork(&self, kind: Kind) -> Self {
+        let mut s = Self::new(self.model.clone(), kind);
+        s.p.clone_from(&self.p);
+        s.model.set_params(&s.p);
+        (s.q, s.qd, s.t, s.steps) = (self.q, self.qd, self.t, self.steps);
+        (s.coriolis, s.umax, s.dt, s.u_manual) = (self.coriolis, self.umax, self.dt, self.u_manual);
+        let plan = &self.plan;
+        (s.plan.q_target, s.plan.tool_target, s.plan.use_tool) =
+            (plan.q_target, plan.tool_target, plan.use_tool);
+        (s.plan.ref_wn, s.plan.push, s.plan.push_k, s.plan.goals) =
+            (plan.ref_wn, plan.push, plan.push_k, plan.goals);
+        s.settle();
+        s
     }
 
     #[must_use]
     pub fn n(&self) -> usize {
         self.model.n
+    }
+
+    pub fn set_controller(&mut self, kind: Kind) {
+        self.kind = kind;
+        self.ctrl = kind.create();
+        self.ctrl_dirty = true;
+        self.settle();
     }
 
     pub fn reset(&mut self) {
@@ -77,10 +112,11 @@ impl Sim {
         self.settle();
     }
 
-    /// Re-project onto the constraint manifold and restart the controller reference.
+    /// Re-project onto the constraint manifold and restart references and controller state.
     fn settle(&mut self) {
         dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
-        self.ctrl.sync(&self.q[..self.model.n]);
+        self.plan.sync(&mut self.model, &self.q);
+        self.ctrl.reset();
     }
 
     pub fn set_state(&mut self, i: usize, q: f64, qd: f64) {
@@ -93,7 +129,7 @@ impl Sim {
     pub fn kick(&mut self, i: usize, dqd: f64) {
         if i < self.n() {
             self.qd[i] += dqd;
-            self.settle();
+            dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
         }
     }
 
@@ -101,49 +137,49 @@ impl Sim {
         if i < self.p.len() && v.is_finite() {
             self.p[i] = v;
             self.model.set_params(&self.p);
-            self.dirty = true;
+            self.plan_dirty = true;
         }
     }
 
     pub fn set_target(&mut self, i: usize, v: f64) {
         if i < self.n() && v.is_finite() {
-            self.ctrl.q_target[i] = v;
-            self.dirty = true;
+            self.plan.q_target[i] = v;
+            self.plan_dirty = true;
         }
     }
 
-    pub fn set_mode(&mut self, mode: u32) {
-        self.mode = mode;
-        self.ctrl.sync(&self.q[..self.n()]);
+    /// The controller's design depends on parameters that changed.
+    pub fn redesign_controller(&mut self) {
+        self.ctrl_dirty = true;
     }
 
     pub fn set_flag(&mut self, flag: Flag, v: f64) {
-        let c = &mut self.ctrl;
-        let mut redesign = |field: &mut f64, v: f64| {
-            *field = v.max(1e-6);
-            self.dirty = true;
-        };
+        let pl = &mut self.plan;
         match flag {
             Flag::Coriolis => self.coriolis = v != 0.0,
             Flag::Umax => self.umax = v.max(0.0),
-            Flag::TargetX => c.tool_target[0] = v,
-            Flag::TargetY => c.tool_target[1] = v,
-            Flag::Ik => {
-                c.ik = v != 0.0;
-                c.ik_goal = c.q_ref;
+            Flag::TargetX => pl.tool_target[0] = v,
+            Flag::TargetY => pl.tool_target[1] = v,
+            Flag::UseTool => {
+                pl.use_tool = v != 0.0;
+                pl.ik_goal = pl.q_ref;
             }
-            Flag::RefWn => c.ref_wn = v.max(0.1),
-            Flag::CtWn => c.ct_wn = v.max(0.1),
-            Flag::PdWn => redesign(&mut c.pd_wn, v),
-            Flag::LqrQx => redesign(&mut c.lqr_qx, v),
-            Flag::LqrQv => redesign(&mut c.lqr_qv, v),
-            Flag::LqrR => redesign(&mut c.lqr_r, v),
-            Flag::SwingGain => c.k_e = v.max(0.0),
+            Flag::RefWn => pl.ref_wn = v.max(0.1),
+            Flag::PushX => pl.push.get_or_insert([0.0; 2])[0] = v,
+            Flag::PushY => pl.push.get_or_insert([0.0; 2])[1] = v,
+            Flag::PushOn => {
+                if v == 0.0 {
+                    pl.push = None;
+                }
+            }
+            Flag::PushK => pl.push_k = v.max(0.0),
+            Flag::Posture => pl.goals.posture = v.max(0.0),
+            Flag::Manipulability => pl.goals.manipulability = v.max(0.0),
         }
     }
 
-    /// Environment forces: stiff spring–damper end stops on limited prismatic joints.
-    fn external(&self, q: &[f64], qd: &[f64]) -> VecN {
+    /// Environment forces: end stops of limited prismatic joints.
+    fn stops(&self, q: &[f64], qd: &[f64]) -> VecN {
         core::array::from_fn(|i| {
             let limit = self.model.limit.get(i).copied().unwrap_or(0.0);
             let pen = q[i].abs() - limit;
@@ -156,37 +192,74 @@ impl Sim {
         })
     }
 
+    /// External force of the push on the tool: a spring–damper from the tool to the pointer, at most
+    /// [`PUSH_MAX`] newtons.
+    fn push_force(&self, tool: &Tool) -> [f64; 2] {
+        let Some(at) = self.plan.push else { return [0.0; 2] };
+        let k = self.plan.push_k;
+        let d = 2.0 * k.sqrt();
+        let f: [f64; 2] = core::array::from_fn(|r| k * (at[r] - tool.p[r]) - d * tool.v[r]);
+        let scale = (PUSH_MAX / f[0].hypot(f[1]).max(1e-12)).min(1.0);
+        f.map(|v| v * scale)
+    }
+
     fn accel(&mut self, q: &VecN, qd: &VecN) -> VecN {
-        let ext = self.external(q, qd);
-        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + ext[i]);
+        let stops = self.stops(q, qd);
+        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
         let (qdd, lambda) = dynamics::accel(&mut self.model, q, qd, &tau, self.coriolis);
         self.lambda = lambda;
         qdd
     }
 
-    fn redesign(&mut self) {
-        if self.dirty {
-            self.ctrl.design(&mut self.model, &self.p, self.dt);
-            self.dirty = false;
+    /// Redesign the plan (equilibrium, linearisation, …) if parameters or targets changed.
+    pub fn refresh_plan(&mut self) {
+        if self.plan_dirty {
+            self.plan.design(&mut self.model, &self.p);
+            self.plan_dirty = false;
+            self.ctrl_dirty = true;
         }
     }
 
-    /// Advance one fixed step: evaluate the controller (zero-order hold) and integrate with RK4.
-    pub fn step(&mut self) {
+    fn redesign(&mut self, params: &[f64]) {
+        self.refresh_plan();
+        if self.ctrl_dirty {
+            self.ctrl.design(&self.plan, &mut self.model, params, self.dt);
+            self.ctrl_dirty = false;
+        }
+    }
+
+    /// Advance one fixed step with the controller's parameters `params`.
+    pub fn step(&mut self, params: &[f64]) {
         let (n, nu) = (self.model.n, self.model.nu);
-        self.redesign();
+        self.redesign(params);
+        self.plan.advance(&mut self.model, self.dt);
         let terms = Terms::eval(&mut self.model.dynamics, n, &self.q, &self.qd);
         let k = dynamics::constraints(&mut self.model, &self.q, &self.qd);
-        let ctx =
-            Ctx { p: &self.p, q: &self.q[..n], qd: &self.qd[..n], terms: &terms, k: k.as_ref(), dt: self.dt };
-        let uc = self.ctrl.update(self.mode, &mut self.model, &ctx);
+        self.tool = Tool::eval(&mut self.model, &self.q, &self.qd);
+        // the push acts through the tool Jacobian: τ_ext = Jᵀ F_ext (held over the step)
+        self.plan.f_ext = self.tool.as_ref().map_or([0.0; 2], |t| self.push_force(t));
+        self.tau_ext = self.tool.as_ref().map_or([0.0; MAXN], |t| {
+            core::array::from_fn(|i| {
+                if i < n { (0..2).map(|r| t.jp[r * n + i] * self.plan.f_ext[r]).sum() } else { 0.0 }
+            })
+        });
+        let ctx = Ctx {
+            q: &self.q[..n],
+            qd: &self.qd[..n],
+            terms: &terms,
+            k: k.as_ref(),
+            tool: self.tool.as_ref(),
+            params,
+            dt: self.dt,
+            umax: self.umax,
+        };
+        let uc = self.ctrl.update(&self.plan, &mut self.model, &ctx);
         for a in 0..nu {
             self.u[a] = (uc[a] + self.u_manual[a]).clamp(-self.umax, self.umax);
         }
         for i in 0..n {
             self.tau_u[i] = (0..nu).map(|a| self.model.b[i * nu + a] * self.u[a]).sum();
         }
-        self.tau_ext = self.external(&self.q, &self.qd);
 
         let (q0, v0, h) = (self.q, self.qd, self.dt);
         let lerp = |base: &VecN, d: &VecN, s: f64| -> VecN { core::array::from_fn(|i| base[i] + s * d[i]) };
@@ -210,12 +283,6 @@ impl Sim {
         self.steps += 1;
     }
 
-    pub fn step_n(&mut self, n: u32) {
-        for _ in 0..n {
-            self.step();
-        }
-    }
-
     /// `[T, V]` at the current state.
     pub fn energy(&mut self) -> [f64; 2] {
         let mut e = [0.0; 2];
@@ -223,19 +290,53 @@ impl Sim {
         e
     }
 
-    #[must_use]
-    pub fn out_ptr(&self) -> *const f64 {
-        self.out.as_ptr()
+    /// Distances to the targets: ‖q − q*‖ (wrapped) and ‖p_tool − x_d‖.
+    fn errors(&self) -> (f64, f64) {
+        let n = self.n();
+        let eq = (0..n)
+            .map(|i| Plan::error(&self.model, i, self.q[i], self.plan.q_star[i]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let goal = if self.plan.use_tool { self.plan.tool_target } else { self.plan.x_star };
+        let ex = self.tool.as_ref().map_or(0.0, |t| (t.p[0] - goal[0]).hypot(t.p[1] - goal[1]));
+        (eq, ex)
     }
 
-    /// Evaluate every displayed quantity at the current state into the snapshot buffer. Consecutive layout
-    /// fields that are written together are grouped (see `layout.rs`).
-    pub fn publish(&mut self) -> &[f64] {
-        self.redesign();
+    /// The compact block of this simulation in its slot.
+    pub fn publish_slot(&mut self, o: &mut [f64], params: &[f64]) {
+        self.redesign(params);
+        let n = self.n();
+        let (eq, ex) = self.errors();
+        let [ke, pe] = self.energy();
+        let (q, qd) = (self.q, self.qd);
+        self.model.aux.eval(&q, &qd, &mut self.aux);
+        let (a, ao) = (&self.aux, self.model.aux_off);
+        o.fill(0.0);
+        let mut put = |at: usize, v: &[f64]| o[at..at + v.len()].copy_from_slice(v);
+        let effort = (0..self.model.nu).map(|i| self.u[i] * self.u[i]).sum::<f64>().sqrt();
+        put(slot::KIND, &[f64::from(self.kind as u32), f64::from(self.ctrl.phase()), eq, ex, effort]);
+        put(slot::ENERGY, &[ke, pe, ke + pe]);
+        put(slot::Q, &q[..n]);
+        put(slot::U, &self.u[..self.model.nu]);
+        for (kf, ang) in self.model.frame_angles.iter().enumerate().take(MAXF) {
+            put(slot::FRAMES + 3 * kf, &[a[ao.frames + 2 * kf], a[ao.frames + 2 * kf + 1], ang.eval(&q)]);
+        }
+        put(slot::TOOL, &a[ao.tool_p..ao.tool_p + 2]);
+        let mut tele = Telemetry::new(
+            self.kind,
+            &mut o[slot::TELEMETRY..slot::TELEMETRY + crate::control::TELEMETRY_LEN],
+        );
+        self.ctrl.telemetry(&mut tele);
+    }
+
+    /// The full snapshot of this simulation (the primary).
+    pub fn publish(&mut self, o: &mut [f64], params: &[f64]) {
+        self.redesign(params);
         let (n, nu, nb) = (self.model.n, self.model.nu, self.model.desc.nb());
         let (q, qd) = (self.q, self.qd);
         let t = Terms::eval(&mut self.model.dynamics, n, &q, &qd);
-        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i]);
+        let stops = self.stops(&q, &qd);
+        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
         let qdd = self.accel(&q, &qd);
         let k = dynamics::constraints(&mut self.model, &q, &qd);
         let at_lambda = k.as_ref().map_or([0.0; MAXN], |k| k.apply_t(&self.lambda));
@@ -243,7 +344,6 @@ impl Sim {
         let (a, ao) = (&self.aux, self.model.aux_off);
         let mut mdot: MatN = [0.0; MAXN * MAXN];
         mdot[..n * n].copy_from_slice(&a[ao.mdot..ao.mdot + n * n]);
-
         // Lemma 4.2: S = Ṁ − 2C is skew-symmetric
         let s = |r: usize, c: usize| mdot[r * n + c] - 2.0 * t.c[r * n + c];
         let skew = (0..n)
@@ -254,23 +354,21 @@ impl Sim {
         let dissipation: f64 = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();
         let mqdd = mat_vec(n, &t.m, &qdd);
         let cqd = t.c_qd(n, &qd);
-        let c = &self.ctrl;
         let (ke, pe) = (a[ao.energy], a[ao.energy + 1]);
+        let pl = &self.plan;
         let flag = |b: bool| f64::from(u8::from(b));
+        let w = manipulability(n, &a[ao.jp..ao.jp + 2 * n]);
 
-        let o = &mut self.out;
-        o.fill(0.0);
+        o[..off::SLOT].fill(0.0);
         let mut put = |at: usize, v: &[f64]| o[at..at + v.len()].copy_from_slice(v);
-        put(
-            off::TIME,
-            &[self.t, self.steps as f64, n as f64, nu as f64, f64::from(self.mode), f64::from(c.phase)],
-        );
+        let kind = f64::from(self.kind as u32);
+        put(off::TIME, &[self.t, self.steps as f64, n as f64, nu as f64, kind, f64::from(self.ctrl.phase())]);
         put(off::Q, &q[..n]);
         put(off::QD, &qd[..n]);
         put(off::QDD, &qdd[..n]);
         put(off::U, &self.u[..nu]);
         put(off::TAU, &tau[..n]);
-        put(off::TAU_EXT, &self.tau_ext[..n]);
+        put(off::TAU_EXT, &core::array::from_fn::<f64, MAXN, _>(|i| self.tau_ext[i] + stops[i])[..n]);
         put(off::M, &t.m[..n * n]);
         put(off::C, &t.c[..n * n]);
         put(off::N, &t.n[..n]);
@@ -287,25 +385,20 @@ impl Sim {
         put(off::TOOL_P, &a[ao.tool_p..ao.tool_p + 2]);
         put(off::JP, &a[ao.jp..ao.jp + 2 * n]);
         put(off::JS, &a[ao.js..ao.js + 3 * n]);
-        if let Some(l) = &c.lqr {
+        if let Some(l) = &pl.lin {
             put(off::LIN_A, &l.a.data);
             put(off::LIN_B, &l.b.data);
-            put(off::LQR_K, &l.k.data);
-            put(off::LQR_OK, &[1.0, l.z.cols as f64]);
         }
-        put(off::U_FF, &c.u_ff[..nu]);
-        put(off::EQ_RESIDUAL, &[c.eq_residual, c.e_u, c.e_ref]);
-        put(off::TARGET, &[c.tool_target[0], c.tool_target[1], flag(c.ik), flag(c.reachable)]);
-        put(off::Q_TARGET, &c.q_star[..n]);
-        put(off::Q_REF, &c.q_ref[..n]);
-        put(off::QD_REF, &c.qd_ref[..n]);
-        put(off::KP, &c.kp[..n]);
-        put(off::KD, &c.kd[..n]);
-        put(off::UMAX, &[self.umax, c.ct_wn, flag(c.ct_ok)]);
+        put(off::U_FF, &pl.u_ff[..nu]);
+        put(off::EQ_RESIDUAL, &[pl.eq_residual, pl.dof as f64, flag(pl.ct_ok)]);
+        put(off::TARGET, &[pl.tool_target[0], pl.tool_target[1], flag(pl.use_tool), flag(pl.reachable)]);
+        put(off::Q_TARGET, &pl.q_star[..n]);
+        put(off::Q_REF, &pl.q_ref[..n]);
+        put(off::QD_REF, &pl.qd_ref[..n]);
+        put(off::X_REF, &[pl.x_ref[0], pl.x_ref[1], pl.f_ext[0], pl.f_ext[1], w, self.umax]);
         let violation = k.as_ref().map_or(0.0, dynamics::Constraints::max_violation);
         put(off::NC, &[self.model.nc as f64, self.model.ncon as f64, violation]);
         put(off::LAMBDA, &self.lambda[..self.model.ncon]);
         put(off::AT_LAMBDA, &at_lambda[..n]);
-        &self.out
     }
 }

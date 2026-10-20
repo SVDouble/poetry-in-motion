@@ -1,4 +1,4 @@
-/** Small DOM widgets shared by the builder and the tuning panel. */
+/** Small DOM widgets shared by the builder and the simulation panels. */
 import { fix, tex } from '../eq/tex';
 
 export interface SliderOpts {
@@ -18,8 +18,10 @@ export interface SliderOpts {
 
 const STEPS = 1000;
 
-export function slider(o: SliderOpts): HTMLElement {
-  const el = document.createElement('label');
+export type Slider = HTMLElement & { set(v: number): void };
+
+export function slider(o: SliderOpts): Slider {
+  const el = document.createElement('label') as HTMLLabelElement & { set(v: number): void };
   el.className = 'param';
   if (o.hint) el.title = o.hint;
   const name = document.createElement('span');
@@ -49,6 +51,10 @@ export function slider(o: SliderOpts): HTMLElement {
     show(v);
     o.onInput(v);
   });
+  el.set = (v: number) => {
+    input.value = String(to(v));
+    show(v);
+  };
   el.append(name, out, input);
   return el;
 }
@@ -127,3 +133,15 @@ export const portLabel = (s: number) =>
   s === 0 ? 'origin' : s === 1 ? 'tip' : s === 0.5 ? 'middle' : `${s.toFixed(2)} l`;
 
 export const DEG = 180 / Math.PI;
+
+/** An element with a class and optional children. */
+export function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  cls = '',
+  ...children: (Node | string)[]
+): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  e.append(...children);
+  return e;
+}

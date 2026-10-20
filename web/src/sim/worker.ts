@@ -21,7 +21,11 @@ interface Core {
   publish(): void;
   set_dt(dt: number): void;
   set_param(i: number, v: number): void;
-  set_mode(m: number): void;
+  set_controller(slot: number, kind: number): void;
+  set_ctrl_param(kind: number, i: number, v: number): void;
+  sync_shadows(): void;
+  controllers(): number;
+  controllers_ptr(): number;
   set_target(i: number, v: number): void;
   set_input(i: number, v: number): void;
   set_flag(id: number, v: number): void;
@@ -136,7 +140,9 @@ function build(c: Core, id: number, desc: number[]): void {
     c.set_dt(DT);
     const buildMs = performance.now() - t0;
     const derivation = text(c, c.derivation_ptr(), c.derivation_len());
-    post({ type: 'built', id, ok: true, derivation, buildMs });
+    const len = c.controllers();
+    const controllers = text(c, c.controllers_ptr(), len);
+    post({ type: 'built', id, ok: true, derivation, controllers, buildMs });
     lastBench = -Infinity;
   } else {
     post({ type: 'built', id, ok: false, error: text(c, c.error_ptr(), c.error_len()) });
@@ -148,7 +154,9 @@ type Handlers = { [K in ToWorker['type']]: (c: Core, msg: Extract<ToWorker, { ty
 const handlers: Handlers = {
   build: (c, m) => build(c, m.id, m.desc),
   param: (c, m) => c.set_param(m.i, m.v),
-  mode: (c, m) => c.set_mode(m.mode),
+  controller: (c, m) => c.set_controller(m.slot, m.kind),
+  ctrlParam: (c, m) => c.set_ctrl_param(m.kind, m.i, m.v),
+  sync: (c) => c.sync_shadows(),
   input: (c, m) => c.set_input(m.i, m.v),
   flag: (c, m) => c.set_flag(m.id, m.v),
   target: (c, m) => c.set_target(m.i, m.v),

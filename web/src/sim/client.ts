@@ -1,4 +1,5 @@
 import type { Derivation } from '../model/derivation';
+import { type Controllers, parseControllers } from './controllers';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
 import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from './protocol';
 
@@ -11,7 +12,9 @@ export interface SimStats {
   shared: boolean;
 }
 
-export type BuildResult = { ok: true; derivation: Derivation; ms: number } | { ok: false; error: string };
+export type BuildResult =
+  | { ok: true; derivation: Derivation; controllers: Controllers; ms: number }
+  | { ok: false; error: string };
 
 /** UI-side handle to the physics worker. `pull()` copies the newest consistent snapshot. */
 export class SimClient {
@@ -45,7 +48,12 @@ export class SimClient {
         this.pending.delete(msg.id);
         done?.(
           msg.ok
-            ? { ok: true, derivation: JSON.parse(msg.derivation) as Derivation, ms: msg.buildMs }
+            ? {
+                ok: true,
+                derivation: JSON.parse(msg.derivation) as Derivation,
+                controllers: parseControllers(msg.controllers),
+                ms: msg.buildMs,
+              }
             : { ok: false, error: msg.error },
         );
       }

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Derivation } from '../model/derivation';
 import { dof, encode, PRESETS, paramVector } from '../model/description';
+import { type Controllers, parseControllers } from './controllers';
 import { type Layout, parseLayout, Snapshot } from './layout';
 
 interface Core {
@@ -16,7 +17,10 @@ interface Core {
   derivation_len(): number;
   reset(): void;
   step(n: number): void;
-  set_mode(m: number): void;
+  set_controller(slot: number, kind: number): void;
+  set_ctrl_param(kind: number, i: number, v: number): void;
+  controllers(): number;
+  controllers_ptr(): number;
   set_state(i: number, q: number, qd: number): void;
   param_count(): number;
   out_ptr(): number;
@@ -38,6 +42,14 @@ function build(desc: number[]): Derivation {
   if (ok !== 0) throw new Error(text(core.error_ptr(), core.error_len()));
   return JSON.parse(text(core.derivation_ptr(), core.derivation_len())) as Derivation;
 }
+
+function controllers(): Controllers {
+  const len = core.controllers();
+  return parseControllers(text(core.controllers_ptr(), len));
+}
+
+/** Id of the controller with spec key `key`. */
+const kind = (key: string) => controllers().specs.find((s) => s.key === key)!.id;
 
 function snapshot(): Snapshot {
   const ptr = core.out_ptr();
@@ -84,7 +96,7 @@ describe('wasm core', () => {
 
   it('satisfies M q̈ + C q̇ + N = τ in the published snapshot', () => {
     build(encode(PRESETS['Two-link arm']!()));
-    core.set_mode(3);
+    core.set_controller(0, kind('computed_torque'));
     core.step(250);
     const s = snapshot();
     for (let i = 0; i < 2; i++) {
@@ -96,11 +108,40 @@ describe('wasm core', () => {
 
   it('balances the cart-pole with LQR', () => {
     build(encode(PRESETS['Cart-pole']!()));
-    core.set_mode(4);
+    core.set_controller(0, kind('lqr'));
     core.set_state(1, 0.2, 0);
     core.step(6000);
     const s = snapshot();
     expect(Math.abs(s.v('Q', 1))).toBeLessThan(1e-3);
-    expect(s.v('PHASE')).toBe(2);
+    expect(s.v('KIND')).toBe(kind('lqr'));
+  });
+
+  it('describes every controller and where it applies', () => {
+    build(encode(PRESETS['Cart-pole']!()));
+    const reg = controllers();
+    expect(reg.specs.map((s) => s.id)).toEqual(reg.specs.map((_, i) => i));
+    expect(reg.params.map((p) => p.length)).toEqual(reg.specs.map((s) => s.params.length));
+    expect(reg.applicable[kind('swing_up')]).toBeNull();
+    expect(reg.applicable[kind('computed_torque')]).toMatch(/actuator/);
+    for (const s of reg.specs) {
+      const used = Object.values(s.telemetry).reduce((n, [, len]) => n + len, 0);
+      expect(used).toBeLessThanOrEqual(layout.slotLen - layout.slot.TELEMETRY);
+    }
+  });
+
+  it('runs a shadow independently and reports it in its slot', () => {
+    build(encode(PRESETS['Two-link arm']!()));
+    core.set_controller(0, kind('pd'));
+    core.set_controller(1, kind('pd_gravity'));
+    core.set_controller(2, -1);
+    core.step(5000);
+    const s = snapshot();
+    const [primary, shadow, off] = [s.slots[0]!, s.slots[1]!, s.slots[2]!];
+    expect(primary.kind).toBe(kind('pd'));
+    expect(shadow.kind).toBe(kind('pd_gravity'));
+    expect(off.on).toBe(false);
+    expect(shadow.v('ERR_Q')).toBeLessThan(primary.v('ERR_Q'));
+    expect(primary.v('Q', 0)).toBe(s.v('Q', 0));
+    core.set_controller(1, -1);
   });
 });
