@@ -1,47 +1,71 @@
 # Poetry in Motion
 
-**Poetry in Motion** is an in-browser lab for robot dynamics. Robots are simulated in real time on the client, and every
-quantity that governs their motion is typeset next to them and updates as they move: the equations of motion,
-the inertia, Coriolis and gravity terms, coordinate frames, Jacobians and the control laws.
+**Poetry in Motion** is an in-browser lab for robot dynamics, organised in three stages:
+
+1. **Build** a planar mechanism in a visual editor. It is a graph: a tree of bodies, each hanging from its
+   parent (or the ground) by a **revolute**, **prismatic** or **fixed** joint, plus **loop-closing pins**
+   between two bodies or a body and the ground (four-bar, slider-crank, …). Each joint has its own settings:
+   its port along the parent (s·l, symbolic), mounting angle, slide axis and range, actuated or passive,
+   damping, and initial and target values. Edit in the panel, or directly in the view:
+   - click a **+ port** to attach a child or pin a loop there;
+   - drag **◆** to move a joint; drag **○** to rotate or stretch a body (snaps to 15° / 5 cm, Alt for free);
+   - drag tree entries to re-hang bodies, use × to remove one, and Ctrl+Z to undo.
+
+   Presets: cart-pole, two- and three-link arm, double pendulum, wall pendulum, branching arm, acrobot,
+   cart double pendulum, four-bar linkage, slider-crank, gantry.
+2. **Derive** its equations of motion step by step, symbolically, with generic coefficients (mᵢ, lᵢ, rᵢ, Iᵢ, βᵢ, g):
+   kinematics, centre-of-mass velocities, kinetic and potential energy, the inertia matrix, the Christoffel
+   symbols, the Coriolis matrix, gravity and friction, the scalar equations, and the Jacobians.
+3. **Simulate** it in real time. The same equations drive the physics and the controllers, and every quantity
+   updates live next to the robot. The controllers (PD, PD + gravity, computed torque, LQR, energy-based
+   swing-up) are derived from the model and explained in the panel.
 
 ```
 M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ        (Murray, Li & Sastry, eq. 4.24)
 ```
 
-Demo systems:
-
-| System | What to try |
-|---|---|
-| **Cart-pole** (pendulum on a rail) | balance it by hand, LQR balancing, energy-based swing-up |
-| **Two-link planar arm** (RR) | passive motion, PD, PD + gravity compensation, computed torque; drag the target |
+Nothing is special-cased: the cart-pole and the arm are presets of the builder, and every controller works from
+M, C, N, V, B and the tool Jacobian of whatever was built. Closed loops are handled as holonomic constraints
+φ(q) = 0, derived symbolically like everything else (MLS ch. 6): `M q̈ + C q̇ + N + Aᵀλ = τ`, `A = ∂φ/∂q`.
 
 ## Architecture
 
 ```
-sym/   Python + SymPy: derives every system by Lagrange (MLS ch. 4) and generates
-       ├─ core/src/generated/*.rs   allocation-free numeric kernels (M, C, N, Ṁ, ∂N/∂q, energy, frames, Jacobians)
-       └─ web/src/generated/*.ts    the LaTeX of the same quantities
-core/  Rust → WebAssembly: RK4 at 1 kHz, controllers (LQR by a doubling Riccati solver, swing-up,
-       PD, computed torque) and a flat f64 snapshot of everything the UI shows
-web/   TypeScript + Vite: physics in a Web Worker, snapshots shared through a SharedArrayBuffer (seqlock),
-       three.js (WebGPU with WebGL 2 fallback), KaTeX equations whose numbers are patched in place, uPlot charts
+core/  Rust → WebAssembly
+       ├─ cas/      a small computer-algebra system for planar mechanics (exact, canonical, LaTeX printer)
+       ├─ mech.rs   generic mechanism graph (tree + loop closures) + Lagrangian derivation (MLS ch. 4, 6)
+       ├─ doc.rs    the derivation as LaTeX/JSON for the step-by-step view
+       ├─ tape.rs   symbolic expressions compiled into allocation-free numeric tapes
+       ├─ sim.rs    RK4 at 1 kHz, KKT solve with Baumgarte stabilisation for loops, end stops, snapshots
+       └─ control/  generic PD, PD + gravity, computed torque (+ IK), LQR (doubling Riccati), swing-up (PFL)
+web/   TypeScript + Vite: builder, step-by-step derivation, physics in a Web Worker with SharedArrayBuffer
+       snapshots, three.js (WebGPU with WebGL 2 fallback), KaTeX equations patched in place, uPlot charts
+sym/   Python + SymPy: an independent derivation of the reference systems, generated into Rust kernels that
+       the tests use as an oracle for the in-browser CAS
 ```
 
 Design notes:
 
-- **The symbolic layer is the single source of truth.** The Rust kernels and the LaTeX come from the same
-  SymPy expressions, so the formula on screen is the code that runs. Tests check the derivation against MLS
-  (4.11) and Lemma 4.2, and CI fails if the generated files are stale.
+- **Symbolic, in the browser, in milliseconds.** A planar open chain only ever produces terms of the form
+  *c · (parameter monomial) · (prismatic coordinates and velocities) · cos/sin(k·θ)*. Expanding every product of
+  trigonometric factors into sums gives a *Fourier canonical form*: each expression has exactly one
+  representation, so no `simplify()` is needed, and identities like c₁c₁₂ + s₁s₁₂ = c₂ hold by construction.
+  Deriving the cart-pole takes 0.3 ms, a 6-link chain 7 ms.
+- **The formula on screen is the code that runs.** The derived expressions are compiled into numeric tapes for
+  the simulator. The tests check them against the independent SymPy derivation on random parameters and states,
+  and check MLS (4.11), Lemma 4.2 (Ṁ − 2C skew-symmetric) and energy conservation.
+- **Coefficients stay symbolic.** Changing a mass or a length in the simulation changes numbers, not equations,
+  so nothing is re-derived.
 - **The equations are typeset once.** Live numbers are KaTeX `\htmlId` slots whose text nodes are rewritten at
   30 Hz, and only for sections that are open and on screen.
 - **Physics never waits for rendering.** The worker steps at a fixed 1 kHz on its own clock. The UI copies the
   latest consistent snapshot every frame without allocating.
-- **Plain WebAssembly exports** (`extern "C"`, scalar arguments only), with no `wasm-bindgen` glue. The snapshot
-  layout is described by the core itself (`layout_json`), and the UI checks that it matches at start-up.
+- **Plain WebAssembly exports** (`extern "C"`, scalar arguments only), with no `wasm-bindgen` glue. The
+  mechanism goes in as a flat `f64` array, and the derivation comes out as JSON.
+- **Shareable.** The mechanism is encoded in the URL, so a built robot can be sent as a link.
 
-Performance on a laptop CPU: about 0.25 µs per full step (controller plus 4 RK4 evaluations) natively and about
-0.5 µs in WebAssembly, so the core uses well under 0.1 % of a core at 1 kHz. Run `make bench`, or read the live
-counter in the header.
+Performance (`make bench`, native): 0.4 µs per controlled RK4 step for the cart-pole, 2 µs for a 4-link chain and
+9 µs for a 6-link chain, all far faster than real time at 1 kHz.
 
 ## Getting started
 
@@ -56,7 +80,7 @@ make dev     # build the wasm core and start Vite on http://localhost:5173
 
 | Command | |
 |---|---|
-| `make gen` | re-derive the equations and regenerate Rust + LaTeX (after editing `sym/src/motion_sym/systems.py`) |
+| `make gen` | regenerate the SymPy oracle kernels in `core/tests/oracle/` |
 | `make check` | everything CI runs: formatters, linters, type checkers, codegen freshness, all tests |
 | `make fmt` | format and auto-fix (rustfmt, ruff, Biome) |
 | `make build` | production bundle in `web/dist` |
@@ -77,14 +101,15 @@ does this on Cloudflare Pages and Netlify. Without these headers the app still w
 
 ## Controls
 
-`1`–`4` switch controller · `P` pause · `R` reset · cart-pole: `← →` push, `Space` knock, `B` drop ·
-arm: click/drag target, `A D` / `← →` joint torques, `E` flip elbow.
+Simulate: `1`–`6` switch controller · `P` pause · `R` reset · `Space` kick the passive joints · actuated joints:
+`← →`, `A D`, `J L`, … · fully actuated arms: drag to move the tool target (inverse kinematics) · arms with
+an actuated rail: click to set its target.
 
-## Adding a robot
+## Adding joint types or controllers
 
-1. Describe its bodies, frames and actuation in `sym/src/motion_sym/systems.py`, then run `make gen`.
-2. Register the generated module in `core/src/model.rs` (`SystemId`, defaults) and add a controller if needed.
-3. Add a `SystemDef` in `web/src/systems/` with its scene, parameters and any extra equation sections.
+- Joint kinematics live in `core/src/mech.rs` (`derive`). Everything downstream, including M, C, N, the tapes,
+  the LaTeX and the controllers, is generic.
+- Controllers live in `core/src/control/mod.rs`. Their explanations live in `web/src/eq/live.ts`.
 
 Notation follows R. M. Murray, Z. Li, S. S. Sastry, *A Mathematical Introduction to Robotic Manipulation*
 (CRC, 1994). The project goals are in [PROJECT.md](PROJECT.md).

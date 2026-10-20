@@ -6,8 +6,8 @@
 export const FIELDS = [
   'TIME',
   'STEPS',
-  'SYSTEM',
   'NQ',
+  'NU',
   'MODE',
   'PHASE',
   'Q',
@@ -37,30 +37,40 @@ export const FIELDS = [
   'LIN_A',
   'LIN_B',
   'LQR_K',
-  'E_POLE',
-  'X_REF',
+  'U_FF',
+  'LQR_OK',
+  'EQ_RESIDUAL',
+  'E_U',
+  'E_REF',
   'TARGET',
+  'IK',
   'REACHABLE',
+  'Q_TARGET',
   'Q_REF',
   'QD_REF',
-  'Q_GOAL',
+  'KP',
+  'KD',
   'UMAX',
-  'RAIL',
+  'CT_WN',
+  'NC',
+  'CONSTRAINT',
+  'LAMBDA',
+  'AT_LAMBDA',
 ] as const;
 
 export const FLAGS = [
   'Coriolis',
   'Umax',
-  'XRef',
   'TargetX',
   'TargetY',
-  'Elbow',
-  'Rail',
+  'Ik',
   'RefWn',
   'CtWn',
+  'PdWn',
   'LqrQx',
-  'LqrQth',
+  'LqrQv',
   'LqrR',
+  'SwingGain',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];
@@ -101,11 +111,20 @@ export function parseLayout(json: string): Layout {
 export class Snapshot {
   data: Float64Array;
 
-  constructor(
-    readonly layout: Layout,
-    readonly nq: number,
-  ) {
+  constructor(readonly layout: Layout) {
     this.data = new Float64Array(layout.len);
+  }
+
+  get n(): number {
+    return this.v('NQ');
+  }
+
+  get nu(): number {
+    return this.v('NU');
+  }
+
+  get t(): number {
+    return this.v('TIME');
   }
 
   /** Scalar or vector element `field[i]`. */
@@ -113,12 +132,14 @@ export class Snapshot {
     return this.data[this.layout.off[f] + i] ?? Number.NaN;
   }
 
-  /** Matrix element (row-major, given column count). */
-  m(f: Field, i: number, j: number, cols = this.nq): number {
+  /** Matrix element (row-major, given column count; defaults to n). */
+  m(f: Field, i: number, j: number, cols = this.n): number {
     return this.data[this.layout.off[f] + i * cols + j] ?? Number.NaN;
   }
 
-  get t(): number {
-    return this.v('TIME');
+  /** Pose (x, y, φ) of frame k: 0 = s, 1 … n = bodies, n + 1 = tool. */
+  frame(k: number): [number, number, number] {
+    const o = this.layout.off.FRAMES + 3 * k;
+    return [this.data[o] ?? 0, this.data[o + 1] ?? 0, this.data[o + 2] ?? 0];
   }
 }

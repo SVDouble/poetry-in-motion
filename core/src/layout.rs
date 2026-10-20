@@ -4,9 +4,8 @@
 
 use crate::MAXN;
 
-/// Maximum frames and bodies in a snapshot.
-pub const MAXF: usize = 6;
-pub const MAXB: usize = 4;
+/// Frames in a snapshot: the spatial frame, one per body and the tool.
+pub const MAXF: usize = crate::mech::MAXB + 2;
 
 macro_rules! layout {
     ($($(#[$doc:meta])* $name:ident : $len:expr),* $(,)?) => {
@@ -32,10 +31,10 @@ macro_rules! layout {
 layout! {
     TIME: 1,
     STEPS: 1,
-    SYSTEM: 1,
     NQ: 1,
+    NU: 1,
     MODE: 1,
-    /// Controller phase (cart-pole: 0 idle, 1 swing-up, 2 LQR catch).
+    /// Controller phase (0 idle, 1 swing-up, 2 LQR catch / balance).
     PHASE: 1,
     Q: MAXN,
     QD: MAXN,
@@ -60,26 +59,40 @@ layout! {
     /// max |(Ṁ − 2C) + (Ṁ − 2C)ᵀ| — zero by MLS Lemma 4.2.
     SKEW: 1,
     DET_M: 1,
-    /// Eigenvalues of M (2-DOF systems).
-    EIG_M: 2,
+    /// Eigenvalues of M, ascending.
+    EIG_M: MAXN,
+    /// (x, y, φ) of the frames s, 1 … n, t.
     FRAMES: 3 * MAXF,
-    COMS: 2 * MAXB,
+    COMS: 2 * crate::mech::MAXB,
     TOOL_P: 2,
     JP: 2 * MAXN,
     JS: 3 * MAXN,
-    /// Linearisation about the upright equilibrium, x = (q, q̇).
+    /// LQR linearisation about q*: A (2n × 2n), B (2n × nu), gain K (nu × 2n), feed-forward u*.
     LIN_A: 4 * MAXN * MAXN,
-    LIN_B: 2 * MAXN,
-    LQR_K: 2 * MAXN,
-    E_POLE: 1,
-    X_REF: 1,
+    LIN_B: 2 * MAXN * MAXN,
+    LQR_K: 2 * MAXN * MAXN,
+    U_FF: MAXN,
+    LQR_OK: 1,
+    /// max |∂V/∂q_u(q*)| over unactuated joints (0 ⇔ q* is an equilibrium).
+    EQ_RESIDUAL: 1,
+    /// Energy of the unactuated motion relative to the target, and its scale.
+    E_U: 1,
+    E_REF: 1,
     TARGET: 2,
+    IK: 1,
     REACHABLE: 1,
+    Q_TARGET: MAXN,
     Q_REF: MAXN,
     QD_REF: MAXN,
-    Q_GOAL: MAXN,
+    KP: MAXN,
+    KD: MAXN,
     UMAX: 1,
-    RAIL: 1,
+    CT_WN: 1,
+    /// Loop closures: count, max |φ(q)| and the multipliers λ; Aᵀλ is the constraint generalised force.
+    NC: 1,
+    CONSTRAINT: 1,
+    LAMBDA: 2 * crate::mech::MAXC,
+    AT_LAMBDA: MAXN,
 }
 
 /// Ids accepted by `set_flag`.
@@ -90,37 +103,37 @@ pub enum Flag {
     Coriolis = 0,
     /// Actuator saturation |u_i| ≤ umax.
     Umax = 1,
-    /// Cart position set-point.
-    XRef = 2,
-    TargetX = 3,
-    TargetY = 4,
-    /// ±1 elbow configuration for inverse kinematics.
-    Elbow = 5,
-    /// Half-length of the rail.
-    Rail = 6,
+    TargetX = 2,
+    TargetY = 3,
+    /// 1: track the tool target by inverse kinematics; 0: track the joint targets.
+    Ik = 4,
     /// Natural frequency of the reference filter (rad/s).
-    RefWn = 7,
-    /// Closed-loop natural frequency of the computed-torque controller (rad/s).
-    CtWn = 8,
-    LqrQx = 9,
-    LqrQth = 10,
-    LqrR = 11,
+    RefWn = 5,
+    /// Closed-loop natural frequency of computed torque (rad/s).
+    CtWn = 6,
+    /// Natural frequency used to scale the PD gains (rad/s).
+    PdWn = 7,
+    LqrQx = 8,
+    LqrQv = 9,
+    LqrR = 10,
+    /// Energy-pumping gain of the swing-up.
+    SwingGain = 11,
 }
 
 impl Flag {
     pub const ALL: [Self; 12] = [
         Self::Coriolis,
         Self::Umax,
-        Self::XRef,
         Self::TargetX,
         Self::TargetY,
-        Self::Elbow,
-        Self::Rail,
+        Self::Ik,
         Self::RefWn,
         Self::CtWn,
+        Self::PdWn,
         Self::LqrQx,
-        Self::LqrQth,
+        Self::LqrQv,
         Self::LqrR,
+        Self::SwingGain,
     ];
 
     #[must_use]

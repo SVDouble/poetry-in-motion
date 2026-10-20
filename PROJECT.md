@@ -60,12 +60,22 @@ updating live** while the robot moves in a real simulation.
   cargo test, pytest and Vitest test it; GitHub Actions runs CI.
 
 ## Status
-- v0 demo done: cart-pole (manual, LQR, energy swing-up) and RR arm (passive, PD, PD + gravity, computed
-  torque), with live equations of motion, Lagrangian/energy balance, M, C, N, SE(2) frames, product of
-  exponentials, Jacobians, IK and controller derivations.
+- v0 (2026-10-20): cart-pole and RR arm with hand-derived (SymPy) kernels and live equations.
+- v1 (2026-10-20): **Build → Derive → Simulate**. A generic planar builder (a tree of revolute/prismatic joints,
+  up to 6 DOF); an in-browser CAS that derives the equations symbolically with generic coefficients and explains
+  them step by step; generic controllers (PD, PD + gravity, computed torque with IK, LQR about any equilibrium,
+  energy-based swing-up via collocated PFL), each derived in the panel. The SymPy package is now a test oracle.
+
+- v1.1 (2026-10-20): the mechanism is a **graph**. Fixed joints (walls, brackets), joint ports anywhere along
+  a parent (s·l, symbolic), and loop-closing pins as holonomic constraints with Lagrange multipliers (KKT
+  solve, Baumgarte stabilisation, projection of the initial pose). The builder gains direct manipulation
+  (ports, handles, snapping), drag-and-drop re-parenting, per-entry removal, undo/redo and ground anchors.
+  The model-based controllers (computed torque, LQR, swing-up) stay limited to trees.
 
 ## Next ideas
-- A generic engine (Featherstone RNEA/CRBA in Rust) for URDF robots, cross-checked against the SymPy output.
-- Pyodide-backed "define your own robot", with the derivation running in the browser.
+- Controllers for closed chains (constrained computed torque, LQR on the constraint manifold), and contacts.
+- Prismatic loop closures (pin-in-slot), and an angle constraint (weld) between two bodies.
+- 3D (spatial) mechanisms: twists, the product of exponentials and the body Jacobian in SE(3).
 - Guided lessons and exercises (e.g. "make the energy drift by switching off C").
-- On-screen joint-torque controls for the arm on touch devices, and shareable scenes through URL state.
+- Trajectory optimisation and other controllers (sliding mode, passivity-based, MPC).
+- On-screen controls for actuated joints on touch devices.

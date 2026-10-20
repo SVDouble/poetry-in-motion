@@ -1,3 +1,4 @@
+import type { Derivation } from '../model/derivation';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
 import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from './protocol';
 
@@ -10,19 +11,24 @@ export interface SimStats {
   shared: boolean;
 }
 
+export type BuildResult = { ok: true; derivation: Derivation; ms: number } | { ok: false; error: string };
+
 /** UI-side handle to the physics worker. `pull()` copies the newest consistent snapshot. */
 export class SimClient {
-  readonly stats: SimStats = { stepUs: 0, stepsPerSecond: 0, realtime: 1, running: true, shared: false };
-  private snap: Snapshot | null = null;
+  readonly stats: SimStats = { stepUs: 0, stepsPerSecond: 0, realtime: 1, running: false, shared: false };
+  readonly snap: Snapshot;
   private shared: { seq: Int32Array; stats: Float64Array; data: Float64Array } | null = null;
   private latest: { data: Float64Array; stats: Float64Array } | null = null;
   private lastSeq = -1;
+  private nextId = 1;
+  private readonly pending = new Map<number, (r: BuildResult) => void>();
 
   private constructor(
     private readonly worker: Worker,
     readonly layout: Layout,
     sab: SharedArrayBuffer | null,
   ) {
+    this.snap = new Snapshot(layout);
     if (sab) {
       this.shared = {
         seq: new Int32Array(sab, 0, 1),
@@ -32,7 +38,17 @@ export class SimClient {
       this.stats.shared = true;
     }
     worker.addEventListener('message', (e: MessageEvent<FromWorker>) => {
-      if (e.data.type === 'snapshot') this.latest = { data: e.data.data, stats: e.data.stats };
+      const msg = e.data;
+      if (msg.type === 'snapshot') this.latest = { data: msg.data, stats: msg.stats };
+      else if (msg.type === 'built') {
+        const done = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        done?.(
+          msg.ok
+            ? { ok: true, derivation: JSON.parse(msg.derivation) as Derivation, ms: msg.buildMs }
+            : { ok: false, error: msg.error },
+        );
+      }
     });
   }
 
@@ -60,18 +76,18 @@ export class SimClient {
     this.send({ type: 'flag', id: this.layout.flag[f], v });
   }
 
-  /** (Re)initialise the worker with a system; returns a fresh snapshot reader. */
-  init(system: number, nq: number, params: number[], mode: number, flags: [Flag, number][]): Snapshot {
-    this.send({ type: 'init', system, params, mode, flags: flags.map(([f, v]) => [this.layout.flag[f], v]) });
-    this.snap = new Snapshot(this.layout, nq);
-    this.lastSeq = -1;
-    return this.snap;
+  /** Derive, compile and load a mechanism (flat description, see `model/description.ts`). */
+  build(desc: number[]): Promise<BuildResult> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.pending.set(id, resolve);
+      this.send({ type: 'build', id, desc });
+    });
   }
 
-  /** Copy the newest snapshot into the reader. Returns true if it changed. */
+  /** Copy the newest snapshot into `snap`. Returns true if it changed. */
   pull(): boolean {
     const snap = this.snap;
-    if (!snap) return false;
     if (this.shared) {
       const { seq, data, stats } = this.shared;
       for (let attempt = 0; attempt < 4; attempt++) {

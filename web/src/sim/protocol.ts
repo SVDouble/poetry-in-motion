@@ -1,11 +1,12 @@
 /** Messages between the UI thread and the physics worker. */
 
 export type ToWorker =
-  | { type: 'init'; system: number; params: number[]; mode: number; flags: [number, number][] }
+  | { type: 'build'; id: number; desc: number[] }
   | { type: 'param'; i: number; v: number }
   | { type: 'mode'; mode: number }
   | { type: 'input'; i: number; v: number }
   | { type: 'flag'; id: number; v: number }
+  | { type: 'target'; i: number; v: number }
   | { type: 'kick'; i: number; v: number }
   | { type: 'state'; i: number; q: number; qd: number }
   | { type: 'reset' }
@@ -14,6 +15,8 @@ export type ToWorker =
 
 export type FromWorker =
   | { type: 'ready'; layout: string; shared: SharedArrayBuffer | null }
+  | { type: 'built'; id: number; ok: true; derivation: string; buildMs: number }
+  | { type: 'built'; id: number; ok: false; error: string }
   | { type: 'snapshot'; data: Float64Array<ArrayBuffer>; stats: Float64Array<ArrayBuffer> }
   | { type: 'error'; message: string };
 

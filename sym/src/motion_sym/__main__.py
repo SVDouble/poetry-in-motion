@@ -1,4 +1,9 @@
-"""Generate Rust kernels and LaTeX modules for every system: `uv run motion-derive`."""
+"""Regenerate the SymPy reference kernels used as a test oracle: `uv run motion-derive`.
+
+The browser derives every mechanism with its own computer-algebra system (`core/src/cas`). This package
+derives the demo systems independently with SymPy and emits Rust kernels into `core/tests/oracle/`, so
+`cargo test` can check that both derivations agree.
+"""
 
 from __future__ import annotations
 
@@ -6,37 +11,25 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import emit_rust, emit_ts
+from . import emit_rust
 from .model import derive
 from .systems import ALL
 
 ROOT = Path(__file__).resolve().parents[3]
-RUST_OUT = ROOT / "core" / "src" / "generated"
-TS_OUT = ROOT / "web" / "src" / "generated"
+ORACLE = ROOT / "core" / "tests" / "oracle"
 
 
 def render() -> dict[Path, str]:
     files: dict[Path, str] = {}
-    idents = []
     for make in ALL:
         system = make()
-        d = derive(system)
-        files[RUST_OUT / f"{system.ident}.rs"] = emit_rust.emit(system, d)
-        files[TS_OUT / f"{system.ident}.ts"] = emit_ts.emit(system, d)
-        idents.append(system.ident)
-    files[RUST_OUT / "mod.rs"] = emit_rust.HEADER + "".join(f"pub mod {i};\n" for i in idents)
-    files[TS_OUT / "types.ts"] = emit_ts.TYPES
-    files[TS_OUT / "index.ts"] = (
-        emit_ts.HEADER
-        + "".join(f"export {{ {i} }} from './{i}';\n" for i in idents)
-        + "export type * from './types';\n"
-    )
+        files[ORACLE / f"{system.ident}.rs"] = emit_rust.emit(system, derive(system))
     return files
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", action="store_true", help="fail if generated files are out of date")
+    ap.add_argument("--check", action="store_true", help="fail if generated code is out of date")
     args = ap.parse_args()
 
     stale = []

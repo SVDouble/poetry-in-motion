@@ -1,7 +1,7 @@
 [project]
 name = "motion-sym"
 version = "0.1.0"
-description = "Symbolic derivation and code generation of robot equations of motion"
+description = "Independent SymPy derivation of the demo systems, used as a test oracle for the in-browser CAS"
 requires-python = ">=3.15"
 license = "Apache-2.0"
 dependencies = ["sympy>=1.14"]

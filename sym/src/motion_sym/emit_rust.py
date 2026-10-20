@@ -104,7 +104,8 @@ def emit(sys: System, d: Derived) -> str:
     out = [
         HEADER,
         f"//! {sys.title}: kernels for M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ.",
-        "#![allow(unused_variables, non_snake_case, clippy::all, clippy::pedantic, clippy::nursery)]",
+        "#![allow(dead_code, unused_variables, non_snake_case)]",
+        "#![allow(clippy::all, clippy::pedantic, clippy::nursery)]",
         "",
         f"pub const NQ: usize = {n};",
         f"pub const NP: usize = {len(sys.params)};",

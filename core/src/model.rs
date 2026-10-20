@@ -1,101 +1,213 @@
-//! Runtime descriptor that binds a generated kernel module to the simulator.
+//! A built mechanism: the symbolic derivation compiled into numeric tapes plus everything the simulator
+//! and controllers need to know about it.
 
-use crate::generated::{arm2, cartpole};
+use crate::MAXN;
+use crate::cas::{Angle, Expr};
+use crate::doc;
+use crate::mech::{BodyDesc, Derived, Desc, JointKind, Vars, derive};
+use crate::tape::Tape;
 
-type Mcn = fn(&[f64], &[f64], &[f64], &mut [f64], &mut [f64], &mut [f64]);
-type QdOut = fn(&[f64], &[f64], &[f64], &mut [f64]);
-type QOut = fn(&[f64], &[f64], &mut [f64]);
-type Energy = fn(&[f64], &[f64], &[f64]) -> [f64; 2];
-type Tool = fn(&[f64], &[f64], &mut [f64], &mut [f64], &mut [f64]);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum SystemId {
-    CartPole = 0,
-    Arm2 = 1,
-}
-
-impl SystemId {
-    #[must_use]
-    pub const fn from_u32(v: u32) -> Option<Self> {
-        match v {
-            0 => Some(Self::CartPole),
-            1 => Some(Self::Arm2),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn model(self) -> &'static Model {
-        match self {
-            Self::CartPole => &CARTPOLE,
-            Self::Arm2 => &ARM2,
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Model {
-    pub id: SystemId,
-    pub nq: usize,
+    pub desc: Desc,
+    pub vars: Vars,
+    pub n: usize,
+    /// Body moved by each coordinate.
+    pub coord_body: Vec<usize>,
+    /// Per coordinate: initial value, target, prismatic range (0 = none) and prismatic flag.
+    pub q0: Vec<f64>,
+    pub q_target: Vec<f64>,
+    pub limit: Vec<f64>,
+    pub prismatic: Vec<bool>,
     pub nu: usize,
-    pub nframes: usize,
-    pub nbodies: usize,
-    pub has_tool: bool,
-    pub params: &'static [&'static str],
-    pub defaults: &'static [f64],
-    pub damping: &'static [usize],
-    /// Actuation matrix, row-major `nq × nu`.
-    pub b: &'static [f64],
-    pub mcn: Mcn,
-    pub mdot: QdOut,
-    pub dndq: QOut,
-    pub dvdq: QOut,
-    pub energy: Energy,
-    pub frames: QOut,
-    pub coms: QOut,
-    pub tool: Tool,
+    pub revolute: Vec<bool>,
+    /// Indices of the actuated joints; `B` selects them (`τ = B u`).
+    pub actuated: Vec<usize>,
+    pub unactuated: Vec<usize>,
+    pub b: Vec<f64>,
+    /// Parameter vector `[m₁ l₁ r₁ I₁ β₁ … g]` from the description.
+    pub defaults: Vec<f64>,
+    pub beta_index: Vec<usize>,
+    /// Orientation of the frames `s, 1 … nb, t` (linear in q).
+    pub frame_angles: Vec<Angle>,
+    /// M (n²), C (n²), N (n).
+    pub dynamics: Tape,
+    /// Ṁ (n²), ∂V/∂q (n), ∂N/∂q (n²), T, V, frame positions (2 (n + 2)), COMs (2n), tool p (2),
+    /// ∂p/∂q (2n), Jˢ (3n).
+    pub aux: Tape,
+    pub aux_off: AuxOffsets,
+    /// ∂V/∂q (n) — gravity compensation.
+    pub gravity: Tape,
+    /// T, V.
+    pub energy: Tape,
+    /// Tool position p (2) and ∂p/∂q (2n) — inverse kinematics.
+    pub tool: Option<Tape>,
+    /// Loop closures: φ (m), A (m × n), Ȧ q̇ (m); `m = 2 · closures`.
+    pub constraints: Option<Tape>,
+    pub nc: usize,
+    /// LaTeX derivation as JSON (see `doc`).
+    pub derivation: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AuxOffsets {
+    pub mdot: usize,
+    pub dv: usize,
+    pub dndq: usize,
+    pub energy: usize,
+    pub frames: usize,
+    pub coms: usize,
+    pub tool_p: usize,
+    pub jp: usize,
+    pub js: usize,
+    pub len: usize,
+}
+
+fn push<'a>(field: &mut usize, xs: &[&'a Expr], all: &mut Vec<&'a Expr>) {
+    *field = all.len();
+    all.extend_from_slice(xs);
 }
 
 impl Model {
+    /// Derive and compile a mechanism.
+    ///
+    /// # Errors
+    /// If the description is invalid.
+    pub fn build(flat: &[f64]) -> Result<Self, String> {
+        Ok(Self::from_desc(&Desc::parse(flat)?))
+    }
+
     #[must_use]
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.params.iter().position(|p| *p == name)
+    pub fn from_desc(desc: &Desc) -> Self {
+        let d = derive(desc);
+        Self::compile(&d)
+    }
+
+    /// # Panics
+    /// If the mechanism has more than [`MAXN`] joints (`Desc::parse` rejects those).
+    #[must_use]
+    pub fn compile(d: &Derived) -> Self {
+        let n = d.n();
+        assert!(n <= MAXN);
+        let vars = d.vars;
+        let s = vars.space();
+        let zero = s.zero();
+
+        let dyn_exprs: Vec<&Expr> = d.m.iter().chain(&d.c).chain(&d.nvec).collect();
+
+        // frames: s, bodies, tool (tool frame falls back to the last body)
+        let s_origin = [s.zero(), s.zero()];
+        let tool_pose = d.tool.as_ref().map(|t| &t.pose);
+        let mut frame_xy: Vec<&Expr> = vec![&s_origin[0], &s_origin[1]];
+        let mut frame_angles = vec![Angle::zero(n)];
+        for b in &d.bodies {
+            frame_xy.extend([&b.world.p[0], &b.world.p[1]]);
+            frame_angles.push(b.world.phi.clone());
+        }
+        let last = &d.bodies[d.bodies.len() - 1].world;
+        let tp = tool_pose.unwrap_or(last);
+        frame_xy.extend([&tp.p[0], &tp.p[1]]);
+        frame_angles.push(tp.phi.clone());
+
+        let coms: Vec<&Expr> = d.bodies.iter().flat_map(|b| [&b.com[0], &b.com[1]]).collect();
+        let (tool_p, jp, js): (Vec<&Expr>, Vec<&Expr>, Vec<&Expr>) = d.tool.as_ref().map_or_else(
+            || (vec![&zero; 2], vec![&zero; 2 * n], vec![&zero; 3 * n]),
+            |t| (vec![&t.pose.p[0], &t.pose.p[1]], t.jp.iter().collect(), t.js.iter().collect()),
+        );
+
+        let mut aux_exprs: Vec<&Expr> = Vec::new();
+        let mut off = AuxOffsets::default();
+        let mdot: Vec<&Expr> = d.mdot.iter().collect();
+        let dv: Vec<&Expr> = d.dv.iter().collect();
+        let dndq: Vec<&Expr> = d.dndq.iter().collect();
+        push(&mut off.mdot, &mdot, &mut aux_exprs);
+        push(&mut off.dv, &dv, &mut aux_exprs);
+        push(&mut off.dndq, &dndq, &mut aux_exprs);
+        push(&mut off.energy, &[&d.t, &d.v], &mut aux_exprs);
+        push(&mut off.frames, &frame_xy, &mut aux_exprs);
+        push(&mut off.coms, &coms, &mut aux_exprs);
+        push(&mut off.tool_p, &tool_p, &mut aux_exprs);
+        push(&mut off.jp, &jp, &mut aux_exprs);
+        push(&mut off.js, &js, &mut aux_exprs);
+        off.len = aux_exprs.len();
+
+        let tool = d.tool.as_ref().map(|t| {
+            let xs: Vec<&Expr> = [&t.pose.p[0], &t.pose.p[1]].into_iter().chain(&t.jp).collect();
+            Tape::compile(vars, &xs)
+        });
+
+        let constraints = (!d.phi.is_empty()).then(|| {
+            let xs: Vec<&Expr> = d.phi.iter().chain(&d.a_mat).chain(&d.adot_qd).collect();
+            Tape::compile(vars, &xs)
+        });
+        let defaults: Vec<f64> =
+            d.desc.bodies.iter().flat_map(|b| b.values).chain(core::iter::once(d.desc.g)).collect();
+        let nu = d.actuated.len();
+        let per_coord = |f: fn(&BodyDesc) -> f64| -> Vec<f64> {
+            d.coord_body.iter().map(|&i| f(&d.desc.bodies[i])).collect()
+        };
+        let mut model = Self {
+            desc: d.desc.clone(),
+            vars,
+            n,
+            coord_body: d.coord_body.clone(),
+            q0: per_coord(|b| b.q0),
+            q_target: per_coord(|b| b.q_target),
+            limit: per_coord(|b| if b.kind == JointKind::Prismatic { b.limit } else { 0.0 }),
+            prismatic: d.coord_body.iter().map(|&i| d.desc.bodies[i].kind == JointKind::Prismatic).collect(),
+            nu,
+            revolute: d.revolute.clone(),
+            actuated: d.actuated.clone(),
+            unactuated: (0..n).filter(|i| !d.actuated.contains(i)).collect(),
+            b: d.b.clone(),
+            beta_index: d.coord_body.iter().map(|&i| vars.beta(i)).collect(),
+            frame_angles,
+            dynamics: Tape::compile(vars, &dyn_exprs),
+            aux: Tape::compile(vars, &aux_exprs),
+            aux_off: off,
+            gravity: Tape::compile(vars, &dv),
+            energy: Tape::compile(vars, &[&d.t, &d.v]),
+            tool,
+            constraints,
+            nc: d.desc.closures.len(),
+            derivation: doc::json(d),
+            defaults,
+        };
+        model.set_params(&model.defaults.clone());
+        model
+    }
+
+    pub fn set_params(&mut self, p: &[f64]) {
+        self.dynamics.set_params(p);
+        self.aux.set_params(p);
+        self.gravity.set_params(p);
+        self.energy.set_params(p);
+        if let Some(t) = &mut self.tool {
+            t.set_params(p);
+        }
+        if let Some(t) = &mut self.constraints {
+            t.set_params(p);
+        }
+    }
+
+    /// Does the mechanism contain closed kinematic loops?
+    #[must_use]
+    pub fn closed(&self) -> bool {
+        self.nc > 0
+    }
+
+    #[must_use]
+    pub fn has_tool(&self) -> bool {
+        self.tool.is_some()
+    }
+
+    #[must_use]
+    pub fn fully_actuated(&self) -> bool {
+        self.nu == self.n
+    }
+
+    #[must_use]
+    pub fn is_prismatic(&self, j: usize) -> bool {
+        self.prismatic[j]
     }
 }
-
-macro_rules! model {
-    ($id:expr, $m:ident, $defaults:expr) => {
-        Model {
-            id: $id,
-            nq: $m::NQ,
-            nu: $m::NU,
-            nframes: $m::NFRAMES,
-            nbodies: $m::NBODIES,
-            has_tool: $m::HAS_TOOL,
-            params: &$m::PARAMS,
-            defaults: &$defaults,
-            damping: &$m::DAMPING,
-            b: &$m::B,
-            mcn: $m::mcn,
-            mdot: $m::mdot,
-            dndq: $m::dndq,
-            dvdq: $m::dvdq,
-            energy: $m::energy,
-            frames: $m::frames,
-            coms: $m::coms,
-            tool: $m::tool,
-        }
-    };
-}
-
-const G: f64 = 9.81;
-
-/// Uniform 1 m pole of 0.3 kg on a 1 kg cart: r = L/2, I = m L² / 12.
-/// Order: mc, mp, r, Ip, g, βx, βθ.
-pub static CARTPOLE: Model = model!(SystemId::CartPole, cartpole, [1.0, 0.3, 0.5, 0.3 / 12.0, G, 0.1, 0.002]);
-
-/// Two uniform 1 m, 1 kg links.
-/// Order: m1, m2, l1, l2, r1, r2, I1, I2, g, β1, β2.
-pub static ARM2: Model =
-    model!(SystemId::Arm2, arm2, [1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 1.0 / 12.0, 1.0 / 12.0, G, 0.05, 0.05]);

@@ -6,22 +6,23 @@
 //! M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ,      τ = B u + τ_ext
 //! ```
 //!
-//! The kernels for M, C, N, energies, frames and Jacobians are generated symbolically by `sym/`
-//! (see `generated/`). This crate integrates them, runs the controllers and publishes a flat `f64`
-//! snapshot that the browser reads without copying.
+//! A mechanism is described generically (a tree of revolute/prismatic joints, see [`mech`]); its equations
+//! are derived symbolically in the browser by a small computer-algebra system specialised to planar
+//! mechanics ([`cas`]), printed as LaTeX ([`doc`]) and compiled into numeric tapes ([`tape`]) that the
+//! simulator ([`sim`]) and the generic controllers ([`control`]) evaluate at 1 kHz.
 
+pub mod cas;
 pub mod control;
+pub mod doc;
 pub mod dynamics;
 mod ffi;
-#[rustfmt::skip]
-pub mod generated;
 pub mod layout;
 pub mod lqr;
 pub mod mat;
+pub mod mech;
 pub mod model;
 pub mod sim;
+pub mod tape;
 
-/// Maximum number of generalised coordinates supported by the fixed-size buffers.
-pub const MAXN: usize = 4;
-/// Maximum number of model parameters.
-pub const MAXP: usize = 16;
+/// Maximum number of joints (generalised coordinates) of a mechanism.
+pub const MAXN: usize = 6;

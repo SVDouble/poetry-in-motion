@@ -123,6 +123,17 @@ export class Stage {
     return hit ? [hit.x, hit.y] : [0, 0];
   }
 
+  /** World point on the z = 0 plane → CSS pixels relative to the viewport. */
+  toScreen(x: number, y: number, z = 0): [number, number] {
+    this.tmp.set(x, y, z).project(this.camera);
+    return [((this.tmp.x + 1) / 2) * this.size.w, ((1 - this.tmp.y) / 2) * this.size.h];
+  }
+
+  /** Metres per CSS pixel on the plane of motion (for snapping and hit radii). */
+  get metresPerPixel(): number {
+    return (this.camera.top - this.camera.bottom) / this.size.h;
+  }
+
   /** A KaTeX label that follows an object. */
   label(obj: THREE.Object3D, src: string, cls = '', dx = 8, dy = -8): HTMLElement {
     const el = document.createElement('div');
