@@ -128,7 +128,7 @@ export class EquationPanel {
   }
 }
 
-const OPEN_KEY = 'meowfer.sections';
+const OPEN_KEY = 'motion.sections';
 
 function loadOpenState(): Record<string, boolean> {
   try {

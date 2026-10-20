@@ -36,11 +36,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: cargo build --release --target wasm32-unknown-unknown -p meowfer-core
+      - run: cargo build --release --target wasm32-unknown-unknown -p motion-core
       - uses: actions/upload-artifact@v5
         with:
           name: wasm
-          path: target/wasm32-unknown-unknown/release/meowfer_core.wasm
+          path: target/wasm32-unknown-unknown/release/motion_core.wasm
 
   web:
     name: Web app (TypeScript)

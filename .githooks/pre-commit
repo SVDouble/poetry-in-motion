@@ -9,7 +9,7 @@ if grep -qE '^(core/|Cargo\.)' <<<"$staged"; then
   cargo clippy --workspace --all-targets --quiet -- -D warnings
 fi
 if grep -qE '^sym/' <<<"$staged"; then
-  (cd "$root/sym" && uv run --quiet ruff format --check . && uv run --quiet ruff check . && uv run --quiet meowfer-derive --check)
+  (cd "$root/sym" && uv run --quiet ruff format --check . && uv run --quiet ruff check . && uv run --quiet motion-derive --check)
 fi
 if grep -qE '^web/' <<<"$staged"; then
   (cd "$root/web" && npx --no -- biome ci . >/dev/null && npx --no -- tsc --noEmit)

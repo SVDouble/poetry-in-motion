@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import sympy as sp
 
-from meowfer_sym import emit_rust
-from meowfer_sym.__main__ import render
-from meowfer_sym.model import derive
-from meowfer_sym.systems import ALL, arm2, cartpole
+from motion_sym import emit_rust
+from motion_sym.__main__ import render
+from motion_sym.model import derive
+from motion_sym.systems import ALL, arm2, cartpole
 
 
 def _sym(name: str, sys_params: list) -> sp.Symbol:  # type: ignore[type-arg]

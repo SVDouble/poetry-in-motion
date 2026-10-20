@@ -1,4 +1,4 @@
-# meowfer — Project Goals & Requirements
+# Poetry in Motion — Project Goals & Requirements
 
 ## Vision
 A browser-based, highly performant **robot dynamics visualization and simulation platform**,

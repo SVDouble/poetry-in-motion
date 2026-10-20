@@ -1,6 +1,6 @@
 # Poetry in Motion
 
-**meowfer** is an in-browser lab for robot dynamics. Robots are simulated in real time on the client, and every
+**Poetry in Motion** is an in-browser lab for robot dynamics. Robots are simulated in real time on the client, and every
 quantity that governs their motion is typeset next to them and updates as they move: the equations of motion,
 the inertia, Coriolis and gravity terms, coordinate frames, Jacobians and the control laws.
 
@@ -56,7 +56,7 @@ make dev     # build the wasm core and start Vite on http://localhost:5173
 
 | Command | |
 |---|---|
-| `make gen` | re-derive the equations and regenerate Rust + LaTeX (after editing `sym/src/meowfer_sym/systems.py`) |
+| `make gen` | re-derive the equations and regenerate Rust + LaTeX (after editing `sym/src/motion_sym/systems.py`) |
 | `make check` | everything CI runs: formatters, linters, type checkers, codegen freshness, all tests |
 | `make fmt` | format and auto-fix (rustfmt, ruff, Biome) |
 | `make build` | production bundle in `web/dist` |
@@ -82,7 +82,7 @@ arm: click/drag target, `A D` / `← →` joint torques, `E` flip elbow.
 
 ## Adding a robot
 
-1. Describe its bodies, frames and actuation in `sym/src/meowfer_sym/systems.py`, then run `make gen`.
+1. Describe its bodies, frames and actuation in `sym/src/motion_sym/systems.py`, then run `make gen`.
 2. Register the generated module in `core/src/model.rs` (`SystemId`, defaults) and add a controller if needed.
 3. Add a `SystemDef` in `web/src/systems/` with its scene, parameters and any extra equation sections.
 

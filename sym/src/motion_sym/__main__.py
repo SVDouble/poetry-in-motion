@@ -1,4 +1,4 @@
-"""Generate Rust kernels and LaTeX modules for every system: `uv run meowfer-derive`."""
+"""Generate Rust kernels and LaTeX modules for every system: `uv run motion-derive`."""
 
 from __future__ import annotations
 

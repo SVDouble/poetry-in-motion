@@ -1,4 +1,4 @@
-//! Real-time dynamics core for the meowfer robot visualizer.
+//! Real-time dynamics core for the Poetry in Motion robot visualizer.
 //!
 //! Every system obeys the manipulator equation (Murray, Li & Sastry, eq. 4.24)
 //!

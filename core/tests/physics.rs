@@ -2,10 +2,10 @@
 
 use core::f64::consts::PI;
 
-use meowfer_core::control::{arm, cartpole, wrap};
-use meowfer_core::layout::{Flag, off};
-use meowfer_core::model::SystemId;
-use meowfer_core::sim::Sim;
+use motion_core::control::{arm, cartpole, wrap};
+use motion_core::layout::{Flag, off};
+use motion_core::model::SystemId;
+use motion_core::sim::Sim;
 
 fn frictionless(id: SystemId) -> Sim {
     let mut s = Sim::new(id);

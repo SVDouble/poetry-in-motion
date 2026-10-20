@@ -2,9 +2,9 @@
 
 use std::time::Instant;
 
-use meowfer_core::control::{arm, cartpole};
-use meowfer_core::model::SystemId;
-use meowfer_core::sim::Sim;
+use motion_core::control::{arm, cartpole};
+use motion_core::model::SystemId;
+use motion_core::sim::Sim;
 
 fn main() {
     for (id, mode) in

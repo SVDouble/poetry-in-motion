@@ -33,7 +33,7 @@ function snapshot(nq: number): Snapshot {
 }
 
 beforeAll(async () => {
-  const bytes = await readFile(new URL('../wasm/meowfer_core.wasm', import.meta.url));
+  const bytes = await readFile(new URL('../wasm/motion_core.wasm', import.meta.url));
   const { instance } = await WebAssembly.instantiate(bytes, {});
   core = instance.exports as unknown as Core;
   const ptr = core.layout_ptr();

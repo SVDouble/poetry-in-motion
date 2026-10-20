@@ -1,10 +1,10 @@
-# meowfer — one entry point for the three toolchains (uv / cargo / npm).
+# Poetry in Motion — one entry point for the three toolchains (uv / cargo / npm).
 .DEFAULT_GOAL := help
 SHELL := bash
 .SHELLFLAGS := -euo pipefail -c
 
-WASM_SRC := target/wasm32-unknown-unknown/release/meowfer_core.wasm
-WASM_DST := web/src/wasm/meowfer_core.wasm
+WASM_SRC := target/wasm32-unknown-unknown/release/motion_core.wasm
+WASM_DST := web/src/wasm/motion_core.wasm
 
 .PHONY: help setup hooks gen gen-check wasm dev build preview test lint fmt check bench clean
 
@@ -19,13 +19,13 @@ hooks: ## use the repo's git hooks (format + lint before commit)
 	git config core.hooksPath .githooks
 
 gen: ## derive the equations symbolically and regenerate Rust + LaTeX
-	cd sym && uv run meowfer-derive
+	cd sym && uv run motion-derive
 
 gen-check: ## fail if generated code is stale
-	cd sym && uv run meowfer-derive --check
+	cd sym && uv run motion-derive --check
 
 wasm: ## build the physics core for the browser
-	cargo build --release --target wasm32-unknown-unknown -p meowfer-core
+	cargo build --release --target wasm32-unknown-unknown -p motion-core
 	@mkdir -p $(dir $(WASM_DST))
 	@if command -v wasm-opt >/dev/null; then \
 		wasm-opt -O3 --enable-simd --enable-bulk-memory --enable-nontrapping-float-to-int $(WASM_SRC) -o $(WASM_DST); \
@@ -60,7 +60,7 @@ fmt: ## format and auto-fix everything
 check: lint gen-check test ## everything CI runs
 
 bench: ## native throughput of the full control + RK4 step
-	cargo run --release --example bench -p meowfer-core
+	cargo run --release --example bench -p motion-core
 
 clean: ## remove build outputs
 	cargo clean

@@ -3,7 +3,7 @@
  * Physics worker: hosts the Rust/WASM core, runs it on a fixed 1 kHz clock in real time and publishes
  * snapshots through a SharedArrayBuffer (seqlock), or by message when cross-origin isolation is missing.
  */
-import wasmUrl from '../wasm/meowfer_core.wasm?url';
+import wasmUrl from '../wasm/motion_core.wasm?url';
 import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from './protocol';
 
 interface Core {
