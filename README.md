@@ -88,3 +88,7 @@ arm: click/drag target, `A D` / `← →` joint torques, `E` flip elbow.
 
 Notation follows R. M. Murray, Z. Li, S. S. Sastry, *A Mathematical Introduction to Robotic Manipulation*
 (CRC, 1994). The project goals are in [PROJECT.md](PROJECT.md).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
