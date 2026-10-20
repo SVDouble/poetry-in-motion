@@ -38,6 +38,42 @@ export interface Page {
   cite?: string;
 }
 
+/** Settings an experiment may change (mirrored by core flags). */
+export type SettingKey = 'umax' | 'posture' | 'manipulability' | 'pushK' | 'refWn';
+
+/** One step of an experiment's setup. The page's own controller is made primary first. */
+export type Action =
+  | { do: 'param'; key: string; value: number }
+  | { do: 'shadow'; key: string }
+  | { do: 'setting'; key: SettingKey; value: number }
+  | { do: 'coriolis'; on: boolean }
+  | { do: 'reset' }
+  /** Reset, then make the tool's current position its target (a well-posed task-space set-point). */
+  | { do: 'hold' }
+  | { do: 'hang' }
+  | { do: 'kick'; v: number }
+  | { do: 'push'; dx: number; dy: number; ms: number }
+  | { do: 'wait'; ms: number };
+
+export interface Experiment {
+  title: string;
+  /** What is being tested, one sentence. */
+  goal: string;
+  actions: Action[];
+  /** Plots shown while it runs (signal ids, see `scope/signals.ts`). */
+  plots: { ids: string[] }[];
+  /** What to notice, and why. HTML with `$…$` maths. */
+  notice: string;
+}
+
+/** The lab part of a page: the plots that matter for this controller and guided experiments. */
+export interface Lab {
+  watch: { ids: string[] }[];
+  experiments: Experiment[];
+}
+
+export const range = (k: number, f: (i: number) => string) => Array.from({ length: k }, (_, i) => f(i));
+
 export function pageContext(d: Derivation, snap: Snapshot, spec: ControllerSpec, p: (i: number) => number) {
   const n = d.n;
   const ctx: PageContext = {

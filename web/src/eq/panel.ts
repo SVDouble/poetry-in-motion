@@ -10,6 +10,19 @@ export interface Block {
   active?: () => boolean;
 }
 
+/** A paragraph of HTML with inline `$…$` maths. */
+export function prose(html: string, cls = 'prose'): HTMLElement {
+  const p = document.createElement('p');
+  p.className = cls;
+  p.innerHTML = html.replace(
+    /\$([^$]+)\$/g,
+    (_m, t: string) => `<span data-tex="${encodeURIComponent(t)}"></span>`,
+  );
+  for (const span of p.querySelectorAll<HTMLElement>('[data-tex]'))
+    tex(span, decodeURIComponent(span.dataset.tex ?? ''));
+  return p;
+}
+
 export class SectionBuilder {
   readonly live = new LiveScope();
   readonly blocks: Block[] = [];
@@ -18,15 +31,7 @@ export class SectionBuilder {
 
   /** Prose with inline `$…$` maths. */
   text(html: string, cls = 'prose'): HTMLElement {
-    const p = document.createElement('p');
-    p.className = cls;
-    p.innerHTML = html.replace(
-      /\$([^$]+)\$/g,
-      (_m, t: string) => `<span data-tex="${encodeURIComponent(t)}"></span>`,
-    );
-    for (const span of p.querySelectorAll<HTMLElement>('[data-tex]')) {
-      tex(span, decodeURIComponent(span.dataset.tex ?? ''));
-    }
+    const p = prose(html, cls);
     this.body.append(p);
     return p;
   }

@@ -2,8 +2,15 @@
 /** Exercises the real wasm core through the same ABI the worker uses. Run `make wasm` first. */
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { LABS } from '../control/lab';
+import { pageContext } from '../control/page';
+import { PAGES } from '../control/pages';
+import { ControlStore } from '../control/store';
 import type { Derivation } from '../model/derivation';
 import { dof, encode, PRESETS, paramVector } from '../model/description';
+import { presets } from '../scope/presets';
+import { Signals } from '../scope/signals';
+import type { SimClient } from './client';
 import { type Controllers, parseControllers } from './controllers';
 import { type Layout, parseLayout, Snapshot } from './layout';
 
@@ -143,5 +150,37 @@ describe('wasm core', () => {
     expect(shadow.v('ERR_Q')).toBeLessThan(primary.v('ERR_Q'));
     expect(primary.v('Q', 0)).toBe(s.v('Q', 0));
     core.set_controller(1, -1);
+  });
+
+  it.each(Object.keys(PRESETS))('names only signals and controls that exist (%s)', (name) => {
+    const d = build(encode(PRESETS[name]!()));
+    const reg = controllers();
+    const store = new ControlStore({ send: () => undefined } as unknown as SimClient, layout.slots);
+    store.load(reg, 0);
+    const snap = snapshot();
+    const signals = new Signals(d, snap, store);
+    const missing = (ids: string[]) => ids.filter((id) => !signals.resolve(id));
+    for (const spec of reg.specs) {
+      expect(PAGES[spec.key], spec.key).toBeDefined();
+      if (reg.applicable[spec.id] !== null) continue;
+      const ctx = pageContext(d, snap, spec, (i) => reg.params[spec.id]![i]!);
+      const lab = LABS[spec.key]!(ctx);
+      expect(missing(lab.watch.flatMap((p) => p.ids)), `${spec.key} watch`).toEqual([]);
+      for (const e of lab.experiments) {
+        expect(missing(e.plots.flatMap((p) => p.ids)), `${spec.key}: ${e.title}`).toEqual([]);
+        for (const a of e.actions) {
+          if (a.do === 'param')
+            expect(
+              spec.params.map((p) => p.key),
+              `${spec.key}: ${e.title}`,
+            ).toContain(a.key);
+          if (a.do === 'shadow') expect(reg.specs.map((s) => s.key)).toContain(a.key);
+        }
+      }
+      for (const p of presets(d, store, lab.watch, spec.name)) {
+        expect(missing(p.plots.flatMap((x) => x.ids)), `preset ${p.key}`).toEqual([]);
+      }
+    }
+    for (const g of signals.groups()) expect(missing(g.ids)).toEqual([]);
   });
 });

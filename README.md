@@ -20,9 +20,12 @@
 3. **Simulate** it in real time. The same equations drive the physics and the controllers, and every quantity
    updates live next to the robot. Eleven controllers: passive, PD, PD + gravity, computed torque,
    passivity-based (Slotine–Li), virtual model control / energy shaping, impedance, admittance, LQR, MPC
-   (condensed box QP solved by FISTA) and energy swing-up. Each has its own page: parameters first, then the
-   idea, the generic derivation, the same derivation for the built mechanism with live numbers, stability and
-   limitations. One controller runs as the primary and up to four others as **shadows**: independent
+   (condensed box QP solved by FISTA) and energy swing-up. Each has its own page: parameters first, then
+   guided experiments (one click sets up a scenario, switches the plots to what matters and explains what to
+   notice), then the idea, the generic derivation, the same derivation for the built mechanism with live
+   numbers, stability and limitations. The plots can show dozens of signals (joints, every term of the
+   equations of motion, energy and power, task space, per-controller comparisons and each controller's
+   internals such as its Lyapunov function, null-space leakage or active MPC constraints). One controller runs as the primary and up to four others as **shadows**: independent
    simulations of the same mechanism under the same pushes, drawn as ghosts and compared in the plots. The
    **Goals** tab sets joint or tool targets and secondary goals (posture, manipulability) pursued through the
    dynamically consistent null-space projector `N = I − Jᵀ J̄ᵀ`, with its numbers live. Shift-drag pushes the
@@ -53,8 +56,12 @@ core/  Rust → WebAssembly
        ├─ qp.rs     box-constrained QP (FISTA) for MPC
        ├─ sim.rs    one simulation: RK4 at 1 kHz, KKT solve with Baumgarte stabilisation, end stops, snapshot
        └─ world.rs  the primary and up to four shadow simulations, per-controller parameters
-web/   TypeScript + Vite: builder, step-by-step derivation, physics in a Web Worker with SharedArrayBuffer
-       snapshots, three.js (WebGPU with WebGL 2 fallback), KaTeX equations patched in place, uPlot charts
+web/   TypeScript + Vite
+       ├─ app/      the shell (main.ts), the Simulate stage, controller dock/menu/tab, Goals and Model tabs
+       ├─ control/  controller pages (theory) and labs (watch lists, experiments); the slot store
+       ├─ scope/    signal catalogue (one id per plottable quantity), recorder, plots and presets
+       ├─ builder/ eq/ scene/ sim/   editor, derivation and live equations (KaTeX patched in place),
+       │            three.js (WebGPU with WebGL 2 fallback), the physics Web Worker (SharedArrayBuffer)
 sym/   Python + SymPy: an independent derivation of the reference systems, generated into Rust kernels that
        the tests use as an oracle for the in-browser CAS
 ```
@@ -116,7 +123,8 @@ does this on Cloudflare Pages and Netlify. Without these headers the app still w
 
 ## Controls
 
-Simulate: `1`–`9` choose the primary controller · `Shift`+`1`–`9` toggle it as a shadow · `P` pause ·
+Simulate (the Keys toggle shows them on the viewport): `1`–`9` choose the primary controller ·
+`Shift`+`1`–`9` toggle it as a shadow · `P` pause ·
 `R` reset · `Space` kick · actuated joints: `← →`, `A D`, `J L`, … · drag: tool target · `Shift`+drag: push the
 tool · arms with an actuated rail: click to set its target.
 
@@ -126,7 +134,8 @@ tool · arms with an actuated rail: click to set its target.
   the LaTeX and the controllers, is generic.
 - A controller is a struct implementing `Controller` in `core/src/control/`, plus a `Kind` and a `Spec`
   (parameters, telemetry) in `control/mod.rs`. Its page is a function in `web/src/control/` registered in
-  `pages.ts`; the parameter sliders, the slot machinery and the comparison plots need no changes.
+  `pages.ts`, its experiments live in `lab.ts`; sliders, slots, plots and its telemetry signals need no
+  changes (a test checks that every signal and parameter an experiment names exists).
 
 Notation follows R. M. Murray, Z. Li, S. S. Sastry, *A Mathematical Introduction to Robotic Manipulation*
 (CRC, 1994). The project goals are in [PROJECT.md](PROJECT.md).

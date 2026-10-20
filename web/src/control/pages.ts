@@ -19,6 +19,24 @@ export const PAGES: Record<string, (c: PageContext) => Page> = {
   swing_up: swingUp,
 };
 
+/** Short names for chips, pills and legends. */
+const SHORT: Record<string, string> = {
+  passive: 'Passive',
+  pd: 'PD',
+  pd_gravity: 'PD+g',
+  computed_torque: 'CT',
+  passivity: 'Passivity',
+  vmc: 'VMC',
+  impedance: 'Impedance',
+  admittance: 'Admittance',
+  lqr: 'LQR',
+  mpc: 'MPC',
+  swing_up: 'Swing-up',
+};
+
+export const shortName = (s: { key: string; name: string } | undefined) =>
+  s ? (SHORT[s.key] ?? s.name) : '?';
+
 export const FAMILIES: Record<string, string> = {
   none: 'Baseline',
   joint: 'Joint space',

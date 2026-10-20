@@ -85,6 +85,24 @@ export class ControlStore {
     this.notify();
   }
 
+  byKey(key: string): number {
+    return this.reg.specs.find((s) => s.key === key)?.id ?? OFF;
+  }
+
+  clearShadows(): void {
+    this.slots.forEach((k, i) => {
+      if (i > 0 && k !== OFF) this.assign(i, OFF);
+    });
+    this.notify();
+  }
+
+  /** Back to the defaults of every parameter of `kind`. */
+  resetParams(kind: number): void {
+    this.spec(kind)?.params.forEach((p, i) => {
+      this.setParam(kind, i, p.default);
+    });
+  }
+
   /** Restart every shadow from the primary's current state. */
   sync(): void {
     this.client.send({ type: 'sync' });

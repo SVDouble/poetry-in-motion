@@ -1,5 +1,5 @@
 /**
- * Simulation settings shared by every slot, and the Goals and Model tabs: what the controllers aim for
+ * The Goals and Model tabs: what the controllers aim for
  * (joint or tool targets, secondary goals in the null space of the tool task), how the world pushes back,
  * and the symbolic coefficients of the model.
  */
@@ -9,54 +9,9 @@ import { texMat } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import type { Mechanism } from '../model/description';
 import type { SimClient } from '../sim/client';
-import type { Flag, Snapshot } from '../sim/layout';
+import type { Snapshot } from '../sim/layout';
 import { card, DEG, el, note, type SliderOpts, segmented, slider } from '../ui/widgets';
-
-export interface Settings {
-  umax: number;
-  /** Manual input of the keyboard, N·m | N. */
-  key: number;
-  refWn: number;
-  pushK: number;
-  posture: number;
-  manipulability: number;
-  useTool: boolean;
-  coriolis: boolean;
-  frames: boolean;
-  trail: boolean;
-  ghosts: boolean;
-}
-
-export const defaultSettings = (): Settings => ({
-  umax: 120,
-  key: 20,
-  refWn: 4,
-  pushK: 200,
-  posture: 4,
-  manipulability: 0,
-  useTool: false,
-  coriolis: true,
-  frames: true,
-  trail: true,
-  ghosts: true,
-});
-
-type Numeric = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
-
-/** Settings mirrored by core flags. */
-export const SETTING_FLAGS: [Numeric, Flag][] = [
-  ['umax', 'Umax'],
-  ['refWn', 'RefWn'],
-  ['pushK', 'PushK'],
-  ['posture', 'Posture'],
-  ['manipulability', 'Manipulability'],
-];
-
-export function pushSettings(client: SimClient, s: Settings): void {
-  for (const [key, flag] of SETTING_FLAGS) client.flag(flag, s[key]);
-  client.flag('Coriolis', s.coriolis ? 1 : 0);
-  client.flag('UseTool', s.useTool ? 1 : 0);
-}
+import { type Numeric, SETTING_FLAGS, type Settings, toolTargets } from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
 
@@ -86,9 +41,6 @@ export interface GoalsContext {
   /** Toggle following the tool target. */
   setUseTool: (on: boolean) => void;
 }
-
-/** Can a tool target be followed? Needs a tool and a full actuator per DOF (IK + joint control) or a task controller. */
-export const toolTargets = (d: Derivation) => d.tool !== null && d.nu > 0;
 
 export function goalsTab(g: GoalsContext): HTMLElement {
   const { d, mech, client, settings } = g;

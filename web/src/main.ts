@@ -1,47 +1,37 @@
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
-import { ControlView } from './app/control';
-import { defaultSettings, goalsTab, modelTab, pushSettings, type Settings, toolTargets } from './app/goals';
 import { History } from './app/history';
-import { ACTUATOR_KEYS, ACTUATOR_LABELS } from './app/keys';
 import { closeLoop, type DragContext, dragJoint, dragTip } from './app/manipulate';
-import { plotSpecs } from './app/plotspecs';
+import { defaultSettings, type Settings } from './app/settings';
+import { SimulateStage } from './app/simulate';
 import { Editor } from './builder/editor';
 import { Gizmos } from './builder/gizmos';
-import { ControlStore, SLOT_COLORS } from './control/store';
+import { ControlStore } from './control/store';
 import { derivationSections } from './eq/derivation';
-import { liveSections } from './eq/live';
 import { EquationPanel } from './eq/panel';
-import { tex } from './eq/tex';
 import type { Derivation } from './model/derivation';
 import {
   cloneMechanism,
-  coordIndex,
   DEFAULT_PRESET,
   encode,
   type JointKind,
   MAX_CLOSURES,
   type Mechanism,
   migrate,
-  normalise,
   PRESETS,
   paramVector,
 } from './model/description';
-import { Plots } from './plots/plots';
-import { GhostView } from './scene/ghost';
 import { RobotView } from './scene/robot';
 import { Stage } from './scene/stage';
 import { SimClient } from './sim/client';
-import type { Controllers } from './sim/controllers';
-import { button, portLabel, segmented } from './ui/widgets';
+import { closePopover } from './ui/popover';
+import { button, portLabel } from './ui/widgets';
 
 type StageName = 'build' | 'derive' | 'simulate';
-type SideTab = 'control' | 'goals' | 'eq' | 'model';
 type ConnectKind = 'pin' | 'slot';
 
 const EQ_HZ = 30;
-const PLOT_HZ = 30;
 const TIP_OFFSET_PX = 22;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -64,25 +54,19 @@ class App {
   private params: number[];
   private derivation: Derivation | null = null;
   private robot: RobotView | null = null;
-  private ghosts: GhostView[] = [];
-  private control: ControlView | null = null;
-  private readonly store: ControlStore;
-  private side: SideTab = 'control';
+  private readonly sim: SimulateStage;
   private running = false;
   private dragging = false;
-  private pushAt: [number, number] | null = null;
   private popover: HTMLElement | null = null;
   private readonly settings: Settings = defaultSettings();
   private readonly history = new History<Mechanism>(cloneMechanism);
   private readonly editor: Editor;
   private readonly gizmos: Gizmos;
   private readonly panel = new EquationPanel($('side'));
-  private readonly plots = new Plots($('plots'));
-  private readonly held = new Set<string>();
   private buildTimer = 0;
   private buildSeq = 0;
   private lastBuildMs = 0;
-  private readonly clock = { eq: 0, plot: 0, hud: 0, frames: 0 };
+  private readonly clock = { eq: 0, hud: 0, frames: 0 };
 
   constructor(
     private readonly client: SimClient,
@@ -90,8 +74,19 @@ class App {
   ) {
     this.mech = decodeHash() ?? PRESETS[DEFAULT_PRESET]!();
     this.params = paramVector(this.mech);
-    this.store = new ControlStore(client, client.layout.slots);
-    this.store.onSlots(() => this.slotsChanged());
+    this.sim = new SimulateStage({
+      client,
+      stage,
+      panel: this.panel,
+      store: new ControlStore(client, client.layout.slots),
+      settings: this.settings,
+      robot: () => this.robot,
+      mech: () => this.mech,
+      params: () => this.params,
+      running: () => this.running,
+      setRunning: (on) => this.setRunning(on),
+      flash: (m) => this.flash(m),
+    });
     this.editor = new Editor(document.createElement('div'), {
       change: (m) => this.edited(m),
       select: (i) => {
@@ -177,17 +172,12 @@ class App {
     this.lastBuildMs = res.ms;
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
-    if (!toolTargets(res.derivation)) this.settings.useTool = false;
-    pushSettings(this.client, this.settings);
-
     this.stage.clear();
     this.robot = new RobotView(this.stage, this.mech);
-    this.ghosts = SLOT_COLORS.slice(1).map((c) => new GhostView(this.stage, this.mech, c));
+    this.sim.load(res.derivation, res.controllers);
     this.stage.castShadows();
     this.robot.showFrames = this.settings.frames;
     this.robot.showTrail = this.settings.trail;
-    this.control = new ControlView(this.store, res.derivation, this.snap, this.panel);
-    this.store.load(res.controllers, defaultController(res.controllers));
     if (!this.dragging) {
       const b = this.robot.bounds();
       this.stage.setView(b.cx, b.cy, b.width, b.height);
@@ -288,13 +278,17 @@ class App {
     }
     document.body.dataset.stage = s;
     this.setRunning(s === 'simulate');
-    if (s !== 'simulate') this.reset();
+    if (s !== 'simulate') {
+      this.sim.leave();
+      this.reset();
+    }
     const sel = s === 'build' ? this.editor.selection : -1;
     this.robot?.select(sel);
     this.gizmos.select(sel);
     this.gizmos.visible = s === 'build';
     this.gizmos.connectFrom = null;
     this.closePopover();
+    closePopover();
     this.refreshStage();
   }
 
@@ -336,95 +330,23 @@ class App {
       );
       this.panel.mount(derivationSections(this.mech, d));
     } else {
-      head.append(title('Simulation', `${d.n - constraints} DOF · 1 kHz RK4`), this.sideTabs());
-      this.mountSide();
-      this.plots.mount(plotSpecs(d, this.snap, this.store));
+      head.append(title('Simulation', `${d.n - constraints} DOF · 1 kHz RK4`));
+      this.sim.enter(head);
     }
-    this.buildOverlay();
+    $('hint').textContent =
+      this.stageName === 'build'
+        ? 'Click a body to select it. Steel hinges are actuated, amber ones passive; blue pins close loops.'
+        : this.stageName === 'derive'
+          ? 'Every formula on the right was derived symbolically for exactly this structure.'
+          : '';
     this.buildToggles();
-    this.buildKeys();
-  }
-
-  private sideTabs(): HTMLElement {
-    const tabs: [SideTab, string][] = [
-      ['control', 'Control'],
-      ['goals', 'Goals'],
-      ['eq', 'Equations'],
-      ['model', 'Model'],
-    ];
-    return segmented(
-      tabs,
-      this.side,
-      (v) => {
-        this.side = v;
-        this.mountSide();
-      },
-      false,
-    );
-  }
-
-  private mountSide(): void {
-    const d = this.derivation;
-    if (!d || this.stageName !== 'simulate') return;
-    this.panel.clear();
-    const side = $('side');
-    if (this.side === 'eq') this.panel.mount(liveSections({ d, snap: this.snap }));
-    else if (this.side === 'model')
-      side.replaceChildren(modelTab(d, this.params, this.client, this.settings));
-    else if (this.side === 'goals') {
-      side.replaceChildren(
-        goalsTab({
-          d,
-          mech: this.mech,
-          snap: this.snap,
-          client: this.client,
-          settings: this.settings,
-          panel: this.panel,
-          onJointTarget: () => this.setUseTool(false),
-          setUseTool: (on) => this.setUseTool(on),
-        }),
-      );
-    } else if (this.control) side.replaceChildren(this.control.tab());
-  }
-
-  private setUseTool(on: boolean): void {
-    if (this.settings.useTool === on) return;
-    this.settings.useTool = on;
-    this.client.flag('UseTool', on ? 1 : 0);
-    if (this.side === 'control') this.mountSide();
-  }
-
-  /** The slot assignment changed: overlay, plots, ghosts and the Control tab follow. */
-  private slotsChanged(): void {
-    const d = this.derivation;
-    if (!d || this.stageName !== 'simulate') return;
-    this.buildOverlay();
-    this.plots.mount(plotSpecs(d, this.snap, this.store));
-    for (const g of this.ghosts) g.resetTrail();
-    if (this.side === 'control') this.mountSide();
-  }
-
-  // ---------------------------------------------------------------- chrome
-
-  private buildOverlay(): void {
-    const [chips, quick, hint] = [$('modes'), $('quick'), $('hint')];
-    chips.replaceChildren();
-    quick.replaceChildren();
-    if (!this.derivation || this.stageName !== 'simulate' || !this.control) {
-      hint.textContent =
-        this.stageName === 'build'
-          ? 'Click a body to select it. Steel hinges are actuated, amber ones passive; blue pins close loops.'
-          : 'Every formula on the right was derived symbolically for exactly this structure.';
-      return;
-    }
-    this.control.overlay(chips, quick, hint);
   }
 
   private buildToggles(): void {
     const host = $('toggles');
     host.replaceChildren();
     const t = this.settings;
-    const items: ['frames' | 'trail' | 'coriolis' | 'ghosts', string, () => void][] = [
+    const items: ['frames' | 'trail' | 'coriolis' | 'ghosts' | 'keys', string, () => void][] = [
       [
         'frames',
         'Frames',
@@ -441,17 +363,12 @@ class App {
           this.robot.resetTrail();
         },
       ],
-      [
-        'ghosts',
-        'Shadows',
-        () => {
-          for (const g of this.ghosts) g.visible = t.ghosts;
-        },
-      ],
+      ['ghosts', 'Shadows', () => undefined],
       ['coriolis', 'Coriolis', () => this.client.flag('Coriolis', t.coriolis ? 1 : 0)],
+      ['keys', 'Keys', () => this.sim.renderKeys()],
     ];
     for (const [key, label, apply] of items) {
-      if ((key === 'coriolis' || key === 'ghosts') && this.stageName !== 'simulate') continue;
+      if (key !== 'frames' && key !== 'trail' && this.stageName !== 'simulate') continue;
       const b = button(
         label,
         () => {
@@ -468,33 +385,6 @@ class App {
     }
   }
 
-  private buildKeys(): void {
-    const d = this.derivation;
-    const keys = $('keys');
-    if (!d || this.stageName !== 'simulate') {
-      keys.innerHTML = '';
-      return;
-    }
-    const parts = d.coords
-      .filter((c) => c.actuated)
-      .slice(0, ACTUATOR_LABELS.length)
-      .map(
-        (c, a) =>
-          `<span><kbd>${ACTUATOR_LABELS[a]}</kbd><span data-tex="${encodeURIComponent(c.tex)}"></span></span>`,
-      );
-    if (toolTargets(d)) parts.push('<span><kbd>drag</kbd>tool target</span>');
-    else if (this.mech.bodies.some((b) => b.actuated && b.joint === 'prismatic')) {
-      parts.push('<span><kbd>click</kbd>rail target</span>');
-    }
-    if (d.tool) parts.push('<span><kbd>Shift</kbd>+<kbd>drag</kbd>push</span>');
-    parts.push(
-      '<span><kbd>1–9</kbd>primary</span><span><kbd>Shift</kbd>+<kbd>1–9</kbd>shadow</span><span><kbd>Space</kbd>kick</span><span><kbd>R</kbd>reset</span>',
-    );
-    keys.innerHTML = parts.join('');
-    for (const el of keys.querySelectorAll<HTMLElement>('[data-tex]'))
-      tex(el, decodeURIComponent(el.dataset.tex ?? ''));
-  }
-
   private setRunning(on: boolean): void {
     this.running = on;
     this.client.send({ type: 'run', running: on });
@@ -504,7 +394,7 @@ class App {
   private reset(): void {
     this.client.send({ type: 'reset' });
     this.robot?.resetTrail();
-    for (const g of this.ghosts) g.resetTrail();
+    this.sim.resetTrails();
   }
 
   private chrome(): void {
@@ -535,10 +425,7 @@ class App {
       viewport.addEventListener(`pointer${kind}`, pointer(kind));
     window.addEventListener('keydown', (e) => this.key(e, true));
     window.addEventListener('keyup', (e) => this.key(e, false));
-    window.addEventListener('blur', () => {
-      for (let a = 0; a < ACTUATOR_KEYS.length; a++) this.client.send({ type: 'input', i: a, v: 0 });
-      this.held.clear();
-    });
+    window.addEventListener('blur', () => this.sim.releaseKeys());
   }
 
   private pointer(x: number, y: number, kind: 'down' | 'move' | 'up', pressed: boolean, shift = false): void {
@@ -550,35 +437,7 @@ class App {
       if (i >= 0) this.editor.select(i);
       return;
     }
-    if (this.stageName !== 'simulate') return;
-    // Shift-drag: push the tool with a spring towards the pointer
-    if (this.pushAt || (shift && kind === 'down' && d.tool)) {
-      if (kind === 'up' || !pressed) {
-        this.pushAt = null;
-        this.client.flag('PushOn', 0);
-      } else {
-        this.pushAt = [x, y];
-        this.client.flag('PushX', x);
-        this.client.flag('PushY', y);
-      }
-      return;
-    }
-    if (!pressed || kind === 'up') return;
-    if (toolTargets(d)) {
-      this.client.flag('TargetX', x);
-      this.client.flag('TargetY', y);
-      this.setUseTool(true);
-      return;
-    }
-    // project onto the rail of the first actuated prismatic joint
-    const i = this.mech.bodies.findIndex((b) => b.actuated && b.joint === 'prismatic');
-    if (i < 0 || kind !== 'down') return;
-    const b = normalise(this.mech.bodies[i]!);
-    const [jx, jy, jp] = this.robot.jointPose(i, this.snap, this.params);
-    const axis = jp + b.axisAngle;
-    let target = (x - jx) * Math.cos(axis) + (y - jy) * Math.sin(axis);
-    if (b.limit > 0) target = Math.max(-b.limit * 0.9, Math.min(b.limit * 0.9, target));
-    this.client.send({ type: 'target', i: coordIndex(this.mech)[i]!, v: target });
+    if (this.stageName === 'simulate') this.sim.pointer(x, y, kind, pressed, shift);
   }
 
   private key(e: KeyboardEvent, down: boolean): void {
@@ -589,36 +448,7 @@ class App {
       return;
     }
     if (e.metaKey || e.ctrlKey || this.stageName !== 'simulate') return;
-    if (down && e.repeat) {
-      if (this.held.has(k)) e.preventDefault();
-      return;
-    }
-    if (down) this.held.add(k);
-    else this.held.delete(k);
-    const d = this.derivation;
-    const a = ACTUATOR_KEYS.findIndex(([neg, pos]) => k === neg || k === pos);
-    if (a >= 0 && d && a < d.nu) {
-      // left = negative for prismatic joints, counter-clockwise (positive) for revolute ones
-      const kind = d.coords.filter((c) => c.actuated)[a]?.kind;
-      const sign = (k === ACTUATOR_KEYS[a]![0] ? -1 : 1) * (kind === 'revolute' ? -1 : 1);
-      this.client.send({ type: 'input', i: a, v: down ? sign * this.settings.key : 0 });
-      e.preventDefault();
-      return;
-    }
-    if (!down || !d) return;
-    if (k === ' ') {
-      const passive = d.coords.flatMap((c, i) => (c.actuated ? [] : [i]));
-      for (const i of passive.length ? passive : d.coords.map((_, i) => i)) {
-        this.client.send({ type: 'kick', i, v: (Math.random() < 0.5 ? -1 : 1) * 1.5 });
-      }
-      e.preventDefault();
-    } else if (k === 'r') this.reset();
-    else if (k === 'p') this.setRunning(!this.running);
-    else if (/^digit[1-9]$/.test(e.code.toLowerCase())) {
-      const spec = this.store.usable()[Number(e.code.slice(5)) - 1];
-      if (spec && e.shiftKey) this.store.toggleShadow(spec.id);
-      else if (spec) this.store.setPrimary(spec.id);
-    }
+    this.sim.key(e, down);
   }
 
   private buildKey(e: KeyboardEvent, k: string): void {
@@ -645,25 +475,14 @@ class App {
     this.client.pull();
     const simulating = this.stageName === 'simulate';
     this.robot?.update(this.snap, this.params, simulating);
-    this.robot?.push(simulating ? this.pushAt : null, this.snap);
-    if (simulating && this.settings.ghosts) {
-      const length = (i: number) => this.robot?.length(i, this.params) ?? 0;
-      this.ghosts.forEach((g, k) => {
-        g.update(this.snap.slots[k + 1]!, length, this.running);
-      });
-    } else for (const g of this.ghosts) g.visible = false;
+    const refresh = now - c.eq >= 1000 / EQ_HZ;
+    this.sim.frame(now, refresh);
     this.stage.render();
     if (this.stageName === 'build' && this.robot)
       this.gizmos.update(this.mech, this.robot, this.snap, this.params);
     c.frames++;
-    if (simulating && now - c.plot >= 1000 / PLOT_HZ) {
-      this.plots.sample(this.snap.t);
-      this.plots.draw();
-      c.plot = now;
-    }
-    if (now - c.eq >= 1000 / EQ_HZ) {
+    if (refresh) {
       this.panel.update();
-      if (simulating && this.side === 'control') this.control?.update();
       c.eq = now;
     }
     if (now - c.hud >= 500) {
@@ -679,15 +498,6 @@ class App {
         `<span class="muted">${this.stage.backend}${s.shared ? ' · shared memory' : ''}</span>`;
     }
   }
-}
-
-/** Computed torque where every DOF is actuated, LQR for underactuated mechanisms, else passive. */
-function defaultController(reg: Controllers): number {
-  for (const key of ['computed_torque', 'lqr']) {
-    const spec = reg.specs.find((s) => s.key === key);
-    if (spec && reg.applicable[spec.id] === null) return spec.id;
-  }
-  return 0;
 }
 
 async function main(): Promise<void> {
