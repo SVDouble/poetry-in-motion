@@ -369,8 +369,7 @@ impl Controller for Vmc {
             self.projector.extend((0..n * n).map(|ik| stack.p[(ik % n) * n + ik / n]));
         }
         self.w = manipulability(n, &tool.jp);
-        let mut dv = [0.0; MAXN];
-        model.gravity.eval(c.q, c.qd, &mut dv);
+        let dv = model.potential_grad(c.q);
         let f: VecN =
             core::array::from_fn(|i| self.tau_task[i] + dv[i] + self.tau_null[i] + self.tau_soft[i]);
 

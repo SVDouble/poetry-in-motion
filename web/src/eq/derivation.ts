@@ -133,6 +133,37 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
     );
   });
 
+  if (d.elements.length) {
+    step('Springs & dampers', undefined, (b) => {
+      b.text(
+        'A spring or damper joins two points $p_a$ and $p_b$. Its length $\\ell = \\lVert p_b - p_a \\rVert$ is a square root, so the derivation keeps $\\ell^2$ (a polynomial in the trigonometric functions of $q$) and its gradient; the chain rule gives the rest:',
+      );
+      b.math(
+        String.raw`V_e = \tfrac12\,k_e\,(\ell_e - \ell_{0,e})^2,\qquad \frac{\partial \ell_e}{\partial q} = \frac{1}{2\ell_e}\,\frac{\partial \ell_e^2}{\partial q},\qquad \dot\ell_e = \frac{\partial \ell_e}{\partial q}\,\dot q`,
+      );
+      d.elements.forEach((e, k) => {
+        const where = (body: string, frac: number) =>
+          body === 's' ? 'p^{s}' : String.raw`p_{${body}}(${frac === 1 ? 'l' : String.raw`${frac}\,l`})`;
+        const kind = e.k > 0 && e.d > 0 ? 'spring–damper' : e.k > 0 ? 'spring' : 'damper';
+        b.math(
+          String.raw`p_a = ${where(e.a, e.sa)} = ${col(e.pa)},\quad p_b = ${where(e.b, e.sb)} = ${col(e.pb)}`,
+          {
+            caption: `${kind} ${k + 1}: ${e.a === 's' ? 'ground' : `body ${e.a}`} ↔ body ${e.b} · k = ${e.k} N/m, ℓ₀ = ${e.l0} m, c = ${e.d} N·s/m`,
+          },
+        );
+        b.math(
+          String.raw`\ell_{${k + 1}}^2 = ${e.l2},\qquad \frac{\partial \ell_{${k + 1}}^2}{\partial q} = ${col(e.dl2)}^{T}`,
+        );
+      });
+      b.text(
+        'The spring force $k_e(\\ell_e - \\ell_{0,e})$ and the damper force $c_e \\dot\\ell_e$ act along the line between the points; through $\\partial \\ell_e/\\partial q$ they become generalised forces, which join $N$ (the springs as part of $\\partial V/\\partial q$, the dampers next to joint friction):',
+      );
+      b.math(
+        String.raw`N(q,\dot q) \mathrel{+}= \sum_e \big(k_e(\ell_e - \ell_{0,e}) + c_e\,\dot\ell_e\big)\,\frac{\partial \ell_e}{\partial q}^{T}`,
+      );
+    });
+  }
+
   step('Equations of motion', 'MLS (4.24)', (b) => {
     b.math(
       String.raw`${cls('t-m', String.raw`M(q)\,\ddot q`)} + ${cls('t-c', String.raw`C(q,\dot q)\,\dot q`)} + ${cls('t-n', String.raw`N(q,\dot q)`)} = ${cls('t-tau', String.raw`\tau`)}`,

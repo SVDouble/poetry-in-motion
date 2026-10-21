@@ -481,6 +481,36 @@ function arcArrow(pen: Pen, x: number, y: number, r: number, a0: number, a1: num
   head(pen, x + r * Math.cos(a1), y + r * Math.sin(a1), a1 + (s * Math.PI) / 2, ink);
 }
 
+/** A dashpot from (x0, y0) to (x1, y1): a cylinder on the first end, a piston rod from the second whose
+ * plate stays inside the cylinder; the cylinder is sized by the reference length `ref`, so the rod visibly
+ * slides in and out. */
+function dashpot(pen: Pen, x0: number, y0: number, x1: number, y1: number, ref: number, ink: string): void {
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  if (len < 1e-6) return;
+  const [tx, ty] = [(x1 - x0) / len, (y1 - y0) / len];
+  const [nx, ny] = [-ty, tx];
+  const w = 6 * pen.u;
+  const size = Math.min(ref, len);
+  const lead = 0.15 * size;
+  const cyl = 0.5 * size;
+  const at = (s: number, o = 0): [number, number] => [x0 + tx * s + nx * o, y0 + ty * s + ny * o];
+  pen.begin();
+  pen.move(x0, y0);
+  pen.line(...at(lead));
+  // the cylinder: a back wall and two sides, open towards the piston
+  pen.move(...at(lead + cyl, w));
+  pen.line(...at(lead, w));
+  pen.line(...at(lead, -w));
+  pen.line(...at(lead + cyl, -w));
+  // the piston plate and its rod to the second end
+  const p = lead + 0.65 * cyl;
+  pen.move(...at(p, w * 0.7));
+  pen.line(...at(p, -w * 0.7));
+  pen.move(...at(p));
+  pen.line(x1, y1);
+  pen.draw({ stroke: ink, width: 1.2 });
+}
+
 /** A zigzag spring from (x0, y0) to (x1, y1) with straight ends. */
 function spring(pen: Pen, x0: number, y0: number, x1: number, y1: number, ink: string): void {
   const len = Math.hypot(x1 - x0, y1 - y0);
@@ -579,8 +609,9 @@ export class Figure {
   private readonly paths = SLOT_COLORS.map(() => new Path());
   /** Where an export puts the gravity arrow (null: the corner of the reachable region). */
   private gAt: [number, number] | null = null;
-  /** Highlighted body (−1: none). */
+  /** Highlighted body and spring/damper (−1: none). */
   selected = -1;
+  selectedElement = -1;
   /** Label boxes of the picture being painted (world x0, y0, x1, y1, …): a label that would overlap is left out. */
   private readonly boxes: number[] = [];
 
@@ -800,6 +831,49 @@ export class Figure {
       if (c.kind !== 'slot' || c.a < 0) return;
       const [ax, ay] = this.port(c.a, c.sa, snap, params);
       this.slotGuide(pen, ax, ay, snap.frame(c.a + 1)[2] + c.angle, false);
+    });
+
+    // springs and dampers: a zigzag, a dashpot, or both side by side between end bars
+    this.mech.elements.forEach((e, k) => {
+      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
+      const [bx, by] = this.port(e.b, e.sb, snap, params);
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 1e-6) return;
+      const ink = k === this.selectedElement ? C.accent : C.ink;
+      const [tx, ty] = [(bx - ax) / len, (by - ay) / len];
+      const [nx, ny] = [-ty, tx];
+      const ref = e.l0 > 0.05 ? e.l0 : 0.4;
+      if (e.a < 0) pinSupport(pen, ax, ay, Math.atan2(-ty, -tx));
+      if (e.k > 0 && e.d > 0) {
+        const o = 9 * u;
+        const end = Math.min(8 * u, 0.15 * len);
+        const [a2x, a2y, b2x, b2y] = [ax + tx * end, ay + ty * end, bx - tx * end, by - ty * end];
+        pen.begin();
+        pen.move(ax, ay);
+        pen.line(a2x, a2y);
+        pen.move(a2x + nx * o, a2y + ny * o);
+        pen.line(a2x - nx * o, a2y - ny * o);
+        pen.move(bx, by);
+        pen.line(b2x, b2y);
+        pen.move(b2x + nx * o, b2y + ny * o);
+        pen.line(b2x - nx * o, b2y - ny * o);
+        pen.draw({ stroke: ink, width: 1.2 });
+        spring(pen, a2x + nx * o, a2y + ny * o, b2x + nx * o, b2y + ny * o, ink);
+        dashpot(pen, a2x - nx * o, a2y - ny * o, b2x - nx * o, b2y - ny * o, ref, ink);
+      } else if (e.k > 0) spring(pen, ax, ay, bx, by, ink);
+      else dashpot(pen, ax, ay, bx, by, ref, ink);
+      circle(pen, ax, ay, 2.6 * u, { stroke: ink, fill: C.paper, width: 1.2 });
+      circle(pen, bx, by, 2.6 * u, { stroke: ink, fill: C.paper, width: 1.2 });
+      if (f.annotate) {
+        const name =
+          e.k > 0 && e.d > 0
+            ? String.raw`k_{${k + 1}},\,d_{${k + 1}}`
+            : e.k > 0
+              ? `k_{${k + 1}}`
+              : `d_{${k + 1}}`;
+        const off = (e.k > 0 && e.d > 0 ? 24 : 16) * u;
+        this.label(pen, `e${k}`, (ax + bx) / 2 + nx * off, (ay + by) / 2 + ny * off, name);
+      }
     });
 
     // bodies: blocks, then bars

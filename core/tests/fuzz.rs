@@ -72,7 +72,7 @@ fn mechanism(r: &mut Rng, friction: bool) -> Desc {
             if r.chance(0.5) { ClosureKind::Pin } else { ClosureKind::Slot { angle: r.range(-PI, PI) } };
         closures.push(Closure { kind, a: None, s_a: 0.0, b: nb - 1, s_b: 1.0, ground: [0.0; 2] });
     }
-    Desc { bodies, g: 9.81, tool, closures }
+    Desc { bodies, g: 9.81, tool, closures, elements: Vec::new() }
 }
 
 /// Place a ground closure at the tip's starting position so the loop closes at q0.

@@ -4,8 +4,20 @@
 use crate::MAXN;
 use crate::cas::{Angle, Expr};
 use crate::doc;
-use crate::mech::{BodyDesc, Derived, Desc, JointKind, Vars, derive};
+use crate::dynamics::{Terms, VecN};
+use crate::mech::{BodyDesc, Derived, Desc, JointKind, MAXE, Vars, derive};
 use crate::tape::Tape;
+
+/// What the springs and dampers do at one state.
+#[derive(Clone, Copy, Debug)]
+pub struct ElementForces {
+    /// Generalised forces of the springs (−∂V/∂q) and of the dampers.
+    pub spring: VecN,
+    pub damper: VecN,
+    /// Energy stored in the springs, ½ Σ k (ℓ − ℓ₀)², and power lost in the dampers, Σ d ℓ̇².
+    pub energy: f64,
+    pub dissipation: f64,
+}
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -46,6 +58,10 @@ pub struct Model {
     pub points: Tape,
     /// Loop closures: φ (m), A (m × n), Ȧ q̇ (m); `m = 2 · closures`.
     pub constraints: Option<Tape>,
+    /// Springs and dampers: ℓ² (e), then ∂ℓ²/∂q (e × n).
+    pub elements: Option<Tape>,
+    /// (k, ℓ₀, d) of each spring/damper.
+    pub element_values: Vec<[f64; 3]>,
     /// Loop closures, and the number of scalar constraint equations they give.
     pub nc: usize,
     pub ncon: usize,
@@ -145,6 +161,10 @@ impl Model {
             let xs: Vec<&Expr> = d.phi.iter().chain(&d.a_mat).chain(&d.adot_qd).collect();
             Tape::compile(vars, &xs)
         });
+        let elements = (!d.element_l2.is_empty()).then(|| {
+            let xs: Vec<&Expr> = d.element_l2.iter().chain(&d.element_dl2).collect();
+            Tape::compile(vars, &xs)
+        });
         let defaults: Vec<f64> =
             d.desc.bodies.iter().flat_map(|b| b.values).chain(core::iter::once(d.desc.g)).collect();
         let nu = d.actuated.len();
@@ -175,6 +195,8 @@ impl Model {
             tool,
             points,
             constraints,
+            elements,
+            element_values: d.desc.elements.iter().map(|e| [e.k, e.l0, e.d]).collect(),
             nc: d.desc.closures.len(),
             ncon: d.phi.len(),
             derivation: doc::json(d),
@@ -196,6 +218,74 @@ impl Model {
         if let Some(t) = &mut self.constraints {
             t.set_params(p);
         }
+        if let Some(t) = &mut self.elements {
+            t.set_params(p);
+        }
+    }
+
+    /// Forces, stored energy and losses of the springs and dampers at a state.
+    pub fn element_forces(&mut self, q: &[f64], qd: &[f64]) -> ElementForces {
+        let n = self.n;
+        let mut f = ElementForces { spring: [0.0; MAXN], damper: [0.0; MAXN], energy: 0.0, dissipation: 0.0 };
+        let Some(tape) = &mut self.elements else { return f };
+        let ne = self.element_values.len();
+        let mut buf = [0.0; MAXE * (MAXN + 1)];
+        tape.eval(q, qd, &mut buf);
+        for (e, &[k, l0, d]) in self.element_values.iter().enumerate() {
+            let l = buf[e].max(0.0).sqrt();
+            let grad = &buf[ne + e * n..ne + (e + 1) * n];
+            // ∂ℓ/∂q = (∂ℓ²/∂q) / 2ℓ; at ℓ = 0 the direction is undefined and no force acts
+            if l < 1e-9 {
+                f.energy += 0.5 * k * l0 * l0;
+                continue;
+            }
+            let dl = |j: usize| grad[j] / (2.0 * l);
+            let rate: f64 = (0..n).map(|j| dl(j) * qd[j]).sum();
+            let (fs, fd) = (k * (l - l0), d * rate);
+            for j in 0..n {
+                f.spring[j] -= fs * dl(j);
+                f.damper[j] -= fd * dl(j);
+            }
+            f.energy += 0.5 * k * (l - l0) * (l - l0);
+            f.dissipation += d * rate * rate;
+        }
+        f
+    }
+
+    /// M, C and N at a state, with the springs and dampers in N (`N = ∂V/∂q + β q̇ − Q_springs − Q_dampers`).
+    pub fn terms(&mut self, q: &[f64], qd: &[f64]) -> Terms {
+        let mut t = Terms::eval(&mut self.dynamics, self.n, q, qd);
+        if self.elements.is_some() {
+            let f = self.element_forces(q, qd);
+            for i in 0..self.n {
+                t.n[i] -= f.spring[i] + f.damper[i];
+            }
+        }
+        t
+    }
+
+    /// ∂V/∂q: gravity and the springs (what gravity compensation cancels).
+    pub fn potential_grad(&mut self, q: &[f64]) -> VecN {
+        let zero = [0.0; MAXN];
+        let mut dv = [0.0; MAXN];
+        self.gravity.eval(q, &zero, &mut dv);
+        if self.elements.is_some() {
+            let f = self.element_forces(q, &zero);
+            for i in 0..self.n {
+                dv[i] -= f.spring[i];
+            }
+        }
+        dv
+    }
+
+    /// `[T, V]` with the energy stored in the springs.
+    pub fn energies(&mut self, q: &[f64], qd: &[f64]) -> [f64; 2] {
+        let mut e = [0.0; 2];
+        self.energy.eval(q, qd, &mut e);
+        if self.elements.is_some() {
+            e[1] += self.element_forces(q, qd).energy;
+        }
+        e
     }
 
     /// Does the mechanism contain closed kinematic loops?

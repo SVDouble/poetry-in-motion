@@ -242,14 +242,11 @@ impl Plan {
         if let Some(t) = Tool::eval(model, &qs, &zero) {
             self.x_star = t.p;
         }
-        let t = Terms::eval(&mut model.dynamics, n, &qs, &zero);
+        let t = model.terms(&qs, &zero);
         let k = dynamics::constraints(model, &qs, &zero);
-        let mut dv = [0.0; MAXN];
-        model.gravity.eval(&qs, &zero, &mut dv);
+        let dv = model.potential_grad(&qs);
         (self.u_ff, self.eq_residual) = inverse_dynamics(model, k.as_ref(), &dv);
-        let mut en = [0.0; 2];
-        model.energy.eval(&qs, &zero, &mut en);
-        self.v_star = en[1];
+        self.v_star = model.energies(&qs, &zero)[1];
         // gains shaped by the full inertia: K = ω² M(q*) puts every linearised mode at ω (a diagonal choice
         // leaves strongly coupled chains with modes hundreds of times stiffer or slower than designed)
         self.m_star = [0.0; MAXN * MAXN];

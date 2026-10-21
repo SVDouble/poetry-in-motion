@@ -88,14 +88,18 @@ const passiveLab: LabFn = (c) => {
           ? 'T and V trade places all the time, yet E only drifts down — by exactly what friction takes, $\\int \\dot q^T\\operatorname{diag}(\\beta)\\dot q\\,dt$: E plus that loss stays at $E_0$ and the budget residual sits at round-off. The identity $\\dot E = \\dot q^T\\tau - \\dot q^T\\beta\\dot q$ rests on the skew-symmetry of $\\dot M - 2C$. (Model tab → friction “none” makes E constant.)'
           : 'T and V trade places all the time, and E stays constant: this mechanism has no friction ($\\beta = 0$), and gravity and the Coriolis forces do no net work. The budget residual shows the integration error — round-off level. The identity $\\dot E = \\dot q^T\\tau - \\dot q^T\\beta\\dot q$ rests on the skew-symmetry of $\\dot M - 2C$.',
       },
-      {
-        title: 'Switch Coriolis off',
-        goal: 'What happens if the simulation forgets the C(q, q̇)q̇ term?',
-        actions: [{ do: 'reset' }, { do: 'coriolis', on: false }, { do: 'kick', v: 2 }],
-        plots: [{ ids: ['energy:E', 'energy:Ebal'] }, { ids: ['budget'] }],
-        notice:
-          'With $C\\dot q$ missing the energy is no longer accounted for: the budget residual wanders although nothing does work. Coriolis and centrifugal forces do no work, but they are needed to keep the bookkeeping right. (Switch it back on with the Coriolis toggle.)',
-      },
+      ...(c.d.C.some((row) => row.some((x) => x !== '0'))
+        ? ([
+            {
+              title: 'Switch Coriolis off',
+              goal: 'What happens if the simulation forgets the C(q, q̇)q̇ term?',
+              actions: [{ do: 'reset' }, { do: 'coriolis', on: false }, { do: 'kick', v: 2 }],
+              plots: [{ ids: ['energy:E', 'energy:Ebal'] }, { ids: ['budget'] }],
+              notice:
+                'With $C\\dot q$ missing the energy is no longer accounted for: the budget residual wanders although nothing does work. Coriolis and centrifugal forces do no work, but they are needed to keep the bookkeeping right. (Switch it back on with the Coriolis toggle.)',
+            },
+          ] as Experiment[])
+        : []),
     ],
   };
 };
@@ -409,9 +413,12 @@ const mpcLab: LabFn = (c) => {
           title: 'Active constraints',
           goal: 'Tight limits and a kick: watch the bounds become active.',
           actions: [
-            { do: 'setting', key: 'umax', value: Math.round(uff + 1) },
+            { do: 'setting', key: 'umax', value: Math.round(Math.abs(uff) + 1) },
             { do: 'atTarget' },
+            // both ways: the bound sits just above the holding input, and only one direction loads it
             { do: 'kick', v: 4 },
+            { do: 'wait', ms: 1500 },
+            { do: 'kick', v: -4 },
           ],
           plots: [{ ids: u }, { ids: [tele('mpc', 'active'), tele('mpc', 'iterations')] }],
           notice:

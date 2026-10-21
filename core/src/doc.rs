@@ -292,6 +292,31 @@ pub fn json(d: &Derived) -> String {
         j.row(&d.adot_qd)
     );
 
+    // springs and dampers: ℓ² and its gradient are symbolic, the force is formed numerically
+    let elements: Vec<String> = d
+        .desc
+        .elements
+        .iter()
+        .enumerate()
+        .map(|(e, el)| {
+            format!(
+                "{{\"a\":\"{}\",\"b\":\"{}\",\"sa\":{},\"sb\":{},\"pa\":{},\"pb\":{},\"l2\":\"{}\",\"dl2\":{},\"k\":{},\"l0\":{},\"d\":{}}}",
+                el.a.map_or_else(|| "s".to_string(), |a| (a + 1).to_string()),
+                el.b + 1,
+                el.s_a,
+                el.s_b,
+                j.row(&d.element_points[e][0]),
+                j.row(&d.element_points[e][1]),
+                esc(&j.p.expr(&d.element_l2[e])),
+                j.row(&d.element_dl2[e * n..(e + 1) * n]),
+                el.k,
+                el.l0,
+                el.d
+            )
+        })
+        .collect();
+    let _ = write!(o, "\"elements\":[{}],", elements.join(","));
+
     match &d.tool {
         Some(t) => {
             let p0 = j.hom(d, &t.p0, &Angle { k: vec![0; n], c: t.phi0 });

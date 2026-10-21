@@ -61,9 +61,8 @@ impl Controller for Pd {
         // the inputs that best produce f (exactly the actuated rows for open chains)
         let (mut u, _) = inverse_dynamics(model, c.k, &f);
         if self.gravity {
-            // exact gravity compensation: B u_g − Aᵀλ = ∂V/∂q
-            let mut dv = [0.0; MAXN];
-            model.gravity.eval(c.q, c.qd, &mut dv);
+            // exact gravity (and spring) compensation: B u_g − Aᵀλ = ∂V/∂q
+            let dv = model.potential_grad(c.q);
             (self.ug, _) = inverse_dynamics(model, c.k, &dv);
             for a in 0..model.nu {
                 u[a] += self.ug[a];

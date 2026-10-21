@@ -61,6 +61,22 @@ export interface ClosureInfo {
   pb: string[];
 }
 
+export interface ElementInfo {
+  /** Body labels, or "s" for a ground point. */
+  a: string;
+  b: string;
+  sa: number;
+  sb: number;
+  pa: string[];
+  pb: string[];
+  /** ℓ² and ∂ℓ²/∂q. */
+  l2: string;
+  dl2: string[];
+  k: number;
+  l0: number;
+  d: number;
+}
+
 export interface Derivation {
   n: number;
   nu: number;
@@ -80,6 +96,7 @@ export interface Derivation {
   eom: string[];
   tool: ToolInfo | null;
   closures: ClosureInfo[];
+  elements: ElementInfo[];
   /** Constraints φ(q) = 0 (two per closure), their Jacobian A = ∂φ/∂q and Ȧ q̇. */
   phi: string[];
   A: TexMatrix;

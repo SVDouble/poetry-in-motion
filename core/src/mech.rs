@@ -5,19 +5,28 @@
 //! Each body carries symbolic coefficients `mᵢ, lᵢ, rᵢ, Iᵢ, βᵢ` (mass, length, centre-of-mass offset along
 //! the body x-axis, inertia about the COM, joint damping). A joint sits at a fraction `s` of its parent's
 //! length (`s · l_parent`, kept symbolic) and is rotated by a numeric mounting angle.
+//!
+//! Springs and dampers join two points (on bodies or the ground). Their length ℓ is a square root, which
+//! the Fourier-canonical algebra cannot hold, so ℓ² and ∂ℓ²/∂q are derived symbolically and the force
+//! `−(k (ℓ − ℓ₀) + d ℓ̇) ∂ℓ/∂q` with `∂ℓ/∂q = (∂ℓ²/∂q) / 2ℓ` is formed numerically.
 
 use crate::cas::{Angle, Expr, Space};
 
-pub const DESC_VERSION: f64 = 3.0;
+pub const DESC_VERSION: f64 = 4.0;
 /// Maximum number of bodies (fixed ones included).
 pub const MAXB: usize = 8;
-pub const HEADER: usize = 5;
+/// version, bodies, g, tool, closures, elements.
+pub const HEADER: usize = 6;
 /// Fields per loop closure: kind, a, s_a, b, s_b, ground x, ground y, slot angle.
 pub const PER_CLOSURE: usize = 8;
 /// Maximum number of loop closures.
 pub const MAXC: usize = 4;
 /// Maximum number of scalar constraint equations (two per pin).
 pub const MAXM: usize = 2 * MAXC;
+/// Fields per spring/damper: a, s_a, b, s_b, ground x, ground y, k, ℓ₀, d.
+pub const PER_ELEMENT: usize = 9;
+/// Maximum number of springs and dampers.
+pub const MAXE: usize = 8;
 pub const PER_BODY: usize = 18;
 /// Coefficients per body: m, l, r, I, β.
 pub const PARAMS_PER_BODY: usize = 5;
@@ -75,12 +84,31 @@ pub struct Closure {
     pub ground: [f64; 2],
 }
 
+/// A linear spring and/or viscous damper.
+///
+/// It joins the point `(s_a · l_a, 0)` of body `a` (or a fixed ground point) and the point `(s_b · l_b, 0)` of
+/// body `b`; the force along the line between them is `k (ℓ − ℓ₀) + d ℓ̇` (k = 0: a pure damper, d = 0: a
+/// pure spring).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Element {
+    pub a: Option<usize>,
+    pub s_a: f64,
+    pub b: usize,
+    pub s_b: f64,
+    /// Ground point when `a` is `None`.
+    pub ground: [f64; 2],
+    pub k: f64,
+    pub l0: f64,
+    pub d: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Desc {
     pub bodies: Vec<BodyDesc>,
     pub g: f64,
     pub tool: Option<usize>,
     pub closures: Vec<Closure>,
+    pub elements: Vec<Element>,
 }
 
 impl Desc {
@@ -145,7 +173,25 @@ impl Desc {
             }
             closures.push(Closure { kind, a, s_a: c[2], b, s_b: c[4], ground: [c[5], c[6]] });
         }
-        let d = Self { bodies, g: hdr[2], tool, closures };
+        let ne = hdr[5] as usize;
+        if ne > MAXE {
+            return Err(format!("at most {MAXE} springs and dampers are supported"));
+        }
+        let base = base + nc * PER_CLOSURE;
+        let flat_e = flat.get(base..base + ne * PER_ELEMENT).ok_or("description truncated (springs)")?;
+        let mut elements = Vec::with_capacity(ne);
+        for e in flat_e.chunks(PER_ELEMENT) {
+            let a = if e[0] < 0.0 { None } else { Some(e[0] as usize) };
+            let b = e[2] as usize;
+            if a.is_some_and(|a| a >= n) || b >= n || a == Some(b) {
+                return Err(
+                    "a spring or damper must join two different bodies, or a body and the ground".into()
+                );
+            }
+            let (k, l0, d) = (e[6].max(0.0), e[7].max(0.0), e[8].max(0.0));
+            elements.push(Element { a, s_a: e[1], b, s_b: e[3], ground: [e[4], e[5]], k, l0, d });
+        }
+        let d = Self { bodies, g: hdr[2], tool, closures, elements };
         match d.n() {
             0 => Err("the mechanism has no moving joint: everything is fixed".into()),
             k if k > crate::MAXN => {
@@ -298,6 +344,10 @@ pub struct Derived {
     pub phi: Vec<Expr>,
     pub a_mat: Vec<Expr>,
     pub adot_qd: Vec<Expr>,
+    /// Springs and dampers: the two joined points, ℓ² and ∂ℓ²/∂q (row-major e × n).
+    pub element_points: Vec<[[Expr; 2]; 2]>,
+    pub element_l2: Vec<Expr>,
+    pub element_dl2: Vec<Expr>,
     pub tool: Option<ToolDerived>,
     /// Actuation matrix B (row-major n × nu): selection of the actuated coordinates.
     pub b: Vec<f64>,
@@ -497,6 +547,19 @@ pub fn derive(desc: &Desc) -> Derived {
         })
         .collect();
 
+    // ---- springs and dampers: ℓ² = |p_b − p_a|² and its gradient (the force is formed numerically)
+    let mut element_points = Vec::with_capacity(desc.elements.len());
+    let mut element_l2 = Vec::with_capacity(desc.elements.len());
+    for e in &desc.elements {
+        let pa = e.a.map_or_else(|| [s.constant(e.ground[0]), s.constant(e.ground[1])], |a| point(a, e.s_a));
+        let pb = point(e.b, e.s_b);
+        let (dx, dy) = (pb[0].sub(&pa[0]), pb[1].sub(&pa[1]));
+        element_l2.push(dx.square().add(&dy.square()));
+        element_points.push([pa, pb]);
+    }
+    let element_dl2: Vec<Expr> =
+        element_l2.iter().flat_map(|l2| (0..n).map(|j| partial_q(&revolute, vars, l2, j))).collect();
+
     let actuated: Vec<usize> = (0..n).filter(|&j| desc.bodies[coord_body[j]].actuated).collect();
     let mut b = vec![0.0; n * actuated.len()];
     for (col, &i) in actuated.iter().enumerate() {
@@ -524,6 +587,9 @@ pub fn derive(desc: &Desc) -> Derived {
         phi,
         a_mat,
         adot_qd,
+        element_points,
+        element_l2,
+        element_dl2,
         tool,
         b,
         actuated,
@@ -567,7 +633,7 @@ pub mod presets {
         pole.actuated = false;
         pole.values[4] = 0.002;
         pole.q0 = 0.15;
-        Desc { bodies: vec![cart, pole], g: 9.81, tool: Some(1), closures: Vec::new() }
+        Desc { bodies: vec![cart, pole], g: 9.81, tool: Some(1), closures: Vec::new(), elements: Vec::new() }
     }
 
     /// Two-link planar arm, θ measured from the x-axis (MLS §4.2.3).
@@ -577,7 +643,7 @@ pub mod presets {
         a.q0 = -FRAC_PI_2 + 0.6;
         let mut b = link(Some(0), JointKind::Revolute, 1.0, 1.0);
         b.q0 = 0.5;
-        Desc { bodies: vec![a, b], g: 9.81, tool: Some(1), closures: Vec::new() }
+        Desc { bodies: vec![a, b], g: 9.81, tool: Some(1), closures: Vec::new(), elements: Vec::new() }
     }
 
     /// Passive double pendulum hanging from the ground.
@@ -616,7 +682,7 @@ pub mod presets {
                 b
             })
             .collect();
-        Desc { bodies, g: 9.81, tool: Some(6), closures: Vec::new() }
+        Desc { bodies, g: 9.81, tool: Some(6), closures: Vec::new(), elements: Vec::new() }
     }
 
     /// Four-bar linkage: crank and rocker hinged to the ground, coupler pinned to the rocker tip (a loop).
@@ -633,7 +699,13 @@ pub mod presets {
         rocker.q0 = 1.6;
         let closure =
             Closure { kind: ClosureKind::Pin, a: Some(1), s_a: 1.0, b: 2, s_b: 1.0, ground: [0.0; 2] };
-        Desc { bodies: vec![crank, coupler, rocker], g: 9.81, tool: Some(1), closures: vec![closure] }
+        Desc {
+            bodies: vec![crank, coupler, rocker],
+            g: 9.81,
+            tool: Some(1),
+            closures: vec![closure],
+            elements: Vec::new(),
+        }
     }
 
     /// Slider-crank: crank on the ground, connecting rod whose tip slides in a horizontal ground slot.
@@ -652,7 +724,7 @@ pub mod presets {
             s_b: 1.0,
             ground: [0.0; 2],
         };
-        Desc { bodies: vec![crank, rod], g: 9.81, tool: Some(1), closures: vec![slot] }
+        Desc { bodies: vec![crank, rod], g: 9.81, tool: Some(1), closures: vec![slot], elements: Vec::new() }
     }
 
     /// Acrobot: actuated elbow, passive shoulder; target is the upright configuration.

@@ -221,7 +221,7 @@ pub fn constraints(model: &mut Model, q: &[f64], qd: &[f64]) -> Option<Constrain
 
 /// Forward dynamics of any model (open chain or with loops): `(q̈, λ)`.
 pub fn accel(model: &mut Model, q: &[f64], qd: &[f64], tau: &[f64], coriolis: bool) -> (VecN, VecM) {
-    let t = Terms::eval(&mut model.dynamics, model.n, q, qd);
+    let t = model.terms(q, qd);
     let k = constraints(model, q, qd);
     accel_with(model.n, &t, k.as_ref(), qd, tau, coriolis)
 }

@@ -257,7 +257,7 @@ impl Sim {
     }
 
     fn accel(&mut self, q: &VecN, qd: &VecN) -> VecN {
-        let t = Terms::eval(&mut self.model.dynamics, self.model.n, q, qd);
+        let t = self.model.terms(q, qd);
         let k = dynamics::constraints(&mut self.model, q, qd);
         self.accel_with(&t, k.as_ref(), q, qd)
     }
@@ -271,7 +271,9 @@ impl Sim {
         let (qdd, lambda) = dynamics::accel_with(n, t, k, qd, &tau, self.coriolis);
         self.lambda = lambda;
         let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
-        let friction = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();
+        // joint friction and the dampers
+        let friction = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum::<f64>()
+            + self.model.element_forces(q, qd).dissipation;
         let constraint = k.map_or(0.0, |k| -dot(&k.apply_t(&lambda)));
         let b = &mut self.budget;
         b.stages[b.stage % 4] = [dot(&self.tau_u), dot(&self.tau_ext), dot(&stops), friction, constraint];
@@ -301,7 +303,7 @@ impl Sim {
         let (n, nu) = (self.model.n, self.model.nu);
         self.redesign(params);
         self.plan.advance(&mut self.model, self.dt);
-        let terms = Terms::eval(&mut self.model.dynamics, n, &self.q, &self.qd);
+        let terms = self.model.terms(&self.q, &self.qd);
         let k = dynamics::constraints(&mut self.model, &self.q, &self.qd);
         self.tool = Tool::eval(&mut self.model, &self.q, &self.qd);
         // the push acts through the tool Jacobian: τ_ext = Jᵀ F_ext (held over the step)
@@ -396,9 +398,7 @@ impl Sim {
 
     /// `[T, V]` at the current state.
     pub fn energy(&mut self) -> [f64; 2] {
-        let mut e = [0.0; 2];
-        self.model.energy.eval(&self.q, &self.qd, &mut e);
-        e
+        self.model.energies(&self.q, &self.qd)
     }
 
     /// Distances to the targets: ‖q − q*‖ (wrapped) and ‖p_tool − x_d‖.
@@ -445,7 +445,8 @@ impl Sim {
         self.redesign(params);
         let (n, nu, nb) = (self.model.n, self.model.nu, self.model.desc.nb());
         let (q, qd) = (self.q, self.qd);
-        let t = Terms::eval(&mut self.model.dynamics, n, &q, &qd);
+        let t = self.model.terms(&q, &qd);
+        let elements = self.model.element_forces(&q, &qd);
         let stops = self.stops(&q, &qd);
         let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
         let qdd = self.accel(&q, &qd);
@@ -461,10 +462,13 @@ impl Sim {
         let skew = crate::mat::max_abs(skew);
         let eig = sym_eigenvalues(n, &t.m);
         let power: f64 = (0..n).map(|i| qd[i] * tau[i]).sum();
-        let dissipation: f64 = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum();
+        let dissipation: f64 = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum::<f64>()
+            + elements.dissipation;
         let mqdd = mat_vec(n, &t.m, &qdd);
         let cqd = t.c_qd(n, &qd);
-        let (ke, pe) = (a[ao.energy], a[ao.energy + 1]);
+        let (ke, pe) = (a[ao.energy], a[ao.energy + 1] + elements.energy);
+        // ∂V/∂q with the springs (the dampers are on the friction side of N)
+        let dv: VecN = core::array::from_fn(|i| if i < n { a[ao.dv + i] - elements.spring[i] } else { 0.0 });
         let pl = &self.plan;
         let flag = |b: bool| f64::from(u8::from(b));
         let w = manipulability(n, &a[ao.jp..ao.jp + 2 * n]);
@@ -482,7 +486,7 @@ impl Sim {
         put(off::M, &t.m[..n * n]);
         put(off::C, &t.c[..n * n]);
         put(off::N, &t.n[..n]);
-        put(off::DV, &a[ao.dv..ao.dv + n]);
+        put(off::DV, &dv[..n]);
         put(off::MQDD, &mqdd[..n]);
         put(off::CQD, &cqd[..n]);
         put(off::MDOT, &mdot[..n * n]);

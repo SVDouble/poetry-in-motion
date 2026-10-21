@@ -4,7 +4,7 @@ use core::f64::consts::{FRAC_PI_2, PI};
 
 use motion_core::control::Kind;
 use motion_core::layout::{Flag, off, slot};
-use motion_core::mech::{Desc, JointKind, presets};
+use motion_core::mech::{Desc, Element, JointKind, presets};
 use motion_core::model::Model;
 use motion_core::plan::wrap;
 use motion_core::world::World;
@@ -35,7 +35,7 @@ fn chain(n: usize) -> Desc {
             b
         })
         .collect();
-    Desc { bodies, g: 9.81, tool: Some(n - 1), closures: Vec::new() }
+    Desc { bodies, g: 9.81, tool: Some(n - 1), closures: Vec::new(), elements: Vec::new() }
 }
 
 fn total_energy(s: &mut World) -> f64 {
@@ -233,13 +233,19 @@ fn a_pendulum_on_a_fixed_bracket_matches_a_pendulum_mounted_there() {
     pend.actuated = false;
     pend.mount_angle = -0.5 - FRAC_PI_2;
     pend.q0 = 0.7;
-    let with_bracket =
-        Desc { bodies: vec![bracket, pend.clone()], g: 9.81, tool: None, closures: Vec::new() };
+    let with_bracket = Desc {
+        bodies: vec![bracket, pend.clone()],
+        g: 9.81,
+        tool: None,
+        closures: Vec::new(),
+        elements: Vec::new(),
+    };
     let mut direct = pend;
     direct.parent = None;
     direct.mount_xy = [0.5 * 0.5f64.cos(), 0.5 * 0.5f64.sin()];
     direct.mount_angle = -FRAC_PI_2;
-    let alone = Desc { bodies: vec![direct], g: 9.81, tool: None, closures: Vec::new() };
+    let alone =
+        Desc { bodies: vec![direct], g: 9.81, tool: None, closures: Vec::new(), elements: Vec::new() };
     let (mut a, mut b) = (sim(&with_bracket), sim(&alone));
     assert_eq!(a.primary().n(), 1);
     a.step(3_000);
@@ -481,7 +487,7 @@ fn pushing_a_redundant_arm_far_away_settles_without_limit_cycles() {
             b
         })
         .collect();
-    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new() };
+    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new(), elements: Vec::new() };
     for kind in [Kind::Impedance, Kind::Vmc, Kind::ComputedTorque] {
         let mut s = with(&d, kind);
         aim(&mut s, 0.6, 1.2);
@@ -601,7 +607,7 @@ fn an_unreachable_lower_goal_cannot_disturb_the_ones_above() {
             b
         })
         .collect();
-    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new() };
+    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new(), elements: Vec::new() };
     for kind in [Kind::Vmc, Kind::Impedance] {
         // turning the tool by −0.2 rad keeps the wrist within reach of the first two links
         let (mut s, tool, _, _) = stacked(&d, kind, -0.2, [0.3, -0.3]);
@@ -628,7 +634,7 @@ fn an_unreachable_orientation_saturates_calmly() {
             b
         })
         .collect();
-    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new() };
+    let d = Desc { bodies, g: 9.81, tool: Some(2), closures: Vec::new(), elements: Vec::new() };
     for kind in [Kind::Vmc, Kind::Impedance] {
         let (mut s, tool, _, _) = stacked(&d, kind, 0.4, [0.0, 0.0]);
         let mut worst: f64 = 0.0;
@@ -685,4 +691,66 @@ fn an_unreachable_tool_target_leaves_the_arm_at_rest_reaching_towards_it() {
             }
         }
     }
+}
+
+fn spring(a: Option<usize>, s_a: f64, b: usize, s_b: f64, ground: [f64; 2], [k, l0, d]: [f64; 3]) -> Element {
+    Element { a, s_a, b, s_b, ground, k, l0, d }
+}
+
+/// The two-link arm with a spring from the ground to its tip and a spring–damper across the elbow.
+fn sprung_arm(damping: f64) -> Desc {
+    let mut d = frictionless(presets::arm2());
+    d.elements = vec![
+        spring(None, 0.0, 1, 1.0, [1.5, 0.5], [40.0, 0.3, damping]),
+        spring(Some(0), 0.5, 1, 0.5, [0.0; 2], [20.0, 0.2, damping]),
+    ];
+    d
+}
+
+#[test]
+fn springs_conserve_energy_and_dampers_close_the_budget() {
+    let mut s = with(&sprung_arm(0.0), Kind::Passive);
+    s.set_state(0, 0.4, 2.0);
+    let e0 = total_energy(&mut s);
+    s.step(5_000);
+    let drift = (total_energy(&mut s) - e0).abs() / e0.abs().max(1.0);
+    assert!(drift < 1e-6, "relative energy drift with springs {drift:e}");
+
+    let mut s = with(&sprung_arm(2.0), Kind::Passive);
+    s.kick(0, 2.0);
+    s.step(5_000);
+    let o = s.publish().to_vec();
+    assert!(o[off::WORK + 3] > 0.1, "the dampers must dissipate: {}", o[off::WORK + 3]);
+    assert!(o[off::BUDGET].abs() < 1e-6, "residual {:e}", o[off::BUDGET]);
+}
+
+#[test]
+fn a_mass_hanging_on_a_spring_settles_where_the_spring_carries_its_weight() {
+    // a point mass on a vertical slider, hung from a ground point 1 m above the slider's origin
+    let mut mass = presets::link(None, JointKind::Prismatic, 2.0, 0.0);
+    (mass.mount_angle, mass.actuated, mass.shape, mass.limit) = (FRAC_PI_2, false, 1, 0.0);
+    mass.values = [2.0, 0.0, 0.0, 0.01, 0.0];
+    let (k, l0) = (100.0, 0.2);
+    let d = Desc {
+        bodies: vec![mass],
+        g: 9.81,
+        tool: None,
+        closures: Vec::new(),
+        elements: vec![spring(None, 0.0, 0, 0.0, [0.0, 1.0], [k, l0, 5.0])],
+    };
+    let mut s = with(&d, Kind::Passive);
+    s.step(20_000);
+    let expected = 1.0 - l0 - 2.0 * 9.81 / k;
+    let q = s.primary().q[0];
+    assert!((q - expected).abs() < 1e-6, "rests at {q}, expected {expected}");
+}
+
+#[test]
+fn gravity_compensation_also_cancels_the_springs() {
+    let mut s = with(&sprung_arm(1.0), Kind::PdGravity);
+    s.set_target(0, 0.3);
+    s.set_target(1, 0.8);
+    s.step(10_000);
+    let q = &s.primary().q[..2];
+    assert!((q[0] - 0.3).abs() < 1e-3 && (q[1] - 0.8).abs() < 1e-3, "q = {q:?}");
 }

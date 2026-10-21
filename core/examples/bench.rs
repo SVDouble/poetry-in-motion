@@ -9,7 +9,7 @@ use motion_core::world::World;
 
 fn chain(n: usize) -> Desc {
     let bodies = (0..n).map(|i| presets::link(i.checked_sub(1), JointKind::Revolute, 1.0, 0.6)).collect();
-    Desc { bodies, g: 9.81, tool: Some(n - 1), closures: Vec::new() }
+    Desc { bodies, g: 9.81, tool: Some(n - 1), closures: Vec::new(), elements: Vec::new() }
 }
 
 fn main() {

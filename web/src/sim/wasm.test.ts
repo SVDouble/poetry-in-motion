@@ -97,8 +97,8 @@ describe('wasm core', () => {
   });
 
   it('rejects an invalid description', () => {
-    expect(() => build([1, 0, 9.81, -1, 0])).toThrow(/version/);
-    expect(() => build([3, 0, 9.81, -1, 0])).toThrow(/bodies/);
+    expect(() => build([1, 0, 9.81, -1, 0, 0])).toThrow(/version/);
+    expect(() => build([4, 0, 9.81, -1, 0, 0])).toThrow(/bodies/);
   });
 
   it('satisfies M q̈ + C q̇ + N = τ in the published snapshot', () => {

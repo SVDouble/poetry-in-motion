@@ -38,8 +38,7 @@ impl Controller for SwingUp {
         let n = model.n;
         let (q, qd, t) = (c.q, c.qd, c.terms);
         // energy relative to the target: of the passive motion (open chains) or total (loops)
-        let mut en = [0.0; 2];
-        model.energy.eval(q, qd, &mut en);
+        let en = model.energies(q, qd);
         let un = model.unactuated.clone();
         let ke = if model.closed() {
             en[0]

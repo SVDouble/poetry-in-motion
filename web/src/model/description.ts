@@ -51,10 +51,26 @@ export interface Closure {
   gy: number;
 }
 
+/** A linear spring and/or viscous damper between point `(sa · l_a, 0)` of body `a` (or ground point (gx, gy)
+ * if a = −1) and point `(sb · l_b, 0)` of body `b`: force `k (ℓ − ℓ₀) + d ℓ̇` along the line between them. */
+export interface Element {
+  a: number;
+  sa: number;
+  b: number;
+  sb: number;
+  gx: number;
+  gy: number;
+  /** Stiffness (N/m), rest length (m), damping (N·s/m). */
+  k: number;
+  l0: number;
+  d: number;
+}
+
 export interface Mechanism {
   name: string;
   bodies: BodySpec[];
   closures: Closure[];
+  elements: Element[];
   g: number;
   /** Body whose tip is the tool (end effector), or -1. */
   tool: number;
@@ -63,7 +79,8 @@ export interface Mechanism {
 export const MAX_BODIES = 8;
 export const MAX_DOF = 6;
 export const MAX_CLOSURES = 4;
-export const DESC_VERSION = 3;
+export const DESC_VERSION = 4;
+export const MAX_ELEMENTS = 8;
 export const PER_BODY = 18;
 export const PARAMS_PER_BODY = 5;
 
@@ -88,7 +105,14 @@ export function actuatorIndex(m: Mechanism): number[] {
 }
 
 export function encode(mech: Mechanism): number[] {
-  const out = [DESC_VERSION, mech.bodies.length, mech.g, mech.tool, mech.closures.length];
+  const out = [
+    DESC_VERSION,
+    mech.bodies.length,
+    mech.g,
+    mech.tool,
+    mech.closures.length,
+    mech.elements.length,
+  ];
   for (const raw of mech.bodies) {
     const b = normalise(raw);
     out.push(
@@ -114,6 +138,7 @@ export function encode(mech: Mechanism): number[] {
   }
   for (const c of mech.closures)
     out.push(c.kind === 'slot' ? 1 : 0, c.a, c.sa, c.b, c.sb, c.gx, c.gy, c.angle);
+  for (const e of mech.elements) out.push(e.a, e.sa, e.b, e.sb, e.gx, e.gy, e.k, e.l0, e.d);
   return out;
 }
 
@@ -153,6 +178,26 @@ export function link(parent: number, joint: JointKind = 'revolute', patch: Parti
 }
 
 const HALF_PI = Math.PI / 2;
+
+/** A spring–damper between two points (k = 0: a damper, d = 0: a spring). */
+export const spring = (
+  a: number,
+  sa: number,
+  b: number,
+  sb: number,
+  patch: Partial<Element> = {},
+): Element => ({
+  a,
+  sa,
+  b,
+  sb,
+  gx: 0,
+  gy: 0,
+  k: 50,
+  l0: 0.5,
+  d: 2,
+  ...patch,
+});
 export const pin = (a: number, sa: number, b: number, sb: number, gx = 0, gy = 0): Closure => ({
   kind: 'pin',
   angle: 0,
@@ -182,6 +227,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [],
+    elements: [],
     bodies: [
       cart(),
       link(0, 'revolute', {
@@ -200,6 +246,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [],
+    elements: [],
     bodies: [link(-1, 'revolute', { q0: -HALF_PI + 0.6 }), link(0, 'revolute', { q0: 0.5 })],
   }),
   'Three-link arm': () => ({
@@ -207,6 +254,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 2,
     closures: [],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { l: 0.8, q0: -HALF_PI + 0.5 }),
       link(0, 'revolute', { l: 0.7, m: 0.8, q0: 0.5 }),
@@ -218,6 +266,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 6,
     closures: [],
+    elements: [],
     // shoulder to wrist, links shortening like a human arm: two task coordinates leave five for the
     // orientation, an elbow and posture goals
     bodies: [
@@ -235,6 +284,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { mountAngle: -HALF_PI, actuated: false, beta: 0, q0: 2 }),
       link(0, 'revolute', { actuated: false, beta: 0, q0: 0.5 }),
@@ -245,6 +295,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 2,
     closures: [],
+    elements: [],
     bodies: [
       link(-1, 'fixed', { mountX: -1, mountY: 1, l: 1.2, m: 2, shape: 'link' }),
       link(0, 'revolute', { mountS: 1, mountAngle: -HALF_PI, actuated: false, beta: 0.01, l: 0.9, q0: 0.8 }),
@@ -256,6 +307,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 2,
     closures: [],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { l: 1, q0: HALF_PI - 0.3 }),
       link(0, 'revolute', {
@@ -275,6 +327,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { mountAngle: HALF_PI, actuated: false, q0: 0.02 }),
       link(0, 'revolute', { q0: 0 }),
@@ -285,6 +338,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 2,
     closures: [],
+    elements: [],
     bodies: [
       cart(),
       link(0, 'revolute', {
@@ -304,6 +358,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [pin(1, 1, 2, 1)],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { l: 0.5, m: 0.5, q0: HALF_PI, qTarget: 1.2, beta: 0.05 }),
       link(0, 'revolute', { l: 1.2, m: 1, actuated: false, q0: -1.2, beta: 0.01 }),
@@ -315,6 +370,7 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [{ kind: 'slot', angle: 0, a: -1, sa: 0, b: 1, sb: 1, gx: 0, gy: 0 }],
+    elements: [],
     bodies: [
       link(-1, 'revolute', { l: 0.4, m: 0.5, q0: 1, qTarget: 2, beta: 0.05 }),
       link(0, 'revolute', { l: 1.2, m: 0.6, actuated: false, q0: -1.3, beta: 0.01 }),
@@ -325,9 +381,32 @@ export const PRESETS: Record<string, () => Mechanism> = {
     g: 9.81,
     tool: 1,
     closures: [],
+    elements: [],
     bodies: [
       cart({ m: 2, beta: 0.5, limit: 2, mountY: 1 }),
       link(0, 'revolute', { m: 0.5, l: 0.9, mountS: 0, mountAngle: -HALF_PI, q0: 0.4 }),
+    ],
+  }),
+  'Mass–spring–damper': () => ({
+    name: 'Mass–spring–damper',
+    g: 9.81,
+    tool: -1,
+    closures: [],
+    elements: [spring(-1, 0, 0, 0, { gx: -1.6, gy: 0, k: 40, l0: 1.2, d: 1.5 })],
+    bodies: [cart({ m: 1, beta: 0, limit: 1.4, q0: 0.5 })],
+  }),
+  'Sprung pendulum': () => ({
+    name: 'Sprung pendulum',
+    g: 9.81,
+    tool: 1,
+    closures: [],
+    elements: [
+      spring(-1, 0, 0, 1, { gx: 1.2, gy: 0, k: 25, l0: 0.6, d: 0 }),
+      spring(-1, 0, 1, 1, { gx: -1.2, gy: -1.2, k: 0, l0: 0.8, d: 1.2 }),
+    ],
+    bodies: [
+      link(-1, 'revolute', { mountAngle: -HALF_PI, actuated: false, beta: 0.01, q0: 0.9 }),
+      link(0, 'revolute', { actuated: false, beta: 0.01, l: 0.8, q0: -0.4 }),
     ],
   }),
 };
@@ -335,7 +414,12 @@ export const PRESETS: Record<string, () => Mechanism> = {
 export const DEFAULT_PRESET = 'Cart-pole';
 
 export function cloneMechanism(m: Mechanism): Mechanism {
-  return { ...m, bodies: m.bodies.map((b) => ({ ...b })), closures: m.closures.map((c) => ({ ...c })) };
+  return {
+    ...m,
+    bodies: m.bodies.map((b) => ({ ...b })),
+    closures: m.closures.map((c) => ({ ...c })),
+    elements: m.elements.map((e) => ({ ...e })),
+  };
 }
 
 /** Accept documents from older links (v1 had `mountTip` and no closures). */
@@ -355,6 +439,7 @@ export function migrate(raw: unknown): Mechanism | null {
     g: m.g ?? 9.81,
     tool: m.tool ?? -1,
     closures: (m.closures ?? []).map((c) => ({ ...pin(c.a, c.sa, c.b, c.sb, c.gx, c.gy), ...c })),
+    elements: (m.elements ?? []).map((e) => ({ ...spring(e.a ?? -1, e.sa ?? 1, e.b ?? 0, e.sb ?? 1), ...e })),
     bodies,
   };
 }
@@ -389,6 +474,7 @@ function reorder(mech: Mechanism): { mech: Mechanism; remap: Map<number, number>
       }),
       tool: at(mech.tool),
       closures: mech.closures.map((c) => ({ ...c, a: at(c.a), b: at(c.b) })),
+      elements: mech.elements.map((e) => ({ ...e, a: at(e.a), b: at(e.b) })),
     },
   };
 }
@@ -429,6 +515,9 @@ export function removeBody(mech: Mechanism, i: number): Mechanism {
   const closures = mech.closures
     .filter((c) => !doomed.has(c.b) && !(c.a >= 0 && doomed.has(c.a)))
     .map((c) => ({ ...c, a: c.a < 0 ? -1 : (remap.get(c.a) ?? -1), b: remap.get(c.b) ?? 0 }));
+  const elements = mech.elements
+    .filter((e) => !doomed.has(e.b) && !(e.a >= 0 && doomed.has(e.a)))
+    .map((e) => ({ ...e, a: e.a < 0 ? -1 : (remap.get(e.a) ?? -1), b: remap.get(e.b) ?? 0 }));
   const tool = doomed.has(mech.tool) ? bodies.length - 1 : (remap.get(mech.tool) ?? -1);
-  return { ...mech, bodies, closures, tool };
+  return { ...mech, bodies, closures, elements, tool };
 }
