@@ -44,7 +44,9 @@ const DT = 1e-3;
 const TICK_MS = 4;
 const MAX_CATCH_UP_S = 0.05;
 const FALLBACK_POST_MS = 16;
-const BENCH_STEPS = 20_000;
+/** Time budget of one step-cost measurement: it blocks the clock, so it must stay well inside a tick (a
+ * fixed 20 000 steps took 300 ms on a seven-joint arm and stalled the simulation every two seconds). */
+const BENCH_MS = 2;
 const BENCH_EVERY_MS = 2000;
 
 let core: Core | null = null;
@@ -56,6 +58,7 @@ let lastPost = 0;
 const stats = new Float64Array(STATS);
 let stepCost = 0;
 let lastBench = -Infinity;
+let benchSteps = 50;
 let stepsThisSecond = 0;
 let secondStart = performance.now();
 
@@ -120,10 +123,15 @@ function tick(): void {
     secondStart = now;
   }
   if (now - lastBench > BENCH_EVERY_MS) {
-    // a few real-time steps are too short to time with the coarse clock, so time a batch on a copy
+    // a few real-time steps are too short to time with the coarse clock, so time a batch on a copy, sized
+    // from the last measurement to take about BENCH_MS
     const t0 = performance.now();
-    c.bench(BENCH_STEPS);
-    stepCost = ((performance.now() - t0) * 1000) / BENCH_STEPS;
+    c.bench(benchSteps);
+    const ms = performance.now() - t0;
+    // smoothed: a 2 ms window still catches the odd GC pause or preemption
+    if (ms > 0)
+      stepCost = stepCost > 0 ? 0.8 * stepCost + 0.2 * ((ms * 1000) / benchSteps) : (ms * 1000) / benchSteps;
+    benchSteps = Math.round(Math.min(20_000, Math.max(10, (BENCH_MS * 1000) / Math.max(stepCost, 0.05))));
     lastBench = now;
   }
   stats[0] = stepCost;
@@ -144,6 +152,8 @@ function build(c: Core, id: number, desc: number[]): void {
     const controllers = text(c, c.controllers_ptr(), len);
     post({ type: 'built', id, ok: true, derivation, controllers, buildMs });
     lastBench = -Infinity;
+    benchSteps = 50;
+    stepCost = 0;
   } else {
     post({ type: 'built', id, ok: false, error: text(c, c.error_ptr(), c.error_len()) });
   }
