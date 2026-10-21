@@ -108,6 +108,8 @@ export class Stage {
     this.camera.far = 60;
     this.camera.lookAt(cx, cy, 0);
     this.camera.updateProjectionMatrix();
+    // a render would do this, but none runs while the schematic is shown (pointer and gizmo mapping need it)
+    this.camera.updateMatrixWorld();
     this.key.position.set(cx + 2.5, cy + 4, 6);
     this.key.target.position.set(cx, cy, 0);
   }
@@ -134,7 +136,8 @@ export class Stage {
 
   /** Pointer position → world coordinates on the z = 0 plane. */
   toWorld(clientX: number, clientY: number): [number, number] {
-    const r = this.renderer.domElement.getBoundingClientRect();
+    // the container, not the canvas: the canvas is hidden (zero-sized) while the schematic is shown
+    const r = this.container.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((clientX - r.left) / r.width) * 2 - 1,
       -((clientY - r.top) / r.height) * 2 + 1,
