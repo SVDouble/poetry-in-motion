@@ -23,6 +23,7 @@ import {
   paramVector,
 } from './model/description';
 import { RobotView } from './scene/robot';
+import { type SchematicFrame, SchematicView } from './scene/schematic';
 import { Stage } from './scene/stage';
 import { SimClient } from './sim/client';
 import { closePopover } from './ui/popover';
@@ -54,6 +55,7 @@ class App {
   private params: number[];
   private derivation: Derivation | null = null;
   private robot: RobotView | null = null;
+  private schematic: SchematicView | null = null;
   private readonly sim: SimulateStage;
   private running = false;
   private dragging = false;
@@ -91,6 +93,7 @@ class App {
       change: (m) => this.edited(m),
       select: (i) => {
         this.robot?.select(i);
+        this.schematic?.select(i);
         this.gizmos.select(i);
         this.closePopover();
       },
@@ -174,6 +177,10 @@ class App {
     history.replaceState(null, '', encodeHash(this.mech));
     this.stage.clear();
     this.robot = new RobotView(this.stage, this.mech);
+    this.schematic?.host.remove();
+    this.schematic = new SchematicView(this.mech, res.derivation, this.robot.bounds());
+    $('viewport').prepend(this.schematic.host);
+    this.applySchematic();
     this.sim.load(res.derivation, res.controllers);
     this.stage.castShadows();
     this.robot.showFrames = this.settings.frames;
@@ -184,6 +191,7 @@ class App {
     }
     const sel = this.stageName === 'build' ? this.editor.selection : -1;
     this.robot.select(sel);
+    this.schematic.select(sel);
     this.gizmos.select(sel);
     // the loop closures are solved numerically from q(0): report when they cannot close
     window.setTimeout(() => {
@@ -284,6 +292,7 @@ class App {
     }
     const sel = s === 'build' ? this.editor.selection : -1;
     this.robot?.select(sel);
+    this.schematic?.select(sel);
     this.gizmos.select(sel);
     this.gizmos.visible = s === 'build';
     this.gizmos.connectFrom = null;
@@ -346,10 +355,18 @@ class App {
     const host = $('toggles');
     host.replaceChildren();
     const t = this.settings;
-    const items: ['frames' | 'trail' | 'coriolis' | 'ghosts' | 'keys', string, () => void][] = [
+    const items: ['schematic' | 'frames' | 'trail' | 'coriolis' | 'ghosts' | 'keys', string, () => void][] = [
+      [
+        'schematic',
+        'Textbook',
+        () => {
+          this.applySchematic();
+          this.buildToggles();
+        },
+      ],
       [
         'frames',
-        'Frames',
+        t.schematic ? 'Labels' : 'Frames',
         () => {
           if (this.robot) this.robot.showFrames = t.frames;
         },
@@ -358,6 +375,7 @@ class App {
         'trail',
         'Trail',
         () => {
+          this.schematic?.resetTrail();
           if (!this.robot) return;
           this.robot.showTrail = t.trail;
           this.robot.resetTrail();
@@ -368,7 +386,8 @@ class App {
       ['keys', 'Keys', () => this.sim.renderKeys()],
     ];
     for (const [key, label, apply] of items) {
-      if (key !== 'frames' && key !== 'trail' && this.stageName !== 'simulate') continue;
+      if (key !== 'schematic' && key !== 'frames' && key !== 'trail' && this.stageName !== 'simulate')
+        continue;
       const b = button(
         label,
         () => {
@@ -381,8 +400,74 @@ class App {
       b.classList.toggle('on', t[key]);
       if (key === 'coriolis')
         b.title = 'Switch off C(q, q̇)q̇ in the simulation (non-physical: watch the energy drift)';
+      if (key === 'schematic')
+        b.title = 'Draw the mechanism as a flat textbook figure (exports to SVG and TikZ)';
       host.append(b);
     }
+    if (t.schematic) {
+      host.append(
+        button(
+          'SVG',
+          () => this.exportSchematic('svg'),
+          'chip action',
+          'Download the current picture as SVG',
+        ),
+        button(
+          'TikZ',
+          () => this.exportSchematic('tikz'),
+          'chip action',
+          'Copy the current picture as TikZ code',
+        ),
+      );
+    }
+  }
+
+  /** Switch between the 3D scene and the textbook schematic. */
+  private applySchematic(): void {
+    const on = this.settings.schematic;
+    this.stage.flat = on;
+    $('viewport').classList.toggle('paper', on);
+    if (this.schematic) {
+      this.schematic.host.hidden = !on;
+      this.schematic.dirty = true;
+    }
+  }
+
+  private ghostSlots: SchematicFrame['ghosts'] | null = null;
+
+  private schematicFrame(): SchematicFrame {
+    const simulating = this.stageName === 'simulate';
+    this.ghostSlots ??= this.snap.slots.slice(1);
+    return {
+      snap: this.snap,
+      params: this.params,
+      running: simulating,
+      push: this.sim.pushPoint,
+      ghosts: simulating && this.settings.ghosts ? this.ghostSlots : [],
+      annotate: this.settings.frames,
+      trail: this.settings.trail,
+    };
+  }
+
+  private exportSchematic(kind: 'svg' | 'tikz'): void {
+    const view = this.schematic;
+    if (!view) return;
+    const f = this.schematicFrame();
+    const m = this.stage.mapping();
+    const name = this.mech.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (kind === 'svg') {
+      const url = URL.createObjectURL(new Blob([view.fig.svg(m, f)], { type: 'image/svg+xml' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name}.svg`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    }
+    navigator.clipboard.writeText(view.fig.tikz(m, f)).then(
+      () => this.flash('TikZ code copied to the clipboard.'),
+      () => this.flash('Could not access the clipboard.'),
+    );
   }
 
   private setRunning(on: boolean): void {
@@ -394,6 +479,7 @@ class App {
   private reset(): void {
     this.client.send({ type: 'reset' });
     this.robot?.resetTrail();
+    this.schematic?.resetTrail();
     this.sim.resetTrails();
   }
 
@@ -482,10 +568,13 @@ class App {
     const c = this.clock;
     this.client.pull();
     const simulating = this.stageName === 'simulate';
-    this.robot?.update(this.snap, this.params, simulating);
+    const flat = this.settings.schematic && this.schematic !== null;
+    // the 3D scene is idle while the schematic is shown
+    if (!flat) this.robot?.update(this.snap, this.params, simulating);
     const refresh = now - c.eq >= 1000 / EQ_HZ;
     this.sim.frame(now, refresh);
-    this.stage.render();
+    if (flat) this.schematic!.draw(this.stage.mapping(), this.schematicFrame());
+    else this.stage.render();
     if (this.stageName === 'build' && this.robot)
       this.gizmos.update(this.mech, this.robot, this.snap, this.params);
     c.frames++;

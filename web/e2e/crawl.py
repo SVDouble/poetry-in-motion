@@ -206,6 +206,30 @@ class Crawl:
         await self.page.keyboard.up("Shift")
         await self.wait(500)
 
+    async def textbook(self, preset: str) -> None:
+        self.where = f"{preset}/textbook"
+        await self.click("#toggles button", "Textbook")
+        await self.wait(300)
+        drawn = await self.js("document.querySelectorAll('.schematic:not([hidden]) canvas').length")
+        if drawn != 2:
+            self.fail(f"textbook view shows {drawn} canvases")
+        mouse = self.page.mouse
+        await mouse.move(400, 300)
+        await mouse.down()
+        await mouse.move(430, 320)
+        await mouse.up()
+        await self.page.keyboard.down("Shift")
+        await mouse.move(400, 300)
+        await mouse.down()
+        await mouse.move(450, 330)
+        await self.wait(200)
+        await mouse.up()
+        await self.page.keyboard.up("Shift")
+        async with self.page.expect_download():
+            await self.click("#toggles button", "SVG")
+        await self.click("#toggles button", "Textbook")
+        await self.wait(200)
+
     async def preset(self, preset: str) -> None:
         await self.build(preset)
         self.where = f"{preset}/derive"
@@ -221,6 +245,7 @@ class Crawl:
         await self.experiments(preset, names)
         await self.scope(preset)
         await self.chrome(preset)
+        await self.textbook(preset)
         stats = (await self.text("#stats") or "").strip()
         print(f"{preset}: ok · {stats[:60]}")
         await self.click("[data-stage=build]")
@@ -230,7 +255,7 @@ class Crawl:
 async def main() -> int:
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=os.environ.get("CHROMIUM") or None)
-        page = await browser.new_page(viewport={"width": 1440, "height": 900})
+        page = await browser.new_page(viewport={"width": 1440, "height": 900}, accept_downloads=True)
         crawl = Crawl(page)
         await page.goto(URL)
         await crawl.wait(2500)

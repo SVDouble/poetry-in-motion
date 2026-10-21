@@ -5,8 +5,8 @@
 import * as THREE from 'three/webgpu';
 import type { Mechanism } from '../model/description';
 import type { SlotView } from '../sim/layout';
+import { BLOCK } from './geometry';
 import { glow, Trail } from './primitives';
-import { BLOCK } from './robot';
 import type { Stage } from './stage';
 
 const OPACITY = 0.38;

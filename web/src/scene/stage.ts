@@ -27,6 +27,7 @@ export class Stage {
   private readonly ray = new THREE.Raycaster();
   private readonly plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   private readonly key: THREE.DirectionalLight;
+  private flatView = false;
 
   constructor(private readonly container: HTMLElement) {
     // `?webgl` forces the WebGL 2 backend (debugging / comparing backends)
@@ -95,9 +96,9 @@ export class Stage {
     const { cx, cy } = this.view;
     Object.assign(this.camera, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });
     this.camera.updateProjectionMatrix();
-    // look at the centre of the view from slightly above and to the right
-    const pitch = 0.16;
-    const yaw = 0.2;
+    // look at the centre of the view from slightly above and to the right (straight on when flat)
+    const pitch = this.flatView ? 0 : 0.16;
+    const yaw = this.flatView ? 0 : 0.2;
     this.camera.position.set(
       cx + 20 * Math.sin(yaw) * Math.cos(pitch),
       cy + 20 * Math.sin(pitch),
@@ -109,6 +110,26 @@ export class Stage {
     this.camera.updateProjectionMatrix();
     this.key.position.set(cx + 2.5, cy + 4, 6);
     this.key.target.position.set(cx, cy, 0);
+  }
+
+  /** Straight-on view with the 3D renderer idle (the textbook schematic draws instead). */
+  get flat(): boolean {
+    return this.flatView;
+  }
+
+  set flat(on: boolean) {
+    if (on === this.flatView) return;
+    this.flatView = on;
+    this.renderer.domElement.style.display = on ? 'none' : '';
+    this.labelLayer.style.display = on ? 'none' : '';
+    this.resize();
+  }
+
+  /** Flat view: X = x0 + k x, Y = y0 − k y in CSS pixels, and the viewport size. */
+  mapping(): { k: number; x0: number; y0: number; w: number; h: number } {
+    const { w, h } = this.size;
+    const k = h / (this.camera.top - this.camera.bottom);
+    return { k, x0: w / 2 - this.view.cx * k, y0: h / 2 + this.view.cy * k, w, h };
   }
 
   /** Pointer position → world coordinates on the z = 0 plane. */
@@ -166,6 +187,7 @@ export class Stage {
   }
 
   render(): void {
+    if (this.flatView) return;
     this.renderer.render(this.scene, this.camera);
     const { w, h } = this.size;
     for (const l of this.labels) {

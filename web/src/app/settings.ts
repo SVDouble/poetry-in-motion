@@ -23,6 +23,8 @@ export interface Settings {
   frames: boolean;
   trail: boolean;
   ghosts: boolean;
+  /** Draw the mechanism as a flat textbook schematic instead of the 3D scene. */
+  schematic: boolean;
   /** Show the keyboard legend on the viewport. */
   keys: boolean;
 }
@@ -44,6 +46,7 @@ export const defaultSettings = (): Settings => ({
   frames: true,
   trail: true,
   ghosts: true,
+  schematic: false,
   keys: false,
 });
 

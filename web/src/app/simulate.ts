@@ -365,6 +365,11 @@ export class SimulateStage {
     this.held.clear();
   }
 
+  /** Where the tool is being pushed towards (Shift-drag), or null. */
+  get pushPoint(): [number, number] | null {
+    return this.active ? this.pushAt : null;
+  }
+
   // ---------------------------------------------------------------- frame
 
   frame(now: number, refresh: boolean): void {
