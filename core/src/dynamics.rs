@@ -210,20 +210,25 @@ pub fn forward_constrained(
     (qdd, lambda)
 }
 
-/// Baumgarte stabilisation rate of the loop-closure constraints (1/s).
-pub const BAUMGARTE: f64 = 20.0;
-
 /// Constraints of a model at a state, if it has loops.
 pub fn constraints(model: &mut Model, q: &[f64], qd: &[f64]) -> Option<Constraints> {
     let (n, m) = (model.n, model.ncon);
     model.constraints.as_mut().map(|t| Constraints::eval(t, n, m, q, qd))
 }
 
-/// Forward dynamics of any model (open chain or with loops): `(q̈, λ)`.
-pub fn accel(model: &mut Model, q: &[f64], qd: &[f64], tau: &[f64], coriolis: bool) -> (VecN, VecM) {
+/// Forward dynamics of any model (open chain or with loops): `(q̈, λ)`; loops are held with Baumgarte
+/// stabilisation at rate `baumgarte` (1/s).
+pub fn accel(
+    model: &mut Model,
+    q: &[f64],
+    qd: &[f64],
+    tau: &[f64],
+    coriolis: bool,
+    baumgarte: f64,
+) -> (VecN, VecM) {
     let t = model.terms(q, qd);
     let k = constraints(model, q, qd);
-    accel_with(model.n, &t, k.as_ref(), qd, tau, coriolis)
+    accel_with(model.n, &t, k.as_ref(), qd, tau, coriolis, baumgarte)
 }
 
 /// [`accel`] with M, C, N and the constraints already evaluated at the state.
@@ -235,10 +240,11 @@ pub fn accel_with(
     qd: &[f64],
     tau: &[f64],
     coriolis: bool,
+    baumgarte: f64,
 ) -> (VecN, VecM) {
     k.map_or_else(
         || (forward(n, t, qd, tau, coriolis), [0.0; MAXM]),
-        |k| forward_constrained(t, k, qd, tau, coriolis, BAUMGARTE),
+        |k| forward_constrained(t, k, qd, tau, coriolis, baumgarte),
     )
 }
 

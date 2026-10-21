@@ -500,7 +500,9 @@ fn pushing_a_redundant_arm_far_away_settles_without_limit_cycles() {
         for _ in 0..500 {
             s.step(1);
             let o = s.publish();
-            assert!(o[off::FEXT].hypot(o[off::FEXT + 1]) <= motion_core::sim::PUSH_MAX + 1e-9);
+            assert!(
+                o[off::FEXT].hypot(o[off::FEXT + 1]) <= motion_core::plan::Tuning::default().push_max + 1e-9
+            );
             for i in 0..3 {
                 (lo[i], hi[i]) = (lo[i].min(o[off::Q + i]), hi[i].max(o[off::Q + i]));
             }
@@ -885,4 +887,21 @@ fn body_velocities_and_accelerations_match_the_motion() {
         assert!((w - b[off::OMEGA + k]).abs() < 1e-4, "ω[{k}]: {} vs {w}", b[off::OMEGA + k]);
         assert!((al - b[off::ALPHA + k]).abs() < 1e-3, "α[{k}]: {} vs {al}", b[off::ALPHA + k]);
     }
+}
+
+#[test]
+fn tuning_settings_reach_the_simulation() {
+    // the push limit and the null-space damping are settings: every mechanism reads the same ones
+    let mut s = with(&presets::cartpole(), Kind::Passive);
+    s.set_flag(Flag::PushMax, 5.0);
+    s.set_flag(Flag::PushX, 3.0);
+    s.set_flag(Flag::PushY, 1.0);
+    s.step(10);
+    let o = s.publish();
+    assert!(o[off::FEXT].hypot(o[off::FEXT + 1]) <= 5.0 + 1e-9);
+    // nonsense values are ignored
+    s.set_flag(Flag::PushMax, -1.0);
+    s.set_flag(Flag::Baumgarte, f64::NAN);
+    assert!((s.primary().plan.tuning.push_max - 5.0).abs() < 1e-12);
+    assert!((s.primary().plan.tuning.baumgarte - 20.0).abs() < 1e-12);
 }

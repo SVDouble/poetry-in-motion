@@ -6,6 +6,9 @@
 import { tex } from '../eq/tex';
 import {
   type BodySpec,
+  CATEGORIES,
+  type Category,
+  category,
   cloneMechanism,
   dof,
   isDescendant,
@@ -57,25 +60,6 @@ interface Field {
 }
 
 /** Gallery shelves of the presets. */
-const PRESET_GROUP: Record<string, string> = {
-  'Two-link arm': 'Arms',
-  'Three-link arm': 'Arms',
-  'Seven-joint arm': 'Arms',
-  'Branching arm': 'Arms',
-  'Gripper arm': 'Arms',
-  '3-RPR platform': 'Linkages',
-  'Double pendulum': 'Pendulums',
-  'Wall pendulum': 'Pendulums',
-  Acrobot: 'Pendulums',
-  'Sprung pendulum': 'Pendulums',
-  'Cart-pole': 'Carts & gantries',
-  'Cart double pendulum': 'Carts & gantries',
-  'Gantry (PR)': 'Carts & gantries',
-  'Four-bar linkage': 'Linkages',
-  'Slider-crank': 'Linkages',
-  'Mass–spring–damper': 'Springs',
-};
-
 const THUMB: [number, number] = [104, 62];
 const thumbs = new Map<string, HTMLCanvasElement>();
 
@@ -216,12 +200,10 @@ export class Editor {
   private presetsCard(): HTMLElement {
     const grid = document.createElement('div');
     grid.className = 'preset-gallery';
-    const groups = new Map<string, string[]>();
-    for (const name of Object.keys(PRESETS)) {
-      const g = PRESET_GROUP[name] ?? 'Other';
-      groups.set(g, [...(groups.get(g) ?? []), name]);
-    }
-    for (const [group, names] of groups) {
+    const shelves = new Map<Category, string[]>(CATEGORIES.map((c) => [c, []]));
+    for (const [name, make] of Object.entries(PRESETS)) shelves.get(category(make()))!.push(name);
+    for (const [group, names] of shelves) {
+      if (!names.length) continue;
       const row = document.createElement('div');
       row.className = 'preset-row';
       for (const name of names) {

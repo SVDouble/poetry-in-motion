@@ -17,16 +17,17 @@ function common(c: PageContext) {
   const redundant = tool && toolChainDof(c.d) > 2 && !c.loops;
   const full = c.nu >= c.dof && c.nu > 0;
   const under = c.nu > 0 && c.nu < c.dof;
-  // a pendulum on an actuated rail: where the LQR/MPC comparisons were verified
-  const cartLike = c.dof === 2 && c.nu === 1 && c.d.coords.some((x) => x.actuated && x.kind === 'prismatic');
   // the inputs that hold q* (u*): zero when gravity does not load the target pose
   const uff = Math.max(0, ...Array.from({ length: c.nu }, (_, a) => Math.abs(c.snap.v('U_FF', a))));
   // q* is an equilibrium the inputs can hold (else no linear controller can balance there)
   const balanced = c.snap.v('EQ_RESIDUAL') < 1e-6;
-  return { q, e, u, tool, redundant, full, under, uff, cartLike, balanced };
+  return { q, e, u, tool, redundant, full, under, uff, balanced };
 }
 
 type LabFn = (c: PageContext) => Lab;
+
+/** Kick (rad/s | m/s on the passive joints) of the input-limit comparisons. */
+const KICK = 0.3;
 
 /** Task-hierarchy experiments for a stacked task controller (open chains with a tool). */
 function hierarchy(c: PageContext, key: string): Experiment[] {
@@ -356,7 +357,7 @@ const admittanceLab: LabFn = (c) => {
 };
 
 const lqrLab: LabFn = (c) => {
-  const { q, u, under, cartLike, balanced } = common(c);
+  const { q, u, under, balanced } = common(c);
   const watch = [{ ids: q }, { ids: u }, { ids: [tele('lqr', 'cost')] }];
   if (!balanced) return { watch, experiments: [] };
   const experiments: Experiment[] = [
@@ -381,30 +382,32 @@ const lqrLab: LabFn = (c) => {
         'Cheap control means high gains: faster recovery, much larger inputs. The gain $K$ in the derivation changes with $R$ (the Riccati equation is re-solved).',
     },
   ];
-  if (cartLike) {
-    // verified on the cart-pole from q*: at u_max = 4 N both recover the same kicks (and fail the same)
+  if (under) {
+    // the bound is sized by the mechanism: u* plus half the feedback LQR used after the same kick
     experiments.push({
       title: 'Clipping vs. planning',
-      goal: 'Tight actuator limits, MPC as a shadow, same kick.',
+      goal: 'The same kick twice: first with free inputs, then with half the feedback they used — MPC as a shadow.',
       actions: [
         { do: 'shadow', key: 'mpc' },
-        { do: 'setting', key: 'umax', value: 4 },
         { do: 'atTarget' },
-        { do: 'kick', v: 0.8 },
+        { do: 'kick', v: KICK },
+        { do: 'limit', share: 0.5, ms: 400 },
+        { do: 'atTarget' },
+        { do: 'kick', v: KICK },
       ],
       plots: [
         { ids: [slot('lqr', 'err'), slot('mpc', 'err')] },
         { ids: [slot('lqr', 'effort'), slot('mpc', 'effort')] },
       ],
       notice:
-        'LQR computes $u = u^* - Kx$ and the actuator clips it; MPC knows the limit and plans a sequence within it. Both hit the bound — and both recover, with nearly the same response: with only input bounds and the LQR cost-to-go as terminal cost, MPC behaves much like saturated LQR on this system (and a kick that topples one topples the other). MPC earns its cost with constraints LQR cannot express, such as limits on the state (the rail) — which this MPC does not model.',
+        'LQR computes $u = u^* - Kx$ and the actuator clips it; MPC knows the limit and plans a sequence within it — its plan rests on the bound (active constraints). With only input bounds and the LQR cost-to-go as terminal cost, MPC often behaves much like saturated LQR: compare the two errors — where one recovers and the other falls, the bound took away more than that controller could spare. MPC earns its cost with constraints LQR cannot express, such as limits on the state — which this MPC does not model.',
     });
   }
   return { watch, experiments };
 };
 
 const mpcLab: LabFn = (c) => {
-  const { q, u, under, uff, cartLike, balanced } = common(c);
+  const { q, u, under, uff, balanced } = common(c);
   if (!balanced) return { watch: [{ ids: q }, { ids: u }], experiments: [] };
   if (!under) {
     return {
@@ -434,12 +437,18 @@ const mpcLab: LabFn = (c) => {
       {
         title: 'Active constraints',
         goal: 'Tight limits and a kick: watch the bounds become active.',
-        actions: [{ do: 'setting', key: 'umax', value: 4 }, { do: 'atTarget' }, { do: 'kick', v: 0.5 }],
+        actions: [
+          { do: 'atTarget' },
+          { do: 'kick', v: KICK },
+          { do: 'limit', share: 0.5, ms: 400 },
+          { do: 'atTarget' },
+          { do: 'kick', v: KICK },
+        ],
         plots: [{ ids: u }, { ids: [tele('mpc', 'active'), tele('mpc', 'iterations')] }],
         notice:
           'While the plan pushes against $u_{\\max}$, several of the $N$ planned inputs sit on the bound (active constraints) and FISTA needs more iterations. Once the state is small, no bound is active and MPC returns the LQR input.',
       },
-      ...(cartLike
+      ...(under
         ? ([
             {
               title: 'A coarse model',
@@ -448,16 +457,15 @@ const mpcLab: LabFn = (c) => {
                 { do: 'param', key: 'horizon', value: 60 },
                 { do: 'param', key: 'step', value: 0.05 },
                 { do: 'shadow', key: 'lqr' },
-                { do: 'setting', key: 'umax', value: 6 },
                 { do: 'atTarget' },
-                { do: 'kick', v: 0.8 },
+                { do: 'kick', v: KICK },
               ],
               plots: [
                 { ids: [slot('mpc', 'err'), slot('lqr', 'err')] },
                 { ids: [slot('mpc', 'effort'), slot('lqr', 'effort')] },
               ],
               notice:
-                'A longer horizon is not automatically better: each re-plan holds the input for 50 ms and predicts with a model discretised at that step, while the pendulum moves on. Here the clipped 1 kHz LQR recovers and the coarse MPC does not. Prediction accuracy and update rate matter as much as foresight.',
+                'A longer horizon is not automatically better: each re-plan holds the input for 50 ms and predicts with a model discretised at that step, while the mechanism moves on. Its input moves in 50 ms steps while LQR follows the state at 1 kHz: compare the errors — on a fast, unstable mechanism the coarse plan recovers worse or falls where LQR recovers. Prediction accuracy and update rate matter as much as foresight.',
             },
           ] satisfies Experiment[])
         : []),

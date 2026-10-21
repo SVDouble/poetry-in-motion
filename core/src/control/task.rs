@@ -10,7 +10,7 @@ use crate::MAXN;
 use crate::dynamics::{Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
 use crate::model::Model;
-use crate::plan::{Plan, SubTask, Tool, manipulability, resolve_accel};
+use crate::plan::{Plan, SubTask, Tool, Tuning, manipulability, resolve_accel};
 
 type MatN = [f64; MAXN * MAXN];
 
@@ -65,20 +65,13 @@ fn damped_inverse(mu: f64, eps: f64, dmax: f64) -> f64 {
     let d = if mu < eps { dmax * (1.0 - mu / eps) } else { 0.0 };
     mu / (mu * mu + d * d)
 }
-const DLS_PRIMARY: (f64, f64) = (0.02, 0.01);
 
 /// How much of an eigen-direction (relative size r = μ / task size) a level keeps out of the levels below:
-/// all of it above 1e-3, none below 1e-4, a smoothstep in between (continuous, so nothing switches).
-fn keep_weight(r: f64) -> f64 {
-    let (lo, hi) = (1e-4, 1e-3);
-    let t = ((r - lo) / (hi - lo)).clamp(0.0, 1.0);
+/// all of it above `hi`, none below `lo`, a smoothstep in between (continuous, so nothing switches).
+fn keep_weight(r: f64, [lo, hi]: [f64; 2]) -> f64 {
+    let t = ((r - lo) / (hi - lo).max(1e-300)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
-const DLS_SECONDARY: (f64, f64) = (0.1, 0.05);
-
-/// Joint damping (1/s) in what the tool task does not serve: its null space, and near a singularity the
-/// directions its damped inverse lets go of (an unreachable target at the boundary of the workspace).
-const SOFT_DAMPING: f64 = 8.0;
 
 /// Strict task priorities in the metric of M (Khatib; Siciliano–Slotine): level k acts only in the null
 /// space of levels 1 … k−1, through the motion projector `P_k = P_{k−1} − Ĵ#_k Ĵ_k` (P₀ = I). Torques of
@@ -86,13 +79,14 @@ const SOFT_DAMPING: f64 = 8.0;
 #[derive(Debug)]
 struct Stack {
     n: usize,
+    tuning: Tuning,
     minv: MatN,
     p: MatN,
     levels: usize,
 }
 
 impl Stack {
-    fn new(n: usize, m: &MatN) -> Option<Self> {
+    fn new(n: usize, m: &MatN, tuning: Tuning) -> Option<Self> {
         let mut minv = [0.0; MAXN * MAXN];
         for c in 0..n {
             let e: VecN = core::array::from_fn(|k| f64::from(u8::from(k == c)));
@@ -105,7 +99,7 @@ impl Stack {
             }
         }
         let p = core::array::from_fn(|k| if k < n * n && k % (n + 1) == 0 { 1.0 } else { 0.0 });
-        Some(Self { n, minv, p, levels: 0 })
+        Some(Self { n, tuning, minv, p, levels: 0 })
     }
 
     /// Add the next-lower level with Jacobian `j` (rows × n) and shrink the null space.
@@ -140,8 +134,9 @@ impl Stack {
         // up — a hard cut-off would switch that direction in and out of the null space as the arm hovers at
         // the threshold, kicking lower levels on and off (a limit cycle at a stretched arm). The command uses
         // the damped μ/(μ² + δ²): any Λ̂ keeps it out of the levels above, since M⁻¹Ĵᵀ lies in their null space
-        let fade = |mu: f64| keep_weight(mu / scale);
-        let (eps, dmax) = if self.levels == 0 { DLS_PRIMARY } else { DLS_SECONDARY };
+        let tu = self.tuning;
+        let fade = |mu: f64| keep_weight(mu / scale, tu.fade);
+        let [eps, dmax] = if self.levels == 0 { tu.dls } else { tu.dls_lower };
         let (eps, dmax) = (eps * scale, dmax * scale);
         self.levels += 1;
         let (exact, cmd) = if rows == 1 {
@@ -341,7 +336,7 @@ impl Controller for Vmc {
         self.sec = Secondary::default();
         self.leak = 0.0;
         if c.k.is_none()
-            && let Some(mut stack) = Stack::new(n, &c.terms.m)
+            && let Some(mut stack) = Stack::new(n, &c.terms.m, plan.tuning)
         {
             let tasks = plan.sub_tasks(model, c.q, c.qd);
             self.sec.record(&tasks);
@@ -351,7 +346,9 @@ impl Controller for Vmc {
             let qd: VecN = core::array::from_fn(|i| if i < n { c.qd[i] } else { 0.0 });
             let (mq, task) = (mat_vec(n, &c.terms.m, &qd), primary.task_part(n, &tool.jp, &qd));
             self.tau_soft =
-                core::array::from_fn(|i| if i < n { -SOFT_DAMPING * (mq[i] - task[i]) } else { 0.0 });
+                core::array::from_fn(
+                    |i| if i < n { -plan.tuning.null_damping * (mq[i] - task[i]) } else { 0.0 },
+                );
             let mut below: Vec<VecN> = Vec::with_capacity(tasks.len() + 1);
             for t in &tasks {
                 let lv = stack.push(t.rows, &t.j);
@@ -419,7 +416,7 @@ fn stacked_accel(
 ) -> (VecN, VecN, Secondary, f64) {
     let n = model.n;
     let mut sec = Secondary::default();
-    let stack = if c.k.is_none() { Stack::new(n, &c.terms.m) } else { None };
+    let stack = if c.k.is_none() { Stack::new(n, &c.terms.m, plan.tuning) } else { None };
     let Some(mut stack) = stack else {
         let (with, without) = task_accel(n, c, tool, xdd, pref);
         let dq: VecN = core::array::from_fn(|i| with[i] - without[i]);
@@ -437,7 +434,7 @@ fn stacked_accel(
     let task_only = qdd;
     // damping in what the tool task does not serve: its null space (the levels below override it along
     // their own directions), and near a singularity the directions its damped command lets go of
-    let soft: VecN = core::array::from_fn(|i| if i < n { -SOFT_DAMPING * c.qd[i] } else { 0.0 });
+    let soft: VecN = core::array::from_fn(|i| if i < n { -plan.tuning.null_damping * c.qd[i] } else { 0.0 });
     let damp = primary.soft_complement(n, &tool.jp, &soft);
     for i in 0..n {
         qdd[i] += damp[i];
@@ -640,7 +637,7 @@ mod tests {
         let j2: Vec<f64> = (0..n).map(|k| ((k * 5 % 3) as f64) - 1.0 + 0.3).collect();
         let j3: Vec<f64> = (0..2 * n).map(|k| ((k * k * 17 % 7) as f64 - 3.0) / 2.0).collect();
         let (b1, b2, b3) = ([0.7, -1.1], [0.4, 0.0], [-0.3, 0.9]);
-        let mut stack = Stack::new(n, &m).unwrap();
+        let mut stack = Stack::new(n, &m, Tuning::default()).unwrap();
         let mut qdd = [0.0; MAXN];
         stack.push(2, &j1).resolve(n, &j1, b1, &mut qdd);
         let after1 = qdd;

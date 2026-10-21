@@ -101,6 +101,21 @@ export const FLAGS = [
   'ElbowX',
   'ElbowY',
   'ElbowBody',
+  'NullDamping',
+  'DlsEps',
+  'DlsMax',
+  'DlsLowerEps',
+  'DlsLowerMax',
+  'FadeLo',
+  'FadeHi',
+  'ReachMargin',
+  'IkStep',
+  'IkDamping',
+  'PushMax',
+  'StopK',
+  'StopC',
+  'StopDepth',
+  'Baumgarte',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];

@@ -17,6 +17,57 @@ pub fn wrap(a: f64) -> f64 {
     if w <= -PI { w + TAU } else { w }
 }
 
+/// The numbers that shape how the controllers and the simulation behave beyond the physics.
+///
+/// They are user settings like the goals, the same for every mechanism; the defaults are what the
+/// experiments are verified with.
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    /// Joint damping (1/s) in what the tool task does not serve (its null space, and near a singularity
+    /// the directions its damped inverse lets go of).
+    pub null_damping: f64,
+    /// Damped least squares of the tool level: below `eps` (relative to the task's size) the damping grows
+    /// to `max`.
+    pub dls: [f64; 2],
+    /// The same for the levels below the tool.
+    pub dls_lower: [f64; 2],
+    /// Band of relative sizes over which a level fades a used-up direction out of the levels below.
+    pub fade: [f64; 2],
+    /// How far inside the workspace an unreachable target is aimed, as a fraction of the arm's size.
+    pub reach_margin: f64,
+    /// Largest change of one coordinate per IK iteration (rad or m), and the IK's least damping.
+    pub ik_step: f64,
+    pub ik_damping: f64,
+    /// Largest force of the push on the tool (N): a hand, not a winch.
+    pub push_max: f64,
+    /// End stops of limited prismatic joints: stiffness (N/m), damping (N s/m) at the typical
+    /// penetration `stop_depth` (m).
+    pub stop_k: f64,
+    pub stop_c: f64,
+    pub stop_depth: f64,
+    /// Baumgarte stabilisation rate of the loop-closure constraints (1/s).
+    pub baumgarte: f64,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            null_damping: 8.0,
+            dls: [0.02, 0.01],
+            dls_lower: [0.1, 0.05],
+            fade: [1e-4, 1e-3],
+            reach_margin: 0.005,
+            ik_step: 0.05,
+            ik_damping: 0.01,
+            push_max: 30.0,
+            stop_k: 2.0e4,
+            stop_c: 300.0,
+            stop_depth: 0.01,
+            baumgarte: 20.0,
+        }
+    }
+}
+
 /// Secondary goals pursued in the null space of the tool task.
 #[derive(Clone, Copy, Debug)]
 pub struct Goals {
@@ -116,6 +167,7 @@ pub struct Plan {
     pub push: Option<[f64; 2]>,
     pub push_k: f64,
     pub goals: Goals,
+    pub tuning: Tuning,
     // ---- design
     pub q_star: VecN,
     /// Tool position at q* (task target when no tool target is set).
@@ -176,6 +228,7 @@ impl Plan {
                 elbow_target: [0.0; 2],
                 elbow_body: middle_of_tool_chain(model),
             },
+            tuning: Tuning::default(),
             q_star: q_target,
             x_star: [0.0; 2],
             u_ff: [0.0; MAXN],
@@ -193,7 +246,7 @@ impl Plan {
             ik_goal: q_target,
             reachable: true,
             ik_point: [0.0; 2],
-            ik_mu: 0.01,
+            ik_mu: Tuning::default().ik_damping,
             x_ref: [0.0; 2],
             xd_ref: [0.0; 2],
             xdd_ref: [0.0; 2],
@@ -215,7 +268,7 @@ impl Plan {
         self.qd_ref = [0.0; MAXN];
         self.qdd_ref = [0.0; MAXN];
         self.ik_goal[..n].copy_from_slice(&q[..n]);
-        self.ik_mu = 0.01;
+        self.ik_mu = self.tuning.ik_damping;
         if let Some(t) = Tool::eval(model, q, &[0.0; MAXN]) {
             self.x_ref = t.p;
             self.ik_point = t.p;
@@ -296,7 +349,7 @@ impl Plan {
             let tau: VecN = core::array::from_fn(|i| {
                 if i < n { (0..nu).map(|a| model.b[i * nu + a] * (u_ff[a] + du[a])).sum() } else { 0.0 }
             });
-            let (qdd, _) = dynamics::accel(model, &q, &qd, &tau, true);
+            let (qdd, _) = dynamics::accel(model, &q, &qd, &tau, true, self.tuning.baumgarte);
             (0..r).map(|c| (0..n).map(|i| z[(i, c)] * qdd[i]).sum()).collect()
         };
         let h = 1e-6;
@@ -421,12 +474,12 @@ impl Plan {
             let mut q = self.ik_goal;
             for c in 0..n {
                 let step: f64 = (0..rows).map(|i| s[i * n + c] * rhs[i]).sum();
-                q[c] += step.clamp(-0.05, 0.05);
+                q[c] += step.clamp(-self.tuning.ik_step, self.tuning.ik_step);
             }
             match self.ik_cost(model, &q) {
                 Some((c, _)) if c < cost => {
                     self.ik_goal = q;
-                    self.ik_mu = (self.ik_mu * 0.5).max(1e-3);
+                    self.ik_mu = (self.ik_mu * 0.5).max(0.1 * self.tuning.ik_damping);
                 }
                 _ => self.ik_mu = (self.ik_mu * 4.0).min(1e3),
             }
@@ -436,9 +489,9 @@ impl Plan {
         let dist = e[0].hypot(e[1]);
         self.reachable = dist < 2e-3;
         // out of reach the IK ends on the boundary of the workspace, where the arm is singular: aim a little
-        // inside it (0.5 % of the arm's size √tr(J Jᵀ), continuous at the boundary) to keep it controllable
+        // inside it (a fraction of the arm's size √tr(J Jᵀ), continuous at the boundary) to keep it controllable
         let size = tool.jp[..2 * n].iter().map(|v| v * v).sum::<f64>().sqrt();
-        let back = if dist > 0.0 { (0.005 * size).min(dist) / dist } else { 0.0 };
+        let back = if dist > 0.0 { (self.tuning.reach_margin * size).min(dist) / dist } else { 0.0 };
         self.ik_point = [tool.p[0] - back * e[0], tool.p[1] - back * e[1]];
     }
 

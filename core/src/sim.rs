@@ -9,15 +9,6 @@ use crate::mech::MAXM;
 use crate::model::Model;
 use crate::plan::{Plan, Tool, manipulability};
 
-/// Largest force of the push on the tool (N): a hand, not a winch.
-pub const PUSH_MAX: f64 = 30.0;
-
-/// End stops of limited prismatic joints: Hunt–Crossley contact `F = δ (K + D δ̇)` with penetration δ.
-/// The force grows continuously from zero (a damper that switched on at touch-down would make the force
-/// jump and cost RK4 its order); `D = C / δ₀` gives the damping `C` at the typical penetration δ₀.
-const STOP_K: f64 = 2.0e4;
-const STOP_C: f64 = 300.0;
-const STOP_DEPTH: f64 = 0.01;
 /// RK4 substeps per control step while an end stop is (about to be) in contact.
 const CONTACT_SUBSTEPS: u32 = 20;
 /// A step that opens a loop further by more than this (m) is redone with `LOOP_SUBSTEPS` substeps.
@@ -228,17 +219,47 @@ impl Sim {
                     pl.goals.elbow_body = v as usize;
                 }
             }
+            _ => {
+                // tuning: only finite, positive values
+                if !(v.is_finite() && v > 0.0) {
+                    return;
+                }
+                let tu = &mut pl.tuning;
+                match flag {
+                    Flag::NullDamping => tu.null_damping = v,
+                    Flag::DlsEps => tu.dls[0] = v,
+                    Flag::DlsMax => tu.dls[1] = v,
+                    Flag::DlsLowerEps => tu.dls_lower[0] = v,
+                    Flag::DlsLowerMax => tu.dls_lower[1] = v,
+                    Flag::FadeLo => tu.fade[0] = v,
+                    Flag::FadeHi => tu.fade[1] = v,
+                    Flag::ReachMargin => tu.reach_margin = v,
+                    Flag::IkStep => tu.ik_step = v,
+                    Flag::IkDamping => tu.ik_damping = v,
+                    Flag::PushMax => tu.push_max = v,
+                    Flag::StopK => tu.stop_k = v,
+                    Flag::StopC => tu.stop_c = v,
+                    Flag::StopDepth => tu.stop_depth = v,
+                    Flag::Baumgarte => tu.baumgarte = v,
+                    _ => {}
+                }
+            }
         }
     }
 
-    /// Environment forces: end stops of limited prismatic joints.
+    /// Environment forces: end stops of limited prismatic joints, a Hunt–Crossley contact `F = δ (K + D δ̇)`
+    /// with penetration δ. The force grows continuously from zero (a damper that switched on at touch-down
+    /// would make the force jump and cost RK4 its order); `D = C / δ₀` gives the damping `C` at the typical
+    /// penetration δ₀.
     fn stops(&self, q: &[f64], qd: &[f64]) -> VecN {
+        let tu = &self.plan.tuning;
+        let (k, d) = (tu.stop_k, tu.stop_c / tu.stop_depth.max(1e-6));
         core::array::from_fn(|i| {
             let limit = self.model.limit.get(i).copied().unwrap_or(0.0);
             let pen = q[i].abs() - limit;
             if limit > 0.0 && pen > 0.0 {
                 let s = q[i].signum();
-                -s * (pen * (STOP_K + STOP_C / STOP_DEPTH * (s * qd[i]))).max(0.0)
+                -s * (pen * d.mul_add(s * qd[i], k)).max(0.0)
             } else {
                 0.0
             }
@@ -246,13 +267,13 @@ impl Sim {
     }
 
     /// External force of the push on the tool: a spring–damper from the tool to the pointer, at most
-    /// [`PUSH_MAX`] newtons.
+    /// `push_max` newtons.
     fn push_force(&self, tool: &Tool) -> [f64; 2] {
         let Some(at) = self.plan.push else { return [0.0; 2] };
         let k = self.plan.push_k;
         let d = 2.0 * k.sqrt();
         let f: [f64; 2] = core::array::from_fn(|r| k * (at[r] - tool.p[r]) - d * tool.v[r]);
-        let scale = (PUSH_MAX / f[0].hypot(f[1]).max(1e-12)).min(1.0);
+        let scale = (self.plan.tuning.push_max / f[0].hypot(f[1]).max(1e-12)).min(1.0);
         f.map(|v| v * scale)
     }
 
@@ -268,7 +289,8 @@ impl Sim {
         let n = self.model.n;
         let stops = self.stops(q, qd);
         let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
-        let (qdd, lambda) = dynamics::accel_with(n, t, k, qd, &tau, self.coriolis);
+        let (qdd, lambda) =
+            dynamics::accel_with(n, t, k, qd, &tau, self.coriolis, self.plan.tuning.baumgarte);
         self.lambda = lambda;
         let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
         // joint friction and the dampers

@@ -134,10 +134,28 @@ pub enum Flag {
     ElbowX = 15,
     ElbowY = 16,
     ElbowBody = 17,
+    /// Tuning (see `plan::Tuning`): null-space damping, the damped least squares of the tool level and of
+    /// the levels below, the fade band, the reach margin, the IK step and damping, the push limit, the end
+    /// stops and the Baumgarte rate.
+    NullDamping = 18,
+    DlsEps = 19,
+    DlsMax = 20,
+    DlsLowerEps = 21,
+    DlsLowerMax = 22,
+    FadeLo = 23,
+    FadeHi = 24,
+    ReachMargin = 25,
+    IkStep = 26,
+    IkDamping = 27,
+    PushMax = 28,
+    StopK = 29,
+    StopC = 30,
+    StopDepth = 31,
+    Baumgarte = 32,
 }
 
 impl Flag {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 33] = [
         Self::Coriolis,
         Self::Umax,
         Self::TargetX,
@@ -156,6 +174,21 @@ impl Flag {
         Self::ElbowX,
         Self::ElbowY,
         Self::ElbowBody,
+        Self::NullDamping,
+        Self::DlsEps,
+        Self::DlsMax,
+        Self::DlsLowerEps,
+        Self::DlsLowerMax,
+        Self::FadeLo,
+        Self::FadeHi,
+        Self::ReachMargin,
+        Self::IkStep,
+        Self::IkDamping,
+        Self::PushMax,
+        Self::StopK,
+        Self::StopC,
+        Self::StopDepth,
+        Self::Baumgarte,
     ];
 
     #[must_use]

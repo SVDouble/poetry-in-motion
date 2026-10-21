@@ -85,6 +85,22 @@ export const PER_BODY = 18;
 export const PARAMS_PER_BODY = 5;
 
 /** Keep r and I consistent with a uniform rod when requested. */
+/** Shelves of the preset gallery, in order. */
+export const CATEGORIES = ['Arms', 'Pendulums', 'Carts & gantries', 'Linkages', 'Springs'] as const;
+export type Category = (typeof CATEGORIES)[number];
+
+/** Where a mechanism belongs, read off its structure (the same rule for presets and the user's builds). */
+export function category(m: Mechanism): Category {
+  if (m.closures.length) return 'Linkages';
+  if (m.elements.length) return 'Springs';
+  if (m.bodies.some((b) => b.parent < 0 && b.joint === 'prismatic')) return 'Carts & gantries';
+  // an arm drives every joint between the base and its tool (a passive branch hanging off it is a load)
+  const chain: BodySpec[] = [];
+  for (let b = m.tool; b >= 0; b = m.bodies[b]!.parent) chain.push(m.bodies[b]!);
+  const passive = (b: BodySpec) => b.joint !== 'fixed' && !b.actuated;
+  return (chain.length ? chain.some(passive) : m.bodies.some(passive)) ? 'Pendulums' : 'Arms';
+}
+
 export function normalise(b: BodySpec): BodySpec {
   if (!b.uniform) return b;
   return { ...b, r: b.l / 2, I: (b.m * b.l * b.l) / 12 };

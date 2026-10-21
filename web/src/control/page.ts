@@ -60,6 +60,9 @@ export type Action =
    * the tool turned by `dphi`, the elbow moved by `delbow` (omit a field to leave that task off). */
   | { do: 'stack'; w: number; dphi?: number; delbow?: [number, number] }
   | { do: 'kick'; v: number }
+  /** Watch the inputs for `ms`, then limit them to u* plus `share` of the largest feedback seen: a bound
+   * sized by the mechanism itself (follow with the same disturbance again). */
+  | { do: 'limit'; share: number; ms: number }
   /** Push the tool with the spring towards tool + (dx, dy), or `inward` metres towards the base. */
   | { do: 'push'; dx?: number; dy?: number; inward?: number; ms: number }
   | { do: 'wait'; ms: number };

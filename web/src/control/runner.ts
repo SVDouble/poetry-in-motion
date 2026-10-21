@@ -87,6 +87,22 @@ async function act(port: Port, a: Action): Promise<void> {
       port.settingsChanged?.();
       return;
     }
+    case 'limit': {
+      let peak = 0;
+      for (let t = 0; t < a.ms; t += 10) {
+        await port.sleep(10);
+        const s = port.snap();
+        for (let k = 0; k < d.nu; k++) peak = Math.max(peak, Math.abs(s.v('U', k) - s.v('U_FF', k)));
+      }
+      const s = port.snap();
+      const hold = Math.max(0, ...Array.from({ length: d.nu }, (_, k) => Math.abs(s.v('U_FF', k))));
+      const umax = Number((hold + a.share * peak).toPrecision(2));
+      settings.umax = umax;
+      port.flag('Umax', umax);
+      port.settingsChanged?.();
+      port.mark?.('limit');
+      return;
+    }
     case 'coriolis':
       settings.coriolis = a.on;
       port.flag('Coriolis', a.on ? 1 : 0);

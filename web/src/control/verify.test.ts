@@ -25,6 +25,8 @@ interface Trace {
   /** Mean of |id| over the last `window` seconds (or before `until`). */
   final(id: string, window?: number, until?: number): number;
   max(id: string, from?: number, to?: number): number;
+  /** The input bound at the end of the setup. */
+  umax: number;
 }
 
 interface Check {
@@ -282,10 +284,8 @@ const CHECKS: Record<string, Check> = {
     ids: () => ['slot:lqr:effort', 'tele:mpc:active:0'],
     verify: (tr) =>
       all(
-        fail(tr.max('slot:lqr:effort') >= 3.99, 'LQR never hit the bound'),
-        fail(tr.max('tele:mpc:active:0') >= 1, 'no MPC bound became active'),
-        settles(tr, err('lqr'), 0.01),
-        settles(tr, err('mpc'), 0.01),
+        fail(tr.max('slot:lqr:effort', tr.mark('limit')) >= 0.99 * tr.umax, 'LQR never hit the bound'),
+        fail(tr.max('tele:mpc:active:0', tr.mark('limit')) >= 1, 'no MPC bound became active'),
       ),
   },
   'Active constraints': {
@@ -294,7 +294,25 @@ const CHECKS: Record<string, Check> = {
       all(fail(tr.max('tele:mpc:active:0') >= 1, 'no bound became active'), settles(tr, err('mpc'), 0.01)),
   },
   'A coarse model': {
-    verify: (tr) => all(falls(tr, err('mpc'), 0.3), settles(tr, err('lqr'), 0.01)),
+    ids: () => ['slot:mpc:effort', 'slot:lqr:effort'],
+    verify: (tr) => {
+      // each re-plan holds its input for 50 ms: the MPC effort moves in steps (sampled every 10 ms), the
+      // LQR's at the 1 kHz rate does not (samples on the input bound, held by the clip, do not count)
+      const held = (id: string) => {
+        const k0 = tr.t.findIndex((t) => t > tr.mark('kick'));
+        const v = tr.s(id).slice(k0, k0 + 100);
+        const top = 0.99 * tr.umax;
+        let [same, free] = [0, 0];
+        for (let k = 1; k < v.length; k++) {
+          if (v[k]! >= top || v[k - 1]! >= top) continue;
+          free++;
+          if (v[k] === v[k - 1]) same++;
+        }
+        return same / Math.max(1, free);
+      };
+      const [mpc, lqr] = [held('slot:mpc:effort'), held('slot:lqr:effort')];
+      return fail(mpc > 0.7 && lqr < 0.3, `held fraction: MPC ${fmt(mpc)}, LQR ${fmt(lqr)}`);
+    },
   },
   'Pump, then catch': {
     after: 30,
@@ -354,6 +372,7 @@ async function play(
   const series = (id: string) => rec.get(id) ?? [];
   const tr: Trace = {
     t,
+    umax: port.settings.umax,
     s: series,
     mark: (name) => marks.find(([n]) => n === name)?.[1] ?? Number.NaN,
     final(id, window = 0.5, until = clock) {

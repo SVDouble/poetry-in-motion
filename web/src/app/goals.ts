@@ -23,7 +23,7 @@ import {
   segmented,
   slider,
 } from '../ui/widgets';
-import { type Numeric, SETTING_FLAGS, type Settings, toolTargets } from './settings';
+import { defaultSettings, type Numeric, SETTING_FLAGS, type Settings, TUNING, toolTargets } from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
 
@@ -39,6 +39,38 @@ function settingSlider(client: SimClient, s: Settings, key: Numeric, label: stri
       if (flag) client.flag(flag, v);
     },
   });
+}
+
+/** A folded group of tuning sliders with a button back to the defaults. */
+function tuningFold(g: GoalsContext, group: keyof typeof TUNING, title: string): HTMLElement {
+  const { client, settings } = g;
+  const specs = TUNING[group];
+  const sliders = specs.map((t) => settingSlider(client, settings, t.key, t.label, { log: true, ...t }));
+  const defaults = defaultSettings();
+  const reset = button(
+    'Defaults',
+    () => {
+      for (const t of specs) {
+        settings[t.key] = defaults[t.key];
+        const flag = SETTING_FLAGS.find(([k]) => k === t.key)?.[1];
+        if (flag) client.flag(flag, defaults[t.key]);
+      }
+      g.refresh();
+    },
+    'btn small',
+    'back to the values the experiments are verified with',
+  );
+  const changed = specs.some((t) => settings[t.key] !== defaults[t.key]);
+  const fold = el(
+    'details',
+    'fold',
+    el('summary', '', changed ? `${title} (changed)` : title),
+    note('The same numbers for every mechanism. Hover a name for what it does.'),
+    ...sliders,
+    el('div', 'card-actions', reset),
+  );
+  if (changed) (fold as HTMLDetailsElement).open = true;
+  return fold;
 }
 
 export interface GoalsContext {
@@ -108,7 +140,7 @@ export function goalsTab(g: GoalsContext): HTMLElement {
         },
       ),
       note(
-        'Drag in the viewport to move the tool target; Shift-drag to push the tool with a spring (at most 30 N, like a hand).',
+        `Drag in the viewport to move the tool target; Shift-drag to push the tool with a spring (at most ${settings.pushMax} N, like a hand).`,
       ),
     );
   }
@@ -155,8 +187,13 @@ export function goalsTab(g: GoalsContext): HTMLElement {
       log: true,
       unit: 'N·m | N',
     }),
+    tuningFold(g, 'world', 'Contacts, pushes and loops'),
   );
-  host.append(task, secondary, world);
+  const tuning = card(
+    'Controller tuning',
+    tuningFold(g, 'task', 'Damping, singularities and inverse kinematics'),
+  );
+  host.append(task, secondary, world, tuning);
   const sections = el('div', 'goal-sections');
   host.append(sections);
   g.panel.mount(goalSections(d, g.snap, g.mech), sections);
