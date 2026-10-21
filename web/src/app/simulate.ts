@@ -360,6 +360,14 @@ export class SimulateStage {
     this.held.clear();
   }
 
+  /** The theme changed: redraw what carries slot inks (dock, plots, comparison). */
+  restyle(): void {
+    if (!this.active) return;
+    this.renderDock();
+    this.mountScope();
+    if (this.side === 'control') this.tab?.render();
+  }
+
   /** Where the tool is being pushed towards (Shift-drag), or null. */
   get pushPoint(): [number, number] | null {
     return this.active ? this.pushAt : null;

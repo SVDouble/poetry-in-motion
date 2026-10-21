@@ -18,7 +18,11 @@ function yRange(_u: uPlot, lo: number | null, hi: number | null): uPlot.Range.Mi
   return [mid - half, mid + half];
 }
 
-import { css, palette } from '../scene/theme';
+import { ink, OLIVE, PLUM, palette } from '../scene/theme';
+
+/** A colour of the current theme (CSS custom property). */
+const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 import { closePopover, popover } from '../ui/popover';
 import { button, el } from '../ui/widgets';
 import type { Signal, Signals } from './signals';
@@ -44,8 +48,8 @@ const COLORS = [
   palette.gravity,
   palette.inertial,
   palette.ink,
-  0x6b7a1f,
-  0x9a2f7a,
+  OLIVE,
+  PLUM,
 ];
 
 /** Time series of every watched signal, in one shared time base. */
@@ -96,7 +100,7 @@ class PlotView {
     this.el = el('div', 'scope-plot');
     const chips = el('div', 'scope-chips');
     sigs.forEach((s, k) => {
-      const color = css(s.color ?? COLORS[k % COLORS.length]!);
+      const color = ink(s.color ?? COLORS[k % COLORS.length]!);
       const value = el('span', 'v');
       this.values.push(value);
       const x = button('×', () => actions.remove(s.id), 'x', 'remove');
@@ -113,8 +117,8 @@ class PlotView {
     const canvas = el('div', 'scope-canvas');
     this.el.append(chips, canvas);
     const axis: uPlot.Axis = {
-      stroke: '#5b606b',
-      grid: { stroke: '#e4e0d5', width: 1 },
+      stroke: cssVar('--muted'),
+      grid: { stroke: cssVar('--line'), width: 1 },
       ticks: { show: false },
       font: '11px KaTeX_Main, "Latin Modern Roman", serif',
       size: 26,
@@ -135,7 +139,7 @@ class PlotView {
           {},
           ...sigs.map((s, k) => ({
             label: s.label,
-            stroke: css(s.color ?? COLORS[k % COLORS.length]!),
+            stroke: ink(s.color ?? COLORS[k % COLORS.length]!),
             width: 1.5,
             points: { show: false },
             ...(s.dash ? { dash: s.dash } : {}),

@@ -10,7 +10,7 @@ import { type ControlStore, OFF, SLOT_COLORS } from '../control/store';
 import { type EquationPanel, prose } from '../eq/panel';
 import { fix } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
-import { css } from '../scene/theme';
+import { ink, palette } from '../scene/theme';
 import type { ControllerSpec } from '../sim/controllers';
 import type { Snapshot } from '../sim/layout';
 import { closePopover, popover } from '../ui/popover';
@@ -36,7 +36,7 @@ export function paramSlider(store: ControlStore, spec: ControllerSpec, i: number
 
 export const swatch = (slot: number) => {
   const dot = el('span', 'swatch');
-  dot.style.background = css(SLOT_COLORS[slot] ?? 0x16181d);
+  dot.style.background = ink(SLOT_COLORS[slot] ?? palette.ink);
   return dot;
 };
 

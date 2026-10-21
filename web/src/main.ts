@@ -25,6 +25,7 @@ import {
 import { RobotView } from './scene/robot';
 import { type SchematicFrame, SchematicView } from './scene/schematic';
 import { Stage } from './scene/stage';
+import { setDark } from './scene/theme';
 import { SimClient } from './sim/client';
 import { closePopover } from './ui/popover';
 import { button, portLabel } from './ui/widgets';
@@ -36,6 +37,16 @@ const EQ_HZ = 30;
 const TIP_OFFSET_PX = 22;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+
+const isDarkDoc = () => document.documentElement.dataset.theme === 'dark';
+
+function savedTheme(): string | null {
+  try {
+    return localStorage.getItem('theme');
+  } catch {
+    return null;
+  }
+}
 
 const encodeHash = (m: Mechanism) => `#m=${btoa(encodeURIComponent(JSON.stringify(m)))}`;
 
@@ -440,6 +451,22 @@ class App {
     );
   }
 
+  /** Ink on paper, or chalk on a board; `save` remembers an explicit choice. */
+  private applyTheme(dark: boolean, save = false): void {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    setDark(dark);
+    $('theme').textContent = dark ? 'Light' : 'Dark';
+    if (save) {
+      try {
+        localStorage.setItem('theme', dark ? 'dark' : 'light');
+      } catch {
+        // storage may be unavailable (private mode): the choice lasts for this page
+      }
+    }
+    this.schematic?.restyle();
+    this.sim.restyle();
+  }
+
   private setRunning(on: boolean): void {
     this.running = on;
     this.client.send({ type: 'run', running: on });
@@ -460,6 +487,11 @@ class App {
       nav.append(b);
     });
     $('run').addEventListener('click', () => this.setRunning(!this.running));
+    this.applyTheme(document.documentElement.dataset.theme === 'dark');
+    $('theme').addEventListener('click', () => this.applyTheme(!isDarkDoc(), true));
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      if (!savedTheme()) this.applyTheme(e.matches);
+    });
     $('reset').addEventListener('click', () => this.reset());
     $<HTMLSelectElement>('speed').addEventListener('change', (e) => {
       this.client.send({ type: 'speed', speed: Number((e.target as HTMLSelectElement).value) });

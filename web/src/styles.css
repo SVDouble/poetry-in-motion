@@ -22,8 +22,38 @@
   --input: #b8322a;
   --warn: #c26a12;
   --shadow: 2px 2px 0 rgba(22, 24, 29, 0.12);
+  --tint: rgba(29, 95, 174, 0.06);
+  --tint-ok: rgba(31, 122, 82, 0.07);
+  --veil: rgba(255, 254, 250, 0.94);
+  --ink-hover: #33363d;
   --font: "KaTeX_Main", "Latin Modern Roman", "CMU Serif", "Computer Modern", Georgia, serif;
   --mono: "KaTeX_Typewriter", "Latin Modern Mono", "CMU Typewriter Text", ui-monospace, monospace;
+}
+
+/* chalk on a blackboard: the same drawing, light on dark */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #15171b;
+  --paper-2: #1a1c21;
+  --card: #1d2026;
+  --hover: #262a31;
+  --ink: #e6e3da;
+  --text: #e6e3da;
+  --muted: #b3b0a7;
+  --faint: #7f7c75;
+  --line: #2f3239;
+  --line-2: #50535b;
+  --accent: #7fb3ef;
+  --inertial: #ab9ff2;
+  --coriolis: #e3a25f;
+  --gravity: #6fcf9f;
+  --input: #f08a7e;
+  --warn: #f0a552;
+  --shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
+  --tint: rgba(127, 179, 239, 0.08);
+  --tint-ok: rgba(111, 207, 159, 0.1);
+  --veil: rgba(29, 32, 38, 0.94);
+  --ink-hover: #c9c6bd;
 }
 
 * {
@@ -41,7 +71,7 @@ body {
 }
 
 ::selection {
-  background: rgba(29, 95, 174, 0.18);
+  background: var(--tint);
 }
 
 button,
@@ -128,6 +158,10 @@ select {
   gap: 6px;
 }
 
+.theme-toggle {
+  min-width: 4.2em;
+}
+
 .stats {
   margin-left: auto;
   display: flex;
@@ -180,7 +214,7 @@ select {
 }
 
 .btn.primary:hover {
-  background: #33363d;
+  background: var(--ink-hover);
 }
 
 .btn.small {
@@ -368,7 +402,7 @@ kbd {
   text-align: center;
   padding: 24px;
   z-index: 5;
-  background: rgba(251, 250, 246, 0.95);
+  background: var(--veil);
 }
 
 .fatal pre {
@@ -668,7 +702,7 @@ kbd {
 }
 
 .math.is-active {
-  background: rgba(29, 95, 174, 0.05);
+  background: var(--tint);
   border-left-color: var(--accent);
 }
 
@@ -978,7 +1012,7 @@ body:not([data-stage="simulate"]) .stagecol {
 .tree-item.drop-ok,
 .tree-ground.drop-ok {
   border-color: var(--gravity);
-  background: rgba(31, 122, 82, 0.07);
+  background: var(--tint-ok);
 }
 
 .tree-item.drop-bad {
@@ -1380,7 +1414,7 @@ button.link:hover {
   flex-direction: column;
   max-width: min(640px, 100%);
   border: 1px solid var(--ink);
-  background: rgba(255, 254, 250, 0.94);
+  background: var(--veil);
   box-shadow: var(--shadow);
 }
 

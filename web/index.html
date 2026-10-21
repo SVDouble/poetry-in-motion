@@ -3,11 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta
       name="description"
       content="Build a planar robot, watch its equations of motion being derived step by step, then simulate and control it — all in the browser."
     />
+    <script>
+      // the theme before the first paint: a saved choice, else the system's
+      try {
+        const saved = localStorage.getItem('theme');
+        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      } catch {}
+    </script>
     <title>Poetry in Motion · build, derive, simulate</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23fbfaf6'/><path d='M4 27 H28 M8 27 L4 31 M14 27 L10 31 M20 27 L16 31 M26 27 L22 31' stroke='%2316181d' stroke-width='1.6'/><path d='M16 20 L27 7' stroke='%2316181d' stroke-width='3.4' stroke-linecap='round'/><path d='M16 20 L11 27 H21 Z' fill='%23fbfaf6' stroke='%2316181d' stroke-width='1.6'/><circle cx='16' cy='20' r='3.4' fill='%23fbfaf6' stroke='%2316181d' stroke-width='1.8'/></svg>" />
   </head>
@@ -31,6 +39,7 @@
           </select>
         </div>
         <div class="stats" id="stats" aria-live="off"></div>
+        <button type="button" class="btn theme-toggle" id="theme" title="Ink on paper / chalk on a board">Dark</button>
       </header>
 
       <main class="layout">

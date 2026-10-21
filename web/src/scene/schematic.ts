@@ -15,7 +15,7 @@ import { actuatorIndex, coordIndex, type Mechanism, normalise } from '../model/d
 import type { SlotView, Snapshot } from '../sim/layout';
 import { BLOCK, type Bounds, compose, type Pose } from './geometry';
 import type { Mapping } from './stage';
-import { css, SLOT_COLORS } from './theme';
+import { css, ink, palette, SLOT_COLORS } from './theme';
 
 /** Stroke and fill of one path. Widths and dashes are in symbol units (CSS pixels on screen). */
 interface Ink {
@@ -40,16 +40,36 @@ interface Pen {
   label(id: string, x: number, y: number, src: string, dx?: number, dy?: number): void;
 }
 
-const INK = '#16181d';
-const PAPER = '#fbfaf6';
-const MUTED = '#8a8f99';
-const ACCENT = '#1d5fae';
-const INPUT = '#c0392b';
-const WARN = '#d9822b';
-/** Shadow controllers, in their slot inks. */
-const GHOSTS = SLOT_COLORS.slice(1).map(css);
-/** Coordinate frames. */
-const FRAME = '#45556f';
+/** The inks of one picture. */
+interface Inks {
+  ink: string;
+  paper: string;
+  muted: string;
+  accent: string;
+  input: string;
+  warn: string;
+  /** Coordinate frames. */
+  frame: string;
+  /** Shadow controllers, in their slot inks. */
+  ghosts: string[];
+}
+
+const inks = (draw: (c: number) => string): Inks => ({
+  ink: draw(palette.ink),
+  paper: draw(palette.paper),
+  muted: draw(palette.muted),
+  accent: draw(palette.accent),
+  input: draw(palette.input),
+  warn: draw(palette.warn),
+  frame: draw(palette.frame),
+  ghosts: SLOT_COLORS.slice(1).map(draw),
+});
+
+/** Files are for paper: always ink on white. */
+const PRINT = inks(css);
+
+/** The inks being painted with (set for each picture; painting is synchronous). */
+let C: Inks = PRINT;
 
 const LINK_W = 3.8;
 const THIN = 1.1;
@@ -177,7 +197,7 @@ class SvgPen implements Pen {
     const X = n2(this.x0 + this.k * x + dx);
     const Y = n2(this.y0 - this.k * y + dy + 5);
     this.out.push(
-      `<text x="${X}" y="${Y}" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Cambria Math',serif" font-size="15" font-style="italic" fill="${INK}">${texToSvg(src)}</text>`,
+      `<text x="${X}" y="${Y}" text-anchor="middle" font-family="'Latin Modern Math','STIX Two Math','Cambria Math',serif" font-size="15" font-style="italic" fill="${C.ink}">${texToSvg(src)}</text>`,
     );
   }
 }
@@ -200,8 +220,8 @@ class TikzPen implements Pen {
   /** Pixels → points at this scale. */
   private pt = (px: number) => n2(px * this.u * this.scale * 28.4528);
   private color(c: string): string {
-    if (c === INK) return 'black';
-    if (c === PAPER || c === '#fff') return 'white';
+    if (c === C.ink) return 'black';
+    if (c === C.paper || c === '#fff') return 'white';
     let name = this.colors.get(c);
     if (!name) {
       name = `c${this.colors.size + 1}`;
@@ -374,7 +394,7 @@ function hatched(pen: Pen, x0: number, y0: number, x1: number, y1: number): void
   pen.begin();
   pen.move(x0, y0);
   pen.line(x1, y1);
-  pen.draw({ stroke: INK, width: 1.4 });
+  pen.draw({ stroke: C.ink, width: 1.4 });
   pen.begin();
   for (let s = step * 0.5; s <= len; s += step) {
     const bx = x0 + tx * s;
@@ -382,7 +402,7 @@ function hatched(pen: Pen, x0: number, y0: number, x1: number, y1: number): void
     pen.move(bx, by);
     pen.line(bx + (nx - tx) * h * 0.75, by + (ny - ty) * h * 0.75);
   }
-  pen.draw({ stroke: INK, width: 0.8 });
+  pen.draw({ stroke: C.ink, width: 0.8 });
 }
 
 /** Pin support: a triangle from the hinge at (x, y) towards direction `dir`, standing on hatched ground. */
@@ -397,7 +417,7 @@ function pinSupport(pen: Pen, x: number, y: number, dir: number): void {
   pen.line(x + cx * h + nx * w, y + cy * h + ny * w);
   pen.line(x + cx * h - nx * w, y + cy * h - ny * w);
   pen.close();
-  pen.draw({ stroke: INK, fill: PAPER, width: 1.4 });
+  pen.draw({ stroke: C.ink, fill: C.paper, width: 1.4 });
   const b = 15 * u;
   hatched(pen, x + cx * h - nx * b, y + cy * h - ny * b, x + cx * h + nx * b, y + cy * h + ny * b);
 }
@@ -410,21 +430,21 @@ function circle(pen: Pen, x: number, y: number, r: number, ink: Ink): void {
 }
 
 /** A hinge: an open circle; a driven one (a motor in the joint) gets a second, concentric ring. */
-function hinge(pen: Pen, x: number, y: number, ink = INK, driven = false): void {
-  if (driven) circle(pen, x, y, (JOINT_R + 3.2) * pen.u, { stroke: ink, fill: PAPER, width: 1 });
-  circle(pen, x, y, JOINT_R * pen.u, { stroke: ink, fill: PAPER, width: 1.5 });
+function hinge(pen: Pen, x: number, y: number, ink = C.ink, driven = false): void {
+  if (driven) circle(pen, x, y, (JOINT_R + 3.2) * pen.u, { stroke: ink, fill: C.paper, width: 1 });
+  circle(pen, x, y, JOINT_R * pen.u, { stroke: ink, fill: C.paper, width: 1.5 });
 }
 
 /** The centre-of-mass symbol: a circle with two opposite quadrants filled. */
 function comSymbol(pen: Pen, x: number, y: number, p: number): void {
   const r = 5 * pen.u;
-  circle(pen, x, y, r, { stroke: INK, fill: PAPER, width: 1 });
+  circle(pen, x, y, r, { stroke: C.ink, fill: C.paper, width: 1 });
   for (const a of [p, p + Math.PI]) {
     pen.begin();
     pen.move(x, y);
     pen.arc(x, y, r, a, a + Math.PI / 2);
     pen.close();
-    pen.draw({ fill: INK });
+    pen.draw({ fill: C.ink });
   }
 }
 
@@ -547,8 +567,8 @@ class Path {
 /** A coordinate frame: x and y axes as arrows from (x, y), turned by p. */
 function triad(pen: Pen, x: number, y: number, p: number, size = 26): void {
   const s = size * pen.u;
-  arrow(pen, x, y, x + Math.cos(p) * s, y + Math.sin(p) * s, FRAME, 1);
-  arrow(pen, x, y, x - Math.sin(p) * s * 0.8, y + Math.cos(p) * s * 0.8, FRAME, 1);
+  arrow(pen, x, y, x + Math.cos(p) * s, y + Math.sin(p) * s, C.frame, 1);
+  arrow(pen, x, y, x - Math.sin(p) * s * 0.8, y + Math.cos(p) * s * 0.8, C.frame, 1);
 }
 
 /** The picture itself, independent of the screen: painting, the tool's path, and the exports. */
@@ -630,6 +650,8 @@ export class Figure {
   /** The whole picture for a file: no shadow controllers, and gravity drawn beside the mechanism as it
    * stands (on screen it sits in a corner of the region the mechanism can reach). */
   private paintExport(pen: Pen, f: SchematicFrame): void {
+    const screen = C;
+    C = PRINT;
     let [maxX, maxY] = [-Infinity, -Infinity];
     for (let i = 0; i < this.mech.bodies.length; i++) {
       const [x, y, p] = f.snap.frame(i + 1);
@@ -641,6 +663,7 @@ export class Figure {
     this.paintStatic(pen, f.annotate);
     this.paintDynamic(pen, { ...f, ghosts: [] });
     this.gAt = null;
+    C = screen;
   }
 
   // ----------------------------------------------------------------------------------- static layer
@@ -666,7 +689,7 @@ export class Figure {
             pen.begin();
             pen.move(ex, ey);
             pen.line(ex - s * 16 * u, ey + c * 16 * u);
-            pen.draw({ stroke: INK, width: 2.6 });
+            pen.draw({ stroke: C.ink, width: 2.6 });
           }
         }
       } else if (b.joint === 'revolute') {
@@ -686,7 +709,7 @@ export class Figure {
     }
     if (annotate && this.mech.g > 0) {
       const [bx, by] = this.gravityAt();
-      arrow(pen, bx, by, bx, by - 0.3, INK, 1.3);
+      arrow(pen, bx, by, bx, by - 0.3, C.ink, 1.3);
     }
   }
 
@@ -711,7 +734,7 @@ export class Figure {
         pen.begin();
         pen.move(ox - c * half, oy - s * half);
         pen.line(ox + c * half, oy + s * half);
-        pen.draw({ stroke: INK, width: 1.2 });
+        pen.draw({ stroke: C.ink, width: 1.2 });
       }
     }
   }
@@ -741,14 +764,14 @@ export class Figure {
 
     // tool paths and shadow controllers underneath everything
     if (f.running && f.trail && this.mech.tool >= 0) {
-      this.paths[0]!.draw(pen, MUTED, [2, 3]);
+      this.paths[0]!.draw(pen, C.muted, [2, 3]);
       f.ghosts.forEach((slot, k) => {
-        if (slot.on) this.paths[k + 1]?.draw(pen, GHOSTS[k % GHOSTS.length]!, [1, 3]);
+        if (slot.on) this.paths[k + 1]?.draw(pen, C.ghosts[k % C.ghosts.length]!, [1, 3]);
       });
     }
     f.ghosts.forEach((slot, k) => {
       if (!slot.on) return;
-      const ink = GHOSTS[k % GHOSTS.length]!;
+      const ink = C.ghosts[k % C.ghosts.length]!;
       pen.begin();
       for (let i = 0; i < nb; i++) {
         const [x, y, p] = slot.frame(i + 1);
@@ -771,7 +794,7 @@ export class Figure {
       pen.begin();
       pen.move(jx - c * half, jy - s * half);
       pen.line(jx + c * half, jy + s * half);
-      pen.draw({ stroke: INK, width: 1, dash: DASH });
+      pen.draw({ stroke: C.ink, width: 1, dash: DASH });
     });
     this.mech.closures.forEach((c) => {
       if (c.kind !== 'slot' || c.a < 0) return;
@@ -783,7 +806,7 @@ export class Figure {
     this.mech.bodies.forEach((raw, i) => {
       const b = normalise(raw);
       const [x, y, p] = snap.frame(i + 1);
-      const ink = i === this.selected ? ACCENT : INK;
+      const ink = i === this.selected ? C.accent : C.ink;
       if (b.shape === 'block') {
         const [c, s] = [Math.cos(p), Math.sin(p)];
         const corner = (dx: number, dy: number): [number, number] => [
@@ -796,11 +819,11 @@ export class Figure {
         pen.move(...pts[0]!);
         for (const q of pts.slice(1)) pen.line(...q);
         pen.close();
-        pen.draw({ stroke: ink, fill: PAPER, width: 1.8 });
+        pen.draw({ stroke: ink, fill: C.paper, width: 1.8 });
         if (b.joint === 'prismatic') {
           for (const wx of [-0.11, 0.11]) {
             const [cx, cy] = corner(wx, -BLOCK.h / 2 - 0.02);
-            circle(pen, cx, cy, 0.04, { stroke: ink, fill: PAPER, width: 1.4 });
+            circle(pen, cx, cy, 0.04, { stroke: ink, fill: C.paper, width: 1.4 });
             circle(pen, cx, cy, 1.4 * u, { fill: ink });
           }
         }
@@ -826,7 +849,7 @@ export class Figure {
         pen.line(cx + c * hw - s * hh, cy + s * hw + c * hh);
         pen.line(cx - c * hw - s * hh, cy - s * hw + c * hh);
         pen.close();
-        pen.draw({ stroke: ink, fill: PAPER, width: 1.5 });
+        pen.draw({ stroke: ink, fill: C.paper, width: 1.5 });
       }
     });
 
@@ -838,7 +861,7 @@ export class Figure {
     // joints: hinges, welds, loop pins
     this.mech.bodies.forEach((b, i) => {
       const [x, y, p] = snap.frame(i + 1);
-      const ink = i === this.selected ? ACCENT : INK;
+      const ink = i === this.selected ? C.accent : C.ink;
       if (b.joint === 'revolute') hinge(pen, x, y, ink, b.actuated);
       else if (b.joint === 'fixed') {
         const r = 4 * u;
@@ -864,7 +887,7 @@ export class Figure {
         pen.line(px + cs * hw - sn * hh, py + sn * hw + cs * hh);
         pen.line(px - cs * hw - sn * hh, py - sn * hw + cs * hh);
         pen.close();
-        pen.draw({ stroke: INK, fill: PAPER, width: 1.4 });
+        pen.draw({ stroke: C.ink, fill: C.paper, width: 1.4 });
       }
       hinge(pen, px, py);
     });
@@ -884,8 +907,8 @@ export class Figure {
           pen.begin();
           pen.move(x, y);
           pen.line(x + Math.cos(ref) * 46 * u, y + Math.sin(ref) * 46 * u);
-          pen.draw({ stroke: INK, width: 0.8, dash: DASHDOT });
-          arcArrow(pen, x, y, r, ref, ref + q, INK);
+          pen.draw({ stroke: C.ink, width: 0.8, dash: DASHDOT });
+          arcArrow(pen, x, y, r, ref, ref + q, C.ink);
           const mid = ref + q / 2 + (Math.abs(q) < 0.35 ? 0.35 * Math.sign(q || 1) : 0);
           this.label(
             pen,
@@ -909,9 +932,9 @@ export class Figure {
           pen.begin();
           pen.move(jx + ox * 0.6, jy + oy * 0.6);
           pen.line(jx + ox * 1.25, jy + oy * 1.25);
-          pen.draw({ stroke: INK, width: 0.8 });
+          pen.draw({ stroke: C.ink, width: 0.8 });
           if (Math.abs(along) > 8 * u) {
-            arrow(pen, jx + ox, jy + oy, jx + c * along + ox, jy + s * along + oy, INK, 0.9);
+            arrow(pen, jx + ox, jy + oy, jx + c * along + ox, jy + s * along + oy, C.ink, 0.9);
           }
           this.label(pen, `q${j}`, jx + c * along * 0.5 + ox, jy + s * along * 0.5 + oy, info.tex, 0, -10);
         }
@@ -950,23 +973,23 @@ export class Figure {
         if (Math.abs(v) < 0.02) return;
         const [x, y, p] = snap.frame(i + 1);
         if (b.joint === 'revolute') {
-          arcArrow(pen, x, y, 17 * u, p + Math.PI / 2, p + Math.PI / 2 + v * 1.5 * Math.PI, INPUT);
+          arcArrow(pen, x, y, 17 * u, p + Math.PI / 2, p + Math.PI / 2 + v * 1.5 * Math.PI, C.input);
         } else {
           const [, , jp] = this.jointPose(i, snap, params);
           const ax = jp + b.axisAngle;
           const len = 0.5 * v;
-          arrow(pen, x, y, x + Math.cos(ax) * len, y + Math.sin(ax) * len, INPUT, 1.6);
+          arrow(pen, x, y, x + Math.cos(ax) * len, y + Math.sin(ax) * len, C.input, 1.6);
         }
       });
     }
 
     // tool, targets, push
     const [tx, ty] = snap.frame(nb + 1);
-    if (this.mech.tool >= 0) circle(pen, tx, ty, 2.6 * u, { fill: INK });
+    if (this.mech.tool >= 0) circle(pen, tx, ty, 2.6 * u, { fill: C.ink });
     if (f.running && snap.v('USE_TOOL') !== 0) {
       const gx = snap.v('TARGET');
       const gy = snap.v('TARGET', 1);
-      const ink = snap.v('REACHABLE') !== 0 ? ACCENT : WARN;
+      const ink = snap.v('REACHABLE') !== 0 ? C.accent : C.warn;
       circle(pen, gx, gy, 8 * u, { stroke: ink, width: 1.2 });
       pen.begin();
       pen.move(gx - 12 * u, gy);
@@ -978,13 +1001,13 @@ export class Figure {
     if (f.running && snap.v('GOALS', 2) > 0) {
       const ex = snap.v('GOALS', 3);
       const ey = snap.v('GOALS', 4);
-      circle(pen, ex, ey, 7 * u, { stroke: ACCENT, width: 1, dash: [3, 2] });
+      circle(pen, ex, ey, 7 * u, { stroke: C.accent, width: 1, dash: [3, 2] });
     }
     if (f.running && snap.v('GOALS') > 0 && this.mech.tool >= 0) {
       const a = snap.v('GOALS', 1);
-      arrow(pen, tx, ty, tx + Math.cos(a) * 32 * u, ty + Math.sin(a) * 32 * u, ACCENT, 1);
+      arrow(pen, tx, ty, tx + Math.cos(a) * 32 * u, ty + Math.sin(a) * 32 * u, C.accent, 1);
     }
-    if (f.push) spring(pen, tx, ty, f.push[0], f.push[1], INPUT);
+    if (f.push) spring(pen, tx, ty, f.push[0], f.push[1], C.input);
 
     // joint targets on actuated rails (where the joint controllers are taking them)
     if (f.running && snap.v('KIND') !== 0) {
@@ -1004,7 +1027,7 @@ export class Figure {
         pen.line(bx - nx * s * 1.6 + Math.cos(a) * s, by - ny * s * 1.6 + Math.sin(a) * s);
         pen.line(bx - nx * s * 1.6 - Math.cos(a) * s, by - ny * s * 1.6 - Math.sin(a) * s);
         pen.close();
-        pen.draw({ stroke: ACCENT, fill: PAPER, width: 1.2 });
+        pen.draw({ stroke: C.accent, fill: C.paper, width: 1.2 });
       });
     }
 
@@ -1038,6 +1061,8 @@ export class SchematicView {
   private readonly frontPen: CanvasPen;
   private staticKey = '';
   private frameKey = '';
+  /** The inks of the current theme. */
+  private inks = inks(ink);
   /** Force the next frame to be drawn (selection or toggles changed). */
   dirty = true;
 
@@ -1047,6 +1072,13 @@ export class SchematicView {
     this.host.append(this.back, this.front, this.labels.el);
     this.backPen = new CanvasPen(this.back.getContext('2d')!, null);
     this.frontPen = new CanvasPen(this.front.getContext('2d')!, this.labels);
+  }
+
+  /** The theme changed: redraw everything in its inks. */
+  restyle(): void {
+    this.inks = inks(ink);
+    this.staticKey = '';
+    this.dirty = true;
   }
 
   select(i: number): void {
@@ -1061,6 +1093,7 @@ export class SchematicView {
 
   /** Draw a frame if anything on it changed. */
   draw(m: Mapping, f: SchematicFrame): void {
+    C = this.inks;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const sKey = `${m.k.toFixed(4)},${m.x0.toFixed(2)},${m.y0.toFixed(2)},${m.w},${m.h},${dpr},${f.annotate}`;
     if (sKey !== this.staticKey) {
