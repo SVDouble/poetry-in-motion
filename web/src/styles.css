@@ -807,6 +807,27 @@ kbd {
   font-size: 15.5px;
 }
 
+/* a slider: name, track and value on one line */
+.param:has(> input[type="range"]) {
+  grid-template-columns: 3.8em minmax(60px, 1fr) 5.8em;
+  gap: 0 8px;
+  padding: 1px 0;
+}
+
+.param:has(> input[type="range"]) .param-name {
+  font-size: 14.5px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.param:has(> input[type="range"]) .param-value {
+  grid-column: 3;
+  grid-row: 1;
+  text-align: right;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
 .param-value {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
@@ -815,9 +836,10 @@ kbd {
 
 /* a slider as a ruled line with an open circle */
 .param input[type="range"] {
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 1;
   width: 100%;
-  height: 18px;
+  height: 22px;
   margin: 0;
   background: transparent;
   appearance: none;
@@ -1585,14 +1607,23 @@ button.link:hover {
 
 .dock-params {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 0 14px;
+  grid-template-columns: 1fr;
+  gap: 0;
   padding: 0 12px 6px;
   border-top: 1px solid var(--line);
 }
 
 .dock-params .param {
-  padding: 3px 0;
+  padding: 1px 0;
+}
+
+.coeff-grid .param:has(> input[type="range"]) {
+  grid-template-columns: 1.8em minmax(50px, 1fr) 3.6em;
+}
+
+/* the dock's symbols are short: a narrow name column leaves the track its room */
+.dock-params .param:has(> input[type="range"]) {
+  grid-template-columns: 2.4em minmax(80px, 1fr) 5.8em;
 }
 
 .dock-params .param-name {
@@ -2132,6 +2163,16 @@ body:not([data-stage="build"]) .palette {
 
 .preset-card canvas {
   display: block;
+}
+
+/* the empty scene: just the ground line, hatched below */
+.preset-blank {
+  width: 104px;
+  height: 62px;
+  background:
+    linear-gradient(var(--ink), var(--ink)) 12px 40px / 80px 1.2px no-repeat,
+    repeating-linear-gradient(-45deg, var(--muted) 0 0.8px, transparent 0.8px 5px) 12px 41px / 80px 6px
+    no-repeat;
 }
 
 /* ---------- gauges, timeline, readouts, table of contents ---------- */

@@ -11,6 +11,7 @@ import {
   category,
   cloneMechanism,
   dof,
+  emptyMechanism,
   isDescendant,
   type JointKind,
   link,
@@ -128,7 +129,7 @@ export class Editor {
   /** Apply a new document (re-rendering the panel) and report it. */
   commit(m: Mechanism, selected = this.selected): void {
     this.mech = m;
-    this.selected = Math.max(0, Math.min(selected, m.bodies.length - 1));
+    this.selected = m.bodies.length ? Math.max(0, Math.min(selected, m.bodies.length - 1)) : -1;
     if (this.selectedElement >= m.elements.length) this.selectedElement = -1;
     this.render();
     this.events.change(cloneMechanism(m));
@@ -176,7 +177,8 @@ export class Editor {
 
   remove(i: number): void {
     if (this.mech.bodies.length <= 1) {
-      this.refuse('a mechanism needs at least one body');
+      // the last body: back to an empty scene (its springs and loops go with it)
+      this.commit({ ...emptyMechanism(), g: this.mech.g }, -1);
       return;
     }
     const m = removeBody(this.mech, i);
@@ -193,13 +195,31 @@ export class Editor {
       this.treeCard(),
       this.loopsCard(),
       this.springsCard(),
-      this.bodyCard(this.selected),
+      ...(this.mech.bodies[this.selected] ? [this.bodyCard(this.selected)] : []),
     );
   }
 
   private presetsCard(): HTMLElement {
     const grid = document.createElement('div');
     grid.className = 'preset-gallery';
+    // a blank sheet first: build from scratch
+    const blank = button(
+      '',
+      () => this.commit({ ...emptyMechanism(), g: this.mech.g }, -1),
+      `preset-card${this.mech.bodies.length === 0 ? ' on' : ''}`,
+    );
+    blank.title = 'Empty scene: only the ground — drag parts in from the palette';
+    const sheet = document.createElement('div');
+    sheet.className = 'preset-blank';
+    const blankLabel = document.createElement('span');
+    blankLabel.textContent = 'Empty scene';
+    blank.append(sheet, blankLabel);
+    const start = document.createElement('h4');
+    start.textContent = 'Blank';
+    const startRow = document.createElement('div');
+    startRow.className = 'preset-row';
+    startRow.append(blank);
+    grid.append(start, startRow);
     const shelves = new Map<Category, string[]>(CATEGORIES.map((c) => [c, []]));
     for (const [name, make] of Object.entries(PRESETS)) shelves.get(category(make()))!.push(name);
     for (const [group, names] of shelves) {

@@ -298,6 +298,17 @@ class Crawl:
             self.fail(f"no {label!r} in the View menu")
         await self.page.keyboard.press("Escape")
 
+    async def empty_scene(self) -> None:
+        """An empty scene builds nothing: only the builder is open, until a part is dropped in."""
+        self.where = "empty scene"
+        await self.click(".preset-card", "Empty scene")
+        await self.wait(500)
+        disabled = await self.js("document.querySelector('[data-stage=derive]').disabled")
+        if not disabled:
+            self.fail("Derive is enabled on an empty scene")
+        if not await self.js("!!document.querySelector('.palette')"):
+            self.fail("no palette on the empty scene")
+
     async def preset(self, preset: str) -> None:
         await self.build(preset)
         await self.palette(preset)
@@ -334,8 +345,10 @@ async def main() -> int:
         crawl = Crawl(page)
         await page.goto(URL)
         await crawl.wait(2500)
+        await crawl.empty_scene()
         for preset in await crawl.texts(".preset-card span"):
-            await crawl.preset(preset)
+            if preset != "Empty scene":
+                await crawl.preset(preset)
         await browser.close()
     unique = list(dict.fromkeys(crawl.errors))
     print(f"\n{len(unique)} errors")

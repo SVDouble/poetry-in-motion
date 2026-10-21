@@ -49,7 +49,13 @@ export interface Shell {
   running(): boolean;
   setRunning(on: boolean): void;
   flash(message: string): void;
+  /** A lasting note on the viewport about the simulation (null: none). */
+  note(message: string | null): void;
 }
+
+/** Error (rad | m) and time at the input bound (s) after which a controller counts as having lost the state. */
+const LOST_ERROR = 0.5;
+const LOST_AFTER = 3;
 
 export class SimulateStage {
   private d: Derivation | null = null;
@@ -63,6 +69,11 @@ export class SimulateStage {
   private readonly held = new Set<string>();
   private runToken = 0;
   private lastPlot = 0;
+  /** Simulated time since the primary controller has been saturated far from its target (NaN: it is not). */
+  private stuckSince = Number.NaN;
+  private lost = false;
+  private railDragged = false;
+  private lostKind = -1;
 
   constructor(private readonly s: Shell) {
     s.store.onSlots(() => this.slotsChanged());
@@ -301,7 +312,12 @@ export class SimulateStage {
       }
       return;
     }
-    if (!pressed || kind === 'up') return;
+    if (!pressed || kind === 'up') {
+      // a rail target was dragged: the Goals tab shows where it ended
+      if (this.railDragged && this.side === 'goals') this.mountSide();
+      this.railDragged = false;
+      return;
+    }
     // Alt-drag: the elbow target (switching the elbow goal on)
     if (alt && d.tool && !d.closures.length) {
       const { settings } = this.s;
@@ -319,16 +335,19 @@ export class SimulateStage {
       this.setUseTool(true);
       return;
     }
-    // project onto the rail of the first actuated prismatic joint
+    // underactuated: the pointer, projected onto the rail of the first actuated prismatic joint, is its
+    // target (any position along a rail is an equilibrium; a tool point generally is not)
     const mech = this.s.mech();
     const i = mech.bodies.findIndex((b) => b.actuated && b.joint === 'prismatic');
-    if (i < 0 || kind !== 'down') return;
+    if (i < 0) return;
     const b = normalise(mech.bodies[i]!);
     const [jx, jy, jp] = robot.jointPose(i, this.snap, this.s.params());
     const axis = jp + b.axisAngle;
     let target = (x - jx) * Math.cos(axis) + (y - jy) * Math.sin(axis);
     if (b.limit > 0) target = Math.max(-b.limit * 0.9, Math.min(b.limit * 0.9, target));
+    mech.bodies[i]!.qTarget = target;
     client.send({ type: 'target', i: coordIndex(mech)[i]!, v: target });
+    this.railDragged = true;
   }
 
   key(e: KeyboardEvent, down: boolean): void {
@@ -397,6 +416,50 @@ export class SimulateStage {
       this.lastPlot = now;
     }
     if (refresh && this.side === 'control') this.tab?.update();
+    if (refresh) this.watchLost();
+  }
+
+  /** A controller saturated far from its target for seconds has left the region where it works (for a
+   * linear controller: its region of attraction). Say so, and how to get out — for every controller alike. */
+  private watchLost(): void {
+    const { snap, s } = this;
+    const d = this.d;
+    const slot = snap.slots[0]!;
+    const kind = slot.kind;
+    const umax = snap.v('UMAX');
+    let saturated = false;
+    for (let a = 0; a < (d?.nu ?? 0); a++) saturated ||= Math.abs(snap.v('U', a)) >= 0.98 * umax;
+    const far = slot.v('KIND', 2) > LOST_ERROR;
+    if (this.lost && kind !== this.lostKind) {
+      // another controller took over: give it its own chance
+      this.stuckSince = Number.NaN;
+      this.setLost(false);
+    }
+    if (!(kind > 0 && far && saturated && s.running())) {
+      // recovered (or reset, or paused): clear after the error is small again
+      if (!far || kind <= 0 || snap.t < this.stuckSince) this.stuckSince = Number.NaN;
+      if (this.lost && (!far || kind <= 0)) this.setLost(false);
+      return;
+    }
+    if (Number.isNaN(this.stuckSince)) this.stuckSince = snap.t;
+    if (!this.lost && snap.t - this.stuckSince >= LOST_AFTER) this.setLost(true);
+  }
+
+  private setLost(on: boolean): void {
+    this.lost = on;
+    this.lostKind = on ? this.snap.slots[0]!.kind : -1;
+    if (!on) {
+      this.s.note(null);
+      return;
+    }
+    const { store } = this.s;
+    const spec = store.spec(this.snap.slots[0]!.kind);
+    const swing = store.byKey('swing_up');
+    const alt =
+      swing >= 0 && store.reason(swing) === null && swing !== spec?.id ? ', or switch to swing-up' : '';
+    this.s.note(
+      `${spec ? shortName(spec) : 'The controller'} cannot recover from here: its input is at the limit and the error is not shrinking — the state has left the region where it works. Press R to reset${alt}.`,
+    );
   }
 }
 

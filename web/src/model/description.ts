@@ -85,6 +85,16 @@ export const PER_BODY = 18;
 export const PARAMS_PER_BODY = 5;
 
 /** Keep r and I consistent with a uniform rod when requested. */
+/** Nothing yet: the ground and gravity, to build on from scratch. */
+export const emptyMechanism = (): Mechanism => ({
+  name: 'Empty',
+  g: 9.81,
+  tool: -1,
+  closures: [],
+  elements: [],
+  bodies: [],
+});
+
 /** Shelves of the preset gallery, in order. */
 export const CATEGORIES = ['Arms', 'Pendulums', 'Carts & gantries', 'Linkages', 'Springs'] as const;
 export type Category = (typeof CATEGORIES)[number];

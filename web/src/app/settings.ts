@@ -274,5 +274,8 @@ export function pushSettings(client: Pick<SimClient, 'flag'>, s: Settings): void
   client.flag('UseTool', s.useTool ? 1 : 0);
 }
 
-/** Can a tool target be followed? Needs a tool and a full actuator per DOF (IK + joint control) or a task controller. */
-export const toolTargets = (d: Derivation) => d.tool !== null && d.nu > 0;
+/** Can a tool target be followed? Needs a tool and an independent actuator per degree of freedom: the
+ * inverse kinematics behind joint controllers and every task-space controller require it. (An
+ * underactuated mechanism can only rest where its passive joints balance; there a click moves the target
+ * of an actuated rail instead.) */
+export const toolTargets = (d: Derivation) => d.tool !== null && d.nu > 0 && d.nu >= d.n - d.phi.length;

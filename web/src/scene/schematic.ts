@@ -767,6 +767,29 @@ export class Figure {
     }
   }
 
+  /** The strips that ground rails and slots (near horizontal or vertical) cover, as label boxes: a label
+   * lands beside the hatching, not on it. */
+  private groundStrips(u: number): number[] {
+    const out: number[] = [];
+    const strip = (x: number, y: number, angle: number, half: number, thick: number) => {
+      const [c, s] = [Math.abs(Math.cos(angle)), Math.abs(Math.sin(angle))];
+      if (Math.min(c, s) > 0.26) return; // a slanted strip's box would cover too much
+      const [hx, hy] = c > s ? [half, thick] : [thick, half];
+      out.push(x - hx, y - hy, x + hx, y + hy);
+    };
+    for (const raw of this.mech.bodies) {
+      const b = normalise(raw);
+      if (raw.parent >= 0 || b.joint !== 'prismatic') continue;
+      const a = b.mountAngle + b.axisAngle;
+      const half = (b.limit > 0 ? b.limit : 2) + 0.1;
+      const off = b.shape === 'block' ? -(BLOCK.h / 2 + 0.06) : -7 * u;
+      strip(b.mountX - Math.sin(a) * off, b.mountY + Math.cos(a) * off, a, half, 7 * u);
+    }
+    for (const c of this.mech.closures)
+      if (c.a < 0 && c.kind !== 'pin') strip(c.gx, c.gy, c.angle, 1.4, 13 * u);
+    return out;
+  }
+
   /** Where the gravity arrow starts (its label is drawn with the moving layer, where labels live). */
   private gravityAt(): [number, number] {
     if (this.gAt) return this.gAt;
@@ -797,18 +820,50 @@ export class Figure {
   // ----------------------------------------------------------------------------------- dynamic layer
 
   /** A label unless it would overlap one placed before it in this picture. */
-  private label(pen: Pen, id: string, x: number, y: number, src: string, dx = 0, dy = 0): void {
+  private label(
+    pen: Pen,
+    id: string,
+    x: number,
+    y: number,
+    src: string,
+    dx = 0,
+    dy = 0,
+    /** Better places than the generic nudges, tried first (world points). */
+    alternatives: readonly [number, number][] = [],
+  ): void {
     const glyphs = src.replace(/\\[a-zA-Z]+/g, 'x').replace(/[{}_^\s]/g, '').length;
     const w = (4.5 * glyphs + 2) * pen.u;
     const h = 9 * pen.u;
-    const cx = x + dx * pen.u;
-    const cy = y - dy * pen.u;
     const b = this.boxes;
-    for (let k = 0; k < b.length; k += 4) {
-      if (cx - w < b[k + 2]! && cx + w > b[k]! && cy - h < b[k + 3]! && cy + h > b[k + 1]!) return;
+    const free = (cx: number, cy: number) => {
+      for (let k = 0; k < b.length; k += 4) {
+        if (cx - w < b[k + 2]! && cx + w > b[k]! && cy - h < b[k + 3]! && cy + h > b[k + 1]!) return false;
+      }
+      return true;
+    };
+    // where it belongs, else nudged just clear (above, below, right, left); dropped only when all are taken
+    const step = (2 * h) / pen.u + 2;
+    const sideways = (2 * w) / pen.u + 2;
+    for (const [ax, ay] of alternatives) {
+      if (!free(ax + dx * pen.u, ay - dy * pen.u)) continue;
+      x = ax;
+      y = ay;
+      break;
     }
-    b.push(cx - w, cy - h, cx + w, cy + h);
-    pen.label(id, x, y, src, dx, dy);
+    for (const [ox, oy] of [
+      [0, 0],
+      [0, step],
+      [0, -step],
+      [sideways, 0],
+      [-sideways, 0],
+    ] as const) {
+      const cx = x + (dx + ox) * pen.u;
+      const cy = y - (dy + oy) * pen.u;
+      if (!free(cx, cy)) continue;
+      b.push(cx - w, cy - h, cx + w, cy + h);
+      pen.label(id, x, y, src, dx + ox, dy + oy);
+      return;
+    }
   }
 
   /** Forces at points of bodies, other than weights and joint reactions: springs and dampers, loop
@@ -878,6 +933,24 @@ export class Figure {
       ry -= f.fy;
     }
     return [rx, ry];
+  }
+
+  /** Moment the parent (or the ground) exerts on body i at its joint, about the joint: the angular-momentum
+   * balance of the subtree it carries, Σ (I α + (c − j) × m (a_c − g)) − Σ (x − j) × F over the outside forces. */
+  private heldMoment(i: number, snap: Snapshot, params: number[], forces: PointForce[]): number {
+    const g = params[params.length - 1] ?? 9.81;
+    const [jx, jy] = snap.frame(i + 1);
+    const cross = (x: number, y: number, fx: number, fy: number) => (x - jx) * fy - (y - jy) * fx;
+    let m = 0;
+    this.mech.bodies.forEach((_, k) => {
+      if (!isDescendant(this.mech, k, i)) return;
+      const mass = param(params, k, 'm') ?? 0;
+      const [cx, cy] = this.geo.com(k, snap, params);
+      m += (param(params, k, 'I') ?? 0) * snap.v('ALPHA', k);
+      m += cross(cx, cy, mass * snap.v('ACOM', 2 * k), mass * (snap.v('ACOM', 2 * k + 1) + g));
+    });
+    for (const f of forces) if (isDescendant(this.mech, f.body, i)) m -= cross(f.x, f.y, f.fx, f.fy);
+    return m;
   }
 
   /** Velocities, forces, a free-body diagram and what an equation points at. */
@@ -1012,20 +1085,24 @@ export class Figure {
         vector(pen, label, `fb${k}`, x.at, x.f, fScale, ink, x.src, x.dash ? [5, 3] : undefined);
       });
       // joint moments: the drive and friction at its own joint, their reactions at the children's
+      // a hinge passes its drive less its friction; a slide or a weld passes whatever moment keeps the bodies
+      // it carries turning as they do
       const moment = (k: number) => {
-        const b = this.mech.bodies[k]!;
         const j = this.coord[k]!;
-        if (b.joint !== 'revolute' || j < 0) return 0;
+        if (this.mech.bodies[k]!.joint !== 'revolute' || j < 0)
+          return this.heldMoment(k, snap, params, forces);
         const a = this.actuator[k]!;
         return (a >= 0 ? snap.v('U', a) : 0) - (param(params, k, 'beta') ?? 0) * snap.v('QD', j);
       };
       const umax = snap.v('UMAX') || 1;
+      // a child's joint may sit where the body's own does (a pole on a cart): its arc goes outside
       const arc = (k: number, sign: number, x: number, y: number, name: string) => {
         const mm = sign * moment(k);
         if (Math.abs(mm) < 1e-6) return;
         const span = Math.max(0.3, Math.min(1.6, (Math.abs(mm) / umax) * 6)) * Math.PI * Math.sign(mm);
-        arcArrow(pen, x, y, 24 * u, Math.PI / 2, Math.PI / 2 + span, C.input);
-        this.label(pen, `fm${name}`, x - 30 * u, y + 30 * u, name);
+        const r = (sign > 0 ? 24 : 34) * u;
+        arcArrow(pen, x, y, r, Math.PI / 2, Math.PI / 2 + span, C.input);
+        this.label(pen, `fm${name}`, x - r - 6 * u, y + r + 6 * u, name);
       };
       arc(i, 1, jx, jy, `M_{${i + 1}}`);
       this.mech.bodies.forEach((b, c) => {
@@ -1083,6 +1160,7 @@ export class Figure {
   paintDynamic(pen: Pen, f: SchematicFrame): void {
     const { snap, params } = f;
     this.boxes.length = 0;
+    this.boxes.push(...this.groundStrips(pen.u));
     const u = pen.u;
     const nb = this.mech.bodies.length;
 
@@ -1132,7 +1210,11 @@ export class Figure {
       const [tx, ty] = [(bx - ax) / len, (by - ay) / len];
       const [nx, ny] = [-ty, tx];
       const ref = e.l0 > 0.05 ? e.l0 : 0.4;
-      if (e.a < 0) pinSupport(pen, ax, ay, Math.atan2(-ty, -tx));
+      if (e.a < 0) {
+        // anchored to the ground: a hatched wall across the spring's line, like the textbook figure
+        const w = 16 * u;
+        hatched(pen, ax - nx * w, ay - ny * w, ax + nx * w, ay + ny * w);
+      }
       if (e.k > 0 && e.d > 0) {
         const o = 9 * u;
         const end = Math.min(8 * u, 0.15 * len);
@@ -1346,9 +1428,12 @@ export class Figure {
           return;
         }
         comSymbol(pen, cx, cy, p);
-        // on the clockwise side of the bar; joint angles open counter-clockwise
-        const side = p - Math.PI / 2;
-        this.label(pen, `m${i}`, cx + Math.cos(side) * 15 * u, cy + Math.sin(side) * 15 * u, `m_{${i + 1}}`);
+        // on the clockwise side of the bar (joint angles open counter-clockwise), else the other side
+        const [sx, sy] = [Math.sin(p) * 15 * u, -Math.cos(p) * 15 * u];
+        this.label(pen, `m${i}`, cx + sx, cy + sy, `m_{${i + 1}}`, 0, 0, [
+          [cx + sx, cy + sy],
+          [cx - sx, cy - sy],
+        ]);
       });
     }
 

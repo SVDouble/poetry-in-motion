@@ -56,6 +56,10 @@ interface Scene {
   params: number[];
 }
 
+/** Is the pointer over a panel floating on the view (the palette, the inspector, a card)? */
+const overPanel = (e: PointerEvent) =>
+  e.target instanceof Element && e.target.closest('.palette, .inspector, .overlay') !== null;
+
 export class Gizmos {
   readonly svg: SVGSVGElement;
   private selected = -1;
@@ -89,7 +93,7 @@ export class Gizmos {
       'pointerdown',
       (e) => {
         if (!this.placing) return;
-        if (e.target instanceof Element && e.target.closest('.palette, .inspector, .overlay')) return;
+        if (overPanel(e)) return;
         e.stopPropagation();
         this.track(e);
       },
@@ -108,7 +112,9 @@ export class Gizmos {
     });
     window.addEventListener('pointerup', (e) => {
       if (this.placing) {
-        if (this.inside(e)) this.drop(e);
+        // a release over the palette (the click that picked the part up) or another panel is not a drop:
+        // the part stays in hand until a click in the view
+        if (this.inside(e) && !overPanel(e)) this.drop(e);
         return;
       }
       if (!this.dragging) return;

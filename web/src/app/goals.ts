@@ -6,7 +6,7 @@
 import { cachedTaskSpace } from '../control/nullspace';
 import { toolChainDof } from '../control/page';
 import type { EquationPanel, SectionSpec } from '../eq/panel';
-import { texMat } from '../eq/tex';
+import { fix, sci, texMat } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import type { Mechanism } from '../model/description';
 import type { SimClient } from '../sim/client';
@@ -25,7 +25,7 @@ import {
 } from '../ui/widgets';
 import { defaultSettings, type Numeric, type Settings, setSetting, TUNING, toolTargets } from './settings';
 
-type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
+type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint' | 'format'>>;
 
 function settingSlider(client: SimClient, s: Settings, key: Numeric, label: string, range: Range) {
   return slider({
@@ -37,11 +37,16 @@ function settingSlider(client: SimClient, s: Settings, key: Numeric, label: stri
   });
 }
 
+/** Tuning values span decades: small ones in scientific notation rather than rounded to 0. */
+const scale = (v: number) => (Math.abs(v) < 0.01 && v !== 0 ? sci(v) : fix(v));
+
 /** A folded group of tuning sliders with a button back to the defaults. */
 function tuningFold(g: GoalsContext, group: keyof typeof TUNING, title: string): HTMLElement {
   const { client, settings } = g;
   const specs = TUNING[group];
-  const sliders = specs.map((t) => settingSlider(client, settings, t.key, t.label, { log: true, ...t }));
+  const sliders = specs.map((t) =>
+    settingSlider(client, settings, t.key, t.label, { log: true, format: scale, ...t }),
+  );
   const defaults = defaultSettings();
   const reset = button(
     'Defaults',
@@ -135,6 +140,13 @@ export function goalsTab(g: GoalsContext): HTMLElement {
         `Drag in the viewport to move the tool target; Shift-drag to push the tool with a spring (at most ${settings.pushMax} N, like a hand).`,
       ),
     );
+  } else if (d.tool !== null && d.nu > 0) {
+    const rail = mech.bodies.some((b) => b.actuated && b.joint === 'prismatic');
+    task.append(
+      note(
+        `Underactuated: the mechanism can only rest where its passive joints balance, and a tool point generally is not such a place — so it is given joint targets q*.${rail ? ' Click or drag in the viewport to move the rail target.' : ''}`,
+      ),
+    );
   }
   task.append(
     ...(d.closures.length
@@ -199,6 +211,12 @@ function hierarchyCard(g: GoalsContext): HTMLElement {
   const dof = d.phi.length ? d.n - d.phi.length : toolChainDof(d);
   const open = d.closures.length === 0;
   const box = card('Task hierarchy');
+  if (d.tool && !toolTargets(d)) {
+    box.append(
+      note('Goals below the tool need a tool target, and this mechanism cannot follow one (see above).'),
+    );
+    return box;
+  }
   if (!d.tool) {
     box.append(note('Build a tool point to stack goals below it.'));
     return box;

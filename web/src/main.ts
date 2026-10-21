@@ -107,6 +107,10 @@ class App {
       running: () => this.running,
       setRunning: (on) => this.setRunning(on),
       flash: (m) => this.flash(m),
+      note: (m) => {
+        if (m) this.status(m, 'sim');
+        else if ($('status').dataset.kind === 'sim') $('status').hidden = true;
+      },
     });
     this.editor = new Editor(document.createElement('div'), {
       change: (m) => this.edited(m),
@@ -351,6 +355,23 @@ class App {
     void this.rebuild();
   }
 
+  /** An empty scene: the ground to build on, nothing to derive or simulate yet. */
+  private showEmpty(): void {
+    if ($('status').dataset.kind === 'build') $('status').hidden = true;
+    this.derivation = null;
+    this.params = paramVector(this.mech);
+    history.replaceState(null, '', encodeHash(this.mech));
+    this.robot = new RobotView(this.mech);
+    this.schematic?.host.remove();
+    const bounds = { cx: 0, cy: 0, width: 4, height: 3 };
+    this.schematic = new SchematicView(this.mech, { coords: [] } as unknown as Derivation, bounds);
+    $('viewport').prepend(this.schematic.host);
+    this.freeBody = -1;
+    if (this.stageName !== 'build') this.setStage('build');
+    if (!this.userView) this.stage.setView(bounds.cx, bounds.cy, bounds.width, bounds.height);
+    this.refreshStage();
+  }
+
   private dragContext(): DragContext {
     return {
       mech: this.mech,
@@ -367,6 +388,10 @@ class App {
 
   private async rebuild(): Promise<void> {
     const seq = ++this.buildSeq;
+    if (!this.mech.bodies.length) {
+      this.showEmpty();
+      return;
+    }
     const res = await this.client.build(encode(this.mech));
     if (seq !== this.buildSeq) return; // a newer edit superseded this build
     if (!res.ok) return this.status(res.error, 'build');
@@ -405,7 +430,7 @@ class App {
     if (!this.dragging) this.refreshStage();
   }
 
-  private status(message: string, kind: 'build' | 'flash'): void {
+  private status(message: string, kind: 'build' | 'flash' | 'sim'): void {
     const st = $('status');
     st.dataset.kind = kind;
     st.textContent = message;
@@ -479,6 +504,7 @@ class App {
   // ---------------------------------------------------------------- stages
 
   private setStage(s: StageName): void {
+    if (s !== 'build' && !this.derivation) return; // nothing built yet
     this.stageName = s;
     for (const b of $('stages').querySelectorAll<HTMLButtonElement>('button')) {
       b.classList.toggle('on', b.dataset.stage === s);
@@ -509,7 +535,21 @@ class App {
     const head = $('side-head');
     head.replaceChildren();
     this.panel.clear();
-    if (!d) return;
+    for (const b of $('stages').querySelectorAll<HTMLButtonElement>('button')) {
+      b.disabled = !d && b.dataset.stage !== 'build';
+    }
+    if (!d) {
+      // an empty scene: the builder alone
+      const title = document.createElement('div');
+      title.className = 'side-title';
+      title.innerHTML = '<b>Build</b><span>an empty scene · drag parts in from the palette</span>';
+      head.append(title);
+      $('side').replaceChildren(this.editor.host);
+      $('hint').textContent =
+        'Drop a Cart, Bar or Slider on empty space to stand it on the ground, then attach more parts to its lit ports. A spring dropped on empty space is anchored to a wall there.';
+      this.buildToggles();
+      return;
+    }
     const next = (label: string, to: StageName) => button(label, () => this.setStage(to), 'btn primary');
     const title = (t: string, sub: string) => {
       const el = document.createElement('div');
@@ -707,6 +747,11 @@ class App {
   /** Frame the mechanism: its pose while building and deriving, everywhere it can reach while simulating. */
   private fitView(): void {
     if (!this.robot) return;
+    if (!this.mech.bodies.length) {
+      this.stage.setView(0, 0, 4, 3);
+      this.userView = false;
+      return;
+    }
     const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.mech);
     this.stage.setView(b.cx, b.cy, b.width, b.height);
     this.userView = false;
