@@ -4,7 +4,7 @@
  * on the pose and to draw preset thumbnails. Loop closures are not solved: the presets start closed.
  */
 import { type Mechanism, normalise } from '../model/description';
-import { BLOCK, type Bounds, compose, type Pose } from './geometry';
+import { BLOCK, type Bounds, compose, mountPose, type Pose } from './geometry';
 
 /** Body frames at q = q0 (index i = body i). */
 export function initialFrames(mech: Mechanism): Pose[] {
@@ -12,10 +12,7 @@ export function initialFrames(mech: Mechanism): Pose[] {
   for (const raw of mech.bodies) {
     const b = normalise(raw);
     const parent = b.parent < 0 ? null : frames[b.parent]!;
-    const mount: Pose =
-      parent === null
-        ? [b.mountX, b.mountY, b.mountAngle]
-        : compose(parent, [b.mountS * normalise(mech.bodies[b.parent]!).l, 0, b.mountAngle]);
+    const mount = mountPose(b, parent, parent === null ? 0 : normalise(mech.bodies[b.parent]!).l);
     const joint: Pose =
       b.joint === 'revolute'
         ? [0, 0, b.q0]

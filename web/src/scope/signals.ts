@@ -14,6 +14,7 @@
 import { shortName } from '../control/pages';
 import type { ControlStore } from '../control/store';
 import { SLOT_COLORS } from '../control/store';
+import { plain, subscript } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import type { Snapshot } from '../sim/layout';
 
@@ -31,14 +32,6 @@ export interface SignalGroup {
   name: string;
   ids: string[];
 }
-
-/** TeX of a coordinate as plain Unicode: θ_{2} → θ₂, d_{1} → d₁. */
-const SUB = '₀₁₂₃₄₅₆₇₈₉';
-export const plain = (tex: string) =>
-  tex
-    .replace(/\\theta/g, 'θ')
-    .replace(/_\{(\d+)\}/g, (_m, d: string) => [...d].map((c) => SUB[Number(c)]).join(''))
-    .replace(/[{}\\]/g, '');
 
 /** Friendly names and units of controller telemetry fields. */
 const TELE: Record<string, [string, string]> = {
@@ -173,7 +166,7 @@ export class Signals {
       case 'detM':
         return { id, label: 'det M', unit: '', get: () => s.v('DET_M') };
       case 'eig':
-        return joint('EIG_M', `λ${SUB[i + 1] ?? ''}(M)`, '');
+        return joint('EIG_M', `λ${subscript(i + 1)}(M)`, '');
       case 'tool':
       case 'xref': {
         if (!this.d.tool) return undefined;
@@ -240,7 +233,7 @@ export class Signals {
           : undefined;
       case 'lambda':
         return i < this.d.phi.length
-          ? { id, label: `λ${SUB[i + 1] ?? ''}`, unit: 'N', get: () => s.v('LAMBDA', i) }
+          ? { id, label: `λ${subscript(i + 1)}`, unit: 'N', get: () => s.v('LAMBDA', i) }
           : undefined;
       case 'slot':
         return this.slotSignal(id, a ?? '', b ?? '');

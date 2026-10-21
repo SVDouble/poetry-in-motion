@@ -38,6 +38,46 @@ interface Binding {
 
 let uid = 0;
 
+/** Greek (and other) letters by their TeX name. */
+export const GREEK: Readonly<Record<string, string>> = {
+  alpha: 'α',
+  beta: 'β',
+  gamma: 'γ',
+  delta: 'δ',
+  theta: 'θ',
+  vartheta: 'ϑ',
+  varphi: 'φ',
+  phi: 'ϕ',
+  psi: 'ψ',
+  tau: 'τ',
+  lambda: 'λ',
+  mu: 'μ',
+  omega: 'ω',
+  ell: 'ℓ',
+};
+const TEX_OF = new Map(Object.entries(GREEK).map(([name, c]) => [c, `\\${name}`]));
+
+const SUBSCRIPTS = '₀₁₂₃₄₅₆₇₈₉';
+/** A number as Unicode subscript digits: 12 → ₁₂. */
+export const subscript = (n: number | string) =>
+  [...String(n)].map((c) => SUBSCRIPTS[Number(c)] ?? c).join('');
+
+/** Simple TeX as plain Unicode: θ_{2} → θ₂, d_{1} → d₁. */
+export const plain = (src: string) =>
+  src
+    .replace(/\\([a-zA-Z]+)/g, (m, name: string) => GREEK[name] ?? m)
+    .replace(/_\{(\d+)\}/g, (_m, d: string) => subscript(d))
+    .replace(/[{}\\]/g, '');
+
+/** A Unicode symbol with subscript digits as TeX (θ₂ → \theta_{2}), or null if `word` is not one. */
+export function symbolTex(word: string): string | null {
+  const m = /^([A-Za-z\u0370-\u03ff]{1,2})([₀-₉]+)$/u.exec(word);
+  if (!m) return null;
+  const sym = [...m[1]!].map((c) => TEX_OF.get(c) ?? c).join('');
+  const sub = [...m[2]!].map((c) => SUBSCRIPTS.indexOf(c)).join('');
+  return `${sym}_{${sub}}`;
+}
+
 export const KATEX_OPTIONS = {
   throwOnError: false,
   strict: 'ignore' as const,

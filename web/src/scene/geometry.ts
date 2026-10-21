@@ -1,5 +1,5 @@
 /** Plain geometry of mechanisms, shared by the figure, the builder and the tests. */
-import { type Mechanism, normalise } from '../model/description';
+import { type BodySpec, type Mechanism, normalise } from '../model/description';
 
 export const BLOCK = { w: 0.36, h: 0.18, d: 0.22 };
 
@@ -18,6 +18,13 @@ export const compose = ([x, y, p]: Pose, [dx, dy, dp]: Pose): Pose => [
 ];
 
 /** Region that the mechanism can reach (for framing the view). */
+/** Frame of the joint of body b: on the ground at its mount, or at fraction mountS along a parent of
+ * length `parentLength` posed at `parent`, turned by its mount angle. */
+export function mountPose(b: BodySpec, parent: Pose | null, parentLength: number): Pose {
+  if (parent === null) return [b.mountX, b.mountY, b.mountAngle];
+  return compose(parent, [b.mountS * parentLength, 0, b.mountAngle]);
+}
+
 export function mechanismBounds(mech: Mechanism): Bounds {
   let minX = Infinity;
   let maxX = -Infinity;

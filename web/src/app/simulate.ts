@@ -23,7 +23,7 @@ import { segmented } from '../ui/widgets';
 import { ControlTab, dock } from './control';
 import { goalsTab, modelTab } from './goals';
 import { ACTUATOR_KEYS, ACTUATOR_LABELS } from './keys';
-import { pushSettings, type Settings, toolTargets } from './settings';
+import { pushSettings, type Settings, setSetting, toolTargets } from './settings';
 
 type SideTab = 'control' | 'goals' | 'eq' | 'model';
 
@@ -305,13 +305,10 @@ export class SimulateStage {
     // Alt-drag: the elbow target (switching the elbow goal on)
     if (alt && d.tool && !d.closures.length) {
       const { settings } = this.s;
-      settings.elbowX = x;
-      settings.elbowY = y;
-      client.flag('ElbowX', x);
-      client.flag('ElbowY', y);
+      setSetting(client, settings, 'elbowX', x);
+      setSetting(client, settings, 'elbowY', y);
       if (!(settings.elbow > 0)) {
-        settings.elbow = 6;
-        client.flag('Elbow', 6);
+        setSetting(client, settings, 'elbow', 6);
         if (this.side === 'goals') this.mountSide();
       }
       return;

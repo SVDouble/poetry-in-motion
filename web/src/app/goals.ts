@@ -23,21 +23,17 @@ import {
   segmented,
   slider,
 } from '../ui/widgets';
-import { defaultSettings, type Numeric, SETTING_FLAGS, type Settings, TUNING, toolTargets } from './settings';
+import { defaultSettings, type Numeric, type Settings, setSetting, TUNING, toolTargets } from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint'>>;
 
 function settingSlider(client: SimClient, s: Settings, key: Numeric, label: string, range: Range) {
-  const flag = SETTING_FLAGS.find(([k]) => k === key)?.[1];
   return slider({
     label,
     tex: true,
     value: s[key],
     ...range,
-    onInput: (v) => {
-      s[key] = v;
-      if (flag) client.flag(flag, v);
-    },
+    onInput: (v) => setSetting(client, s, key, v),
   });
 }
 
@@ -50,11 +46,7 @@ function tuningFold(g: GoalsContext, group: keyof typeof TUNING, title: string):
   const reset = button(
     'Defaults',
     () => {
-      for (const t of specs) {
-        settings[t.key] = defaults[t.key];
-        const flag = SETTING_FLAGS.find(([k]) => k === t.key)?.[1];
-        if (flag) client.flag(flag, defaults[t.key]);
-      }
+      for (const t of specs) setSetting(client, settings, t.key, defaults[t.key]);
       g.refresh();
     },
     'btn small',
@@ -219,11 +211,7 @@ function hierarchyCard(g: GoalsContext): HTMLElement {
     ),
   );
   if (!open || dof <= 2) return box;
-  const set = (key: Numeric, v: number) => {
-    settings[key] = v;
-    const flag = SETTING_FLAGS.find(([k]) => k === key)?.[1];
-    if (flag) client.flag(flag, v);
-  };
+  const set = (key: Numeric, v: number) => setSetting(client, settings, key, v);
   const toggle = (key: 'orient' | 'elbow', on: boolean) => {
     set(key, on ? DEFAULT_GOAL_W : 0);
     g.refresh();

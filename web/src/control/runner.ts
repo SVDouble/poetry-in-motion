@@ -3,7 +3,14 @@
  * limits and goals), then its actions in order. It talks to the simulation through a `Port`, so the
  * browser (real time) and the verification tests (stepping the core directly) run the very same code.
  */
-import { defaultSettings, pushSettings, SETTING_FLAGS, type Settings } from '../app/settings';
+import {
+  defaultSettings,
+  type Numeric,
+  pushSettings,
+  SETTING_FLAGS,
+  type Settings,
+  setSetting,
+} from '../app/settings';
 import type { Derivation } from '../model/derivation';
 import type { Flag, Snapshot } from '../sim/layout';
 import type { ToWorker } from '../sim/protocol';
@@ -81,9 +88,7 @@ async function act(port: Port, a: Action): Promise<void> {
       return;
     }
     case 'setting': {
-      settings[a.key] = a.value;
-      const flag = SETTING_FLAGS.find(([k]) => k === a.key)?.[1];
-      if (flag) port.flag(flag, a.value);
+      setSetting(port, settings, a.key, a.value);
       port.settingsChanged?.();
       return;
     }
@@ -97,8 +102,7 @@ async function act(port: Port, a: Action): Promise<void> {
       const s = port.snap();
       const hold = Math.max(0, ...Array.from({ length: d.nu }, (_, k) => Math.abs(s.v('U_FF', k))));
       const umax = Number((hold + a.share * peak).toPrecision(2));
-      settings.umax = umax;
-      port.flag('Umax', umax);
+      setSetting(port, settings, 'umax', umax);
       port.settingsChanged?.();
       port.mark?.('limit');
       return;
@@ -125,23 +129,16 @@ async function act(port: Port, a: Action): Promise<void> {
       // targets relative to where the tool and the elbow are now
       const snap = port.snap();
       const nb = d.bodies.length; // frames: s, bodies 1 … nb, tool nb + 1
-      const set = (
-        key: 'orient' | 'orientTarget' | 'elbow' | 'elbowX' | 'elbowY',
-        flag: Parameters<Port['flag']>[0],
-        v: number,
-      ) => {
-        settings[key] = v;
-        port.flag(flag, v);
-      };
+      const set = (key: Numeric, v: number) => setSetting(port, settings, key, v);
       if (a.dphi !== undefined) {
-        set('orientTarget', 'OrientTarget', snap.frame(nb + 1)[2] + a.dphi);
-        set('orient', 'Orient', a.w);
+        set('orientTarget', snap.frame(nb + 1)[2] + a.dphi);
+        set('orient', a.w);
       }
       if (a.delbow) {
         const [x, y] = snap.frame(Math.round(snap.v('GOALS', 5)) + 1);
-        set('elbowX', 'ElbowX', x + a.delbow[0]);
-        set('elbowY', 'ElbowY', y + a.delbow[1]);
-        set('elbow', 'Elbow', a.w);
+        set('elbowX', x + a.delbow[0]);
+        set('elbowY', y + a.delbow[1]);
+        set('elbow', a.w);
       }
       port.settingsChanged?.();
       port.mark?.('stack');

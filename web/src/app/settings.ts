@@ -261,6 +261,13 @@ export const TUNING: Record<'task' | 'world', TuningSpec[]> = {
   ],
 };
 
+/** Change a numeric setting and the core flag that mirrors it (if any). */
+export function setSetting(client: Pick<SimClient, 'flag'>, s: Settings, key: Numeric, v: number): void {
+  s[key] = v;
+  const flag = SETTING_FLAGS.find(([k]) => k === key)?.[1];
+  if (flag) client.flag(flag, v);
+}
+
 export function pushSettings(client: Pick<SimClient, 'flag'>, s: Settings): void {
   for (const [key, flag] of SETTING_FLAGS) client.flag(flag, s[key]);
   client.flag('Coriolis', s.coriolis ? 1 : 0);

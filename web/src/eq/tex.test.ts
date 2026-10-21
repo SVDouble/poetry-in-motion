@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fix, sci, texMat } from './tex';
+import { fix, plain, sci, subscript, symbolTex, texMat } from './tex';
 
 describe('number formatting', () => {
   it('keeps about four significant digits and uses a true minus sign', () => {
@@ -26,5 +26,18 @@ describe('number formatting', () => {
         ['c', 'd'],
       ]),
     ).toBe(String.raw`\begin{bmatrix}a & b\\c & d\end{bmatrix}`);
+  });
+});
+
+describe('symbols', () => {
+  it('turn simple TeX into Unicode and back', () => {
+    expect(plain(String.raw`\theta_{2}`)).toBe('θ₂');
+    expect(plain(String.raw`\varphi_{12}`)).toBe('φ₁₂');
+    expect(plain('d_{1}')).toBe('d₁');
+    expect(symbolTex('θ₂')).toBe(String.raw`\theta_{2}`);
+    expect(symbolTex('φ₁')).toBe(String.raw`\varphi_{1}`);
+    expect(symbolTex('u₃')).toBe('u_{3}');
+    expect(symbolTex('error')).toBeNull();
+    expect(subscript(10)).toBe('₁₀');
   });
 });

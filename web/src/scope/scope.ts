@@ -5,7 +5,7 @@
  */
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { fix, tex } from '../eq/tex';
+import { fix, symbolTex, tex } from '../eq/tex';
 
 /** Smallest vertical span of a plot: round-off noise (1e-15 … 1e-6) must not be magnified into curves. */
 const MIN_SPAN = 1e-3;
@@ -47,29 +47,18 @@ function ticks(v: number[]): string[] {
   });
 }
 
-const SUBSCRIPT = '₀₁₂₃₄₅₆₇₈₉';
-const GREEK: Record<string, string> = {
-  θ: '\\theta',
-  ω: '\\omega',
-  τ: '\\tau',
-  λ: '\\lambda',
-  φ: '\\varphi',
-};
-
 /** A signal name typeset: symbols with subscripts (θ₁, u₂, e θ₁) in KaTeX, words as text. */
 function chipLabel(label: string): HTMLElement {
   const out = el('span', 'l');
   label.split(' ').forEach((word, k) => {
     if (k) out.append(' ');
-    const m = /^([A-Za-zθωτλφ]{1,2})([₀-₉]+)$/.exec(word);
-    if (!m) {
+    const src = symbolTex(word);
+    if (!src) {
       out.append(word);
       return;
     }
-    const sym = [...m[1]!].map((c) => GREEK[c] ?? c).join('');
-    const sub = [...m[2]!].map((c) => SUBSCRIPT.indexOf(c)).join('');
     const span = el('span', 'm');
-    tex(span, `${sym}_{${sub}}`);
+    tex(span, src);
     out.append(span);
   });
   return out;

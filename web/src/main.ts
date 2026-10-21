@@ -29,7 +29,7 @@ import {
   reparent,
 } from './model/description';
 import { poseBounds } from './scene/kinematics';
-import { RobotView } from './scene/robot';
+import { param, RobotView } from './scene/robot';
 import { type Focus, parseFocus, type SchematicFrame, SchematicView } from './scene/schematic';
 import { Stage } from './scene/stage';
 import { setDark } from './scene/theme';
@@ -237,7 +237,7 @@ class App {
     let html = '';
     let best = reach;
     this.mech.bodies.forEach((b, k) => {
-      const [fx, fy, p] = s.frame(k + 1);
+      const [fx, fy] = s.frame(k + 1);
       const j = d.coords.findIndex((c) => c.body === k);
       if (j >= 0 && Math.hypot(x - fx, y - fy) < best) {
         best = Math.hypot(x - fx, y - fy);
@@ -245,14 +245,13 @@ class App {
         const [q, qd, tau] = [s.v('Q', j), s.v('QD', j), s.v('TAU', j)];
         html = `<b>${ang ? 'θ' : 'd'}<sub>${k + 1}</sub></b> = ${q.toFixed(3)} ${ang ? 'rad' : 'm'}<br>rate ${qd.toFixed(3)} ${ang ? 'rad/s' : 'm/s'}<br>${ang ? 'torque' : 'force'} τ = ${tau.toFixed(2)} ${ang ? 'N·m' : 'N'}`;
       }
-      const r = this.params[5 * k + 2] ?? 0;
-      const [cx, cy] = [fx + Math.cos(p) * r, fy + Math.sin(p) * r];
-      const m = this.params[5 * k] ?? 0;
+      const [cx, cy] = robot.com(k, s, this.params);
+      const m = param(this.params, k, 'm') ?? 0;
       if (m > 0 && Math.hypot(x - cx, y - cy) < best) {
         best = Math.hypot(x - cx, y - cy);
         const [vx, vy] = [s.v('VCOM', 2 * k), s.v('VCOM', 2 * k + 1)];
         const w = s.v('OMEGA', k);
-        const inertia = this.params[5 * k + 3] ?? 0;
+        const inertia = param(this.params, k, 'I') ?? 0;
         const t = 0.5 * m * (vx * vx + vy * vy) + 0.5 * inertia * w * w;
         const total = s.v('ENERGY');
         html = `<b>body ${k + 1}</b>: m = ${m.toFixed(2)} kg<br>|v<sub>c</sub>| = ${Math.hypot(vx, vy).toFixed(3)} m/s, ω = ${w.toFixed(3)} rad/s<br>T<sub>${k + 1}</sub> = ½mv² + ½Iω² = ${t.toFixed(3)} J${total > 1e-9 ? ` (${((100 * t) / total).toFixed(0)} % of T)` : ''}`;
@@ -268,32 +267,9 @@ class App {
 
   /** Distance between the ends of spring/damper k at the current pose. */
   private elementLength(k: number): number {
-    const e = this.mech.elements[k];
-    if (!e || !this.robot) return 0;
-    const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.robot.port(e.a, e.sa, this.snap, this.params);
-    const [bx, by] = this.robot.port(e.b, e.sb, this.snap, this.params);
+    if (!this.robot || !this.mech.elements[k]) return 0;
+    const [[ax, ay], [bx, by]] = this.robot.elementEnds(k, this.snap, this.params);
     return Math.hypot(bx - ax, by - ay);
-  }
-
-  /** The spring/damper whose line passes within a few pixels of (x, y), or −1. */
-  private pickElement(x: number, y: number): number {
-    const reach = 7 * this.stage.metresPerPixel;
-    let best = -1;
-    let bestD = reach;
-    this.mech.elements.forEach((e, k) => {
-      if (!this.robot) return;
-      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.robot.port(e.a, e.sa, this.snap, this.params);
-      const [bx, by] = this.robot.port(e.b, e.sb, this.snap, this.params);
-      const [vx, vy] = [bx - ax, by - ay];
-      const len2 = vx * vx + vy * vy;
-      const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / len2)) : 0;
-      const d = Math.hypot(x - (ax + t * vx), y - (ay + t * vy));
-      if (d < bestD) {
-        bestD = d;
-        best = k;
-      }
-    });
-    return best;
   }
 
   private closeInspector(): void {
@@ -896,7 +872,7 @@ class App {
     if (this.stageName === 'build') {
       if (kind !== 'down') return;
       // springs and dampers first: they are thin and often lie over bodies
-      const k = this.pickElement(x, y);
+      const k = this.robot.pickElement(x, y, this.snap, this.params, 7 * this.stage.metresPerPixel);
       if (k >= 0) {
         this.editor.selectElement(k);
         this.inspector.show({ kind: 'element', index: k });

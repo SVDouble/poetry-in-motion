@@ -39,23 +39,31 @@
    squares for the command, exact projectors), so a lower goal can never disturb a higher one; the
    seven-joint arm preset has room for all of them. Shift-drag pushes the tool with a spring, Alt-drag places
    the elbow target. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
-   LQR/MPC live in tangent coordinates of the constraint manifold.
+   LQR/MPC live in tangent coordinates of the constraint manifold. Every number that shapes behaviour beyond
+   the physics — null-space damping, the damped-least-squares bands, the priority fade, how far inside the
+   workspace an unreachable target is aimed, the inverse-kinematics step and damping, the push limit, the
+   end stops, the Baumgarte rate — is a setting (Goals tab, with defaults to return to), the same for every
+   mechanism.
 
 ```
 M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ        (Murray, Li & Sastry, eq. 4.24)
 ```
 
 Nothing is special-cased: the cart-pole and the arm are presets of the builder, and every controller works from
-M, C, N, V, B and the tool Jacobian of whatever was built. Closed loops are handled as holonomic constraints
+M, C, N, V, B and the tool Jacobian of whatever was built. Guided experiments are offered by structure
+(underactuated, redundant, loops, …) and size their kicks and limits from the mechanism itself; the gallery
+shelves are read off the structure too. Closed loops are handled as holonomic constraints
 φ(q) = 0, derived symbolically like everything else (MLS ch. 6): `M q̈ + C q̇ + N + Aᵀλ = τ`, `A = ∂φ/∂q`.
 
 Seeing the dynamics: the View menu draws velocities of the centres of mass, forces (weights, springs and
 dampers, loop forces from the multipliers λ, the push), and a **free-body diagram** of any clicked body — cut
-free, with its joint reactions from Newton's law for the subtree it carries, the reactions it passes on, its
-joint moments and m a as the resultant. Per-joint **torque bars** show which of M q̈, C q̇, N makes up τ; an
+free, with its joint reactions from Newton's law for the subtree it carries (split into drive and normal
+force at a prismatic joint), the reactions it passes on, its joint moments and m a as the resultant. Arrows
+use fixed round scales per mechanism, listed in a key, so they compare across time. Per-joint **torque bars** show which of M q̈, C q̇, N makes up τ; an
 **energy gauge** shows what is stored, supplied and lost. Pausing shows a **timeline**: scrub back through
-the last 20 s, step frame by frame, resume from any moment. Pointing at a formula in the derivation lights up
-what it is about in the figure (a frame, a centre of mass, gravity, a spring, a loop, the tool); hovering a
+the last 20 s (the plots mark the moment and read its values), step frame by frame, resume from any moment. Pointing at a formula in the derivation lights up
+what it is about in the figure (a frame, a centre of mass with its Jacobian columns ∂p/∂q_j, a joint's row
+of the equations of motion, gravity, a spring, a loop, the tool); hovering a
 joint or a centre of mass shows its numbers.
 
 The whole app is drawn like a mechanics textbook: ink on paper in Computer Modern, and the mechanism as a

@@ -277,6 +277,28 @@ impl Sim {
         f.map(|v| v * scale)
     }
 
+    /// The end-stop forces and the total generalised force on the joints: inputs, pushes and stops.
+    fn applied(&self, q: &[f64], qd: &[f64]) -> (VecN, VecN) {
+        let stops = self.stops(q, qd);
+        (stops, core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]))
+    }
+
+    /// Pose (x, y, φ) of every frame (s, the bodies, the tool) from an evaluated aux tape.
+    fn frame_poses<'a>(&'a self, q: &'a VecN) -> impl Iterator<Item = [f64; 3]> + 'a {
+        let (a, ao) = (&self.aux, self.model.aux_off);
+        self.model
+            .frame_angles
+            .iter()
+            .take(MAXF)
+            .enumerate()
+            .map(move |(kf, ang)| [a[ao.frames + 2 * kf], a[ao.frames + 2 * kf + 1], ang.eval(q)])
+    }
+
+    /// Power lost to viscous joint friction, Σ βᵢ q̇ᵢ².
+    fn joint_friction(&self, qd: &[f64]) -> f64 {
+        (0..self.model.n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum()
+    }
+
     fn accel(&mut self, q: &VecN, qd: &VecN) -> VecN {
         let t = self.model.terms(q, qd);
         let k = dynamics::constraints(&mut self.model, q, qd);
@@ -287,15 +309,13 @@ impl Sim {
     /// every force for the energy budget (the constraint forces act as −Aᵀλ).
     fn accel_with(&mut self, t: &Terms, k: Option<&dynamics::Constraints>, q: &VecN, qd: &VecN) -> VecN {
         let n = self.model.n;
-        let stops = self.stops(q, qd);
-        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
+        let (stops, tau) = self.applied(q, qd);
         let (qdd, lambda) =
             dynamics::accel_with(n, t, k, qd, &tau, self.coriolis, self.plan.tuning.baumgarte);
         self.lambda = lambda;
         let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
         // joint friction and the dampers
-        let friction = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum::<f64>()
-            + self.model.element_forces(q, qd).dissipation;
+        let friction = self.joint_friction(qd) + self.model.element_forces(q, qd).dissipation;
         let constraint = k.map_or(0.0, |k| -dot(&k.apply_t(&lambda)));
         let b = &mut self.budget;
         b.stages[b.stage % 4] = [dot(&self.tau_u), dot(&self.tau_ext), dot(&stops), friction, constraint];
@@ -445,15 +465,15 @@ impl Sim {
         self.model.aux.eval(&q, &qd, &mut self.aux);
         let (a, ao) = (&self.aux, self.model.aux_off);
         o.fill(0.0);
+        for (kf, pose) in self.frame_poses(&q).enumerate() {
+            o[slot::FRAMES + 3 * kf..slot::FRAMES + 3 * kf + 3].copy_from_slice(&pose);
+        }
         let mut put = |at: usize, v: &[f64]| o[at..at + v.len()].copy_from_slice(v);
         let effort = (0..self.model.nu).map(|i| self.u[i] * self.u[i]).sum::<f64>().sqrt();
         put(slot::KIND, &[f64::from(self.kind as u32), f64::from(self.ctrl.phase()), eq, ex, effort]);
         put(slot::ENERGY, &[ke, pe, ke + pe]);
         put(slot::Q, &q[..n]);
         put(slot::U, &self.u[..self.model.nu]);
-        for (kf, ang) in self.model.frame_angles.iter().enumerate().take(MAXF) {
-            put(slot::FRAMES + 3 * kf, &[a[ao.frames + 2 * kf], a[ao.frames + 2 * kf + 1], ang.eval(&q)]);
-        }
         put(slot::TOOL, &a[ao.tool_p..ao.tool_p + 2]);
         let mut tele = Telemetry::new(
             self.kind,
@@ -469,10 +489,9 @@ impl Sim {
         let (q, qd) = (self.q, self.qd);
         let t = self.model.terms(&q, &qd);
         let elements = self.model.element_forces(&q, &qd);
-        let stops = self.stops(&q, &qd);
-        let tau: VecN = core::array::from_fn(|i| self.tau_u[i] + self.tau_ext[i] + stops[i]);
-        let qdd = self.accel(&q, &qd);
+        let (stops, tau) = self.applied(&q, &qd);
         let k = dynamics::constraints(&mut self.model, &q, &qd);
+        let qdd = self.accel_with(&t, k.as_ref(), &q, &qd);
         let at_lambda = k.as_ref().map_or([0.0; MAXN], |k| k.apply_t(&self.lambda));
         self.model.aux.eval(&q, &qd, &mut self.aux);
         let (a, ao) = (&self.aux, self.model.aux_off);
@@ -484,8 +503,7 @@ impl Sim {
         let skew = crate::mat::max_abs(skew);
         let eig = sym_eigenvalues(n, &t.m);
         let power: f64 = (0..n).map(|i| qd[i] * tau[i]).sum();
-        let dissipation: f64 = (0..n).map(|i| self.p[self.model.beta_index[i]] * qd[i] * qd[i]).sum::<f64>()
-            + elements.dissipation;
+        let dissipation = self.joint_friction(&qd) + elements.dissipation;
         let mqdd = mat_vec(n, &t.m, &qdd);
         let cqd = t.c_qd(n, &qd);
         let (ke, pe) = (a[ao.energy], a[ao.energy + 1] + elements.energy);
@@ -496,6 +514,9 @@ impl Sim {
         let w = manipulability(n, &a[ao.jp..ao.jp + 2 * n]);
 
         o[..off::SLOT].fill(0.0);
+        for (kf, pose) in self.frame_poses(&q).enumerate() {
+            o[off::FRAMES + 3 * kf..off::FRAMES + 3 * kf + 3].copy_from_slice(&pose);
+        }
         let mut put = |at: usize, v: &[f64]| o[at..at + v.len()].copy_from_slice(v);
         let kind = f64::from(self.kind as u32);
         put(off::TIME, &[self.t, self.steps as f64, n as f64, nu as f64, kind, f64::from(self.ctrl.phase())]);
@@ -516,9 +537,6 @@ impl Sim {
         let b = &self.budget;
         put(off::WORK, &[b.work[0], b.work[1], b.work[2], b.work[3], b.work[4], b.e0, b.residual(ke + pe)]);
         put(off::EIG_M, &eig[..n]);
-        for (kf, ang) in self.model.frame_angles.iter().enumerate().take(MAXF) {
-            put(off::FRAMES + 3 * kf, &[a[ao.frames + 2 * kf], a[ao.frames + 2 * kf + 1], ang.eval(&q)]);
-        }
         put(off::COMS, &a[ao.coms..ao.coms + 2 * nb]);
         put(off::TOOL_P, &a[ao.tool_p..ao.tool_p + 2]);
         put(off::JP, &a[ao.jp..ao.jp + 2 * n]);

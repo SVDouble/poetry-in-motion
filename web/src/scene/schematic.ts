@@ -9,11 +9,12 @@
  * move (ground, rails, gravity) live on a second canvas redrawn only when the view changes, and a frame is
  * only drawn when something on it changed.
  */
-import { tex } from '../eq/tex';
+import { GREEK, tex } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import { actuatorIndex, coordIndex, isDescendant, type Mechanism, normalise } from '../model/description';
 import type { SlotView, Snapshot } from '../sim/layout';
 import { BLOCK, type Bounds, compose, type Pose } from './geometry';
+import { param, RobotView } from './robot';
 import type { Mapping } from './stage';
 import { css, ink, palette, SLOT_COLORS } from './theme';
 
@@ -279,23 +280,6 @@ class TikzPen implements Pen {
     );
   }
 }
-
-const GREEK: Record<string, string> = {
-  alpha: 'α',
-  beta: 'β',
-  gamma: 'γ',
-  delta: 'δ',
-  theta: 'θ',
-  vartheta: 'ϑ',
-  varphi: 'φ',
-  phi: 'ϕ',
-  psi: 'ψ',
-  tau: 'τ',
-  lambda: 'λ',
-  mu: 'μ',
-  omega: 'ω',
-  ell: 'ℓ',
-};
 
 /** Simple TeX (letters, Greek, sub- and superscripts) as SVG text with tspans. */
 function texToSvg(src: string): string {
@@ -637,6 +621,12 @@ class Path {
 }
 
 /** A coordinate frame: x and y axes as arrows from (x, y), turned by p. */
+/** The line of a bar of length l from its frame's origin along its x-axis (into the current path). */
+function bar(pen: Pen, [x, y, p]: Pose, l: number): void {
+  pen.move(x, y);
+  pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
+}
+
 function triad(pen: Pen, x: number, y: number, p: number, size = 26): void {
   const s = size * pen.u;
   arrow(pen, x, y, x + Math.cos(p) * s, y + Math.sin(p) * s, C.frame, 1);
@@ -647,6 +637,8 @@ function triad(pen: Pen, x: number, y: number, p: number, size = 26): void {
 export class Figure {
   private readonly coord: number[];
   private readonly actuator: number[];
+  /** Points, lengths and joint frames of the bodies at a pose. */
+  private readonly geo: RobotView;
   /** Tool paths: the primary, then the shadow slots. */
   private readonly paths = SLOT_COLORS.map(() => new Path());
   /** Where an export puts the gravity arrow (null: the corner of the reachable region). */
@@ -668,26 +660,11 @@ export class Figure {
   ) {
     this.coord = coordIndex(mech);
     this.actuator = actuatorIndex(mech);
+    this.geo = new RobotView(mech);
   }
 
   resetTrail(): void {
     for (const p of this.paths) p.reset();
-  }
-
-  private length(i: number, params: number[]): number {
-    return params[5 * i + 1] ?? this.mech.bodies[i]?.l ?? 0;
-  }
-
-  private jointPose(i: number, snap: Snapshot, params: number[]): Pose {
-    const b = this.mech.bodies[i]!;
-    if (b.parent < 0) return [b.mountX, b.mountY, b.mountAngle];
-    return compose(snap.frame(b.parent + 1), [b.mountS * this.length(b.parent, params), 0, b.mountAngle]);
-  }
-
-  private port(i: number, s: number, snap: Snapshot, params: number[]): [number, number] {
-    const [x, y, p] = snap.frame(i + 1);
-    const l = s * this.length(i, params);
-    return [x + Math.cos(p) * l, y + Math.sin(p) * l];
   }
 
   /** Record the tool position of slot k (0: the primary). */
@@ -732,7 +709,7 @@ export class Figure {
     let [maxX, maxY] = [-Infinity, -Infinity];
     for (let i = 0; i < this.mech.bodies.length; i++) {
       const [x, y, p] = f.snap.frame(i + 1);
-      const l = this.length(i, f.params);
+      const l = this.geo.length(i, f.params);
       maxX = Math.max(maxX, x, x + Math.cos(p) * l);
       maxY = Math.max(maxY, y, y + Math.sin(p) * l);
     }
@@ -840,8 +817,7 @@ export class Figure {
     const out: PointForce[] = [];
     const nb = this.mech.bodies.length;
     this.mech.elements.forEach((e, k) => {
-      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
-      const [bx, by] = this.port(e.b, e.sb, snap, params);
+      const [[ax, ay], [bx, by]] = this.geo.elementEnds(k, snap, params);
       const len = Math.hypot(bx - ax, by - ay);
       if (len < 1e-9) return;
       // tension pulls the ends together
@@ -856,8 +832,8 @@ export class Figure {
     // turning of n puts on a)
     let row = 0;
     this.mech.closures.forEach((c, k) => {
-      const [ax, ay] = c.a < 0 ? [c.gx, c.gy] : this.port(c.a, c.sa, snap, params);
-      const [bx, by] = this.port(c.b, c.sb, snap, params);
+      const [ax, ay] = this.geo.anchor(c.a, c.sa, [c.gx, c.gy], snap, params);
+      const [bx, by] = this.geo.port(c.b, c.sb, snap, params);
       const name = `\\lambda_{${k + 1}}`;
       const add = (body: number, x: number, y: number, fx: number, fy: number) => {
         if (body >= 0) out.push({ body, x, y, fx, fy, label: name });
@@ -892,7 +868,7 @@ export class Figure {
     let [rx, ry] = [0, 0];
     this.mech.bodies.forEach((_, k) => {
       if (!isDescendant(this.mech, k, i)) return;
-      const m = params[5 * k] ?? 0;
+      const m = param(params, k, 'm') ?? 0;
       rx += m * snap.v('ACOM', 2 * k);
       ry += m * (snap.v('ACOM', 2 * k + 1) + g);
     });
@@ -911,17 +887,13 @@ export class Figure {
     const nb = this.mech.bodies.length;
     const g = params[params.length - 1] ?? 9.81;
     const label = (id: string, x: number, y: number, src: string) => this.label(pen, id, x, y, src);
-    const com = (k: number): [number, number] => {
-      const [x, y, p] = snap.frame(k + 1);
-      const r = params[5 * k + 2] ?? 0;
-      return [x + Math.cos(p) * r, y + Math.sin(p) * r];
-    };
-    const moving = (k: number) => this.mech.bodies[k]!.joint !== 'fixed' || (params[5 * k] ?? 0) > 0;
+    const com = (k: number) => this.geo.com(k, snap, params);
+    const moving = (k: number) => this.mech.bodies[k]!.joint !== 'fixed' || (param(params, k, 'm') ?? 0) > 0;
     // fixed scales, so that arrows compare across time: a round force (about the heaviest weight) and a
     // round speed (about the size of the mechanism per second) are each drawn L long, listed in a key
     const size = Math.max(this.bounds.width, this.bounds.height);
     const L = 0.12 * size;
-    const weight = Math.max(1e-3, ...this.mech.bodies.map((_, k) => (params[5 * k] ?? 0) * g));
+    const weight = Math.max(1e-3, ...this.mech.bodies.map((_, k) => (param(params, k, 'm') ?? 0) * g));
     const [fRef, vRef] = [roundDown(weight), roundDown(0.5 * size)];
     const [fScale, vScale] = [L / fRef, L / vRef];
     const focus = f.focus ?? null;
@@ -970,7 +942,10 @@ export class Figure {
     }
     const forces = f.forces || f.freeBody !== undefined ? this.pointForces(snap, params) : [];
     if (showGrav || f.forces) {
-      const weights = this.mech.bodies.map((_, k): [number, number] => [0, -(params[5 * k] ?? 0) * g]);
+      const weights = this.mech.bodies.map((_, k): [number, number] => [
+        0,
+        -(param(params, k, 'm') ?? 0) * g,
+      ]);
       weights.forEach((w, k) => {
         if (moving(k)) vector(pen, label, `w${k}`, com(k), w, fScale, C.gravity, `m_{${k + 1}}g`);
       });
@@ -984,7 +959,7 @@ export class Figure {
     // free-body diagram: the body cut free with every force on it, and m a_c as the resultant
     const i = f.freeBody ?? -1;
     if (i >= 0 && i < nb) {
-      const m = params[5 * i] ?? 0;
+      const m = param(params, i, 'm') ?? 0;
       const [jx, jy] = snap.frame(i + 1);
       // cut free: the rest of the mechanism fades, the body is drawn again on top
       pen.begin();
@@ -994,12 +969,11 @@ export class Figure {
       pen.line(-1e3, 1e3);
       pen.close();
       pen.draw({ fill: C.paper, alpha: 0.72 });
-      const l = this.length(i, params);
+      const l = this.geo.length(i, params);
       const p = snap.frame(i + 1)[2];
       if (l > 1e-3) {
         pen.begin();
-        pen.move(jx, jy);
-        pen.line(jx + Math.cos(p) * l, jy + Math.sin(p) * l);
+        bar(pen, [jx, jy, p], l);
         pen.draw({ stroke: C.ink, width: LINK_W });
       }
       comSymbol(pen, ...com(i), p);
@@ -1019,7 +993,7 @@ export class Figure {
           list.push({ at, f: [rx, ry], src: `${minus}R_{${k + 1}}` });
           return;
         }
-        const a = this.jointPose(k, snap, params)[2] + b.axisAngle;
+        const a = this.geo.jointPose(k, snap, params)[2] + b.axisAngle;
         const [ux, uy] = [Math.cos(a), Math.sin(a)];
         const along = rx * ux + ry * uy;
         list.push({ at, f: [along * ux, along * uy], src: `${minus}F_{${k + 1}}` });
@@ -1042,7 +1016,7 @@ export class Figure {
         const j = this.coord[k]!;
         if (b.joint !== 'revolute' || j < 0) return 0;
         const a = this.actuator[k]!;
-        return (a >= 0 ? snap.v('U', a) : 0) - (params[5 * k + 4] ?? 0) * snap.v('QD', j);
+        return (a >= 0 ? snap.v('U', a) : 0) - (param(params, k, 'beta') ?? 0) * snap.v('QD', j);
       };
       const umax = snap.v('UMAX') || 1;
       const arc = (k: number, sign: number, x: number, y: number, name: string) => {
@@ -1064,20 +1038,17 @@ export class Figure {
     // what an equation points at
     if (focus) {
       const ring = (x: number, y: number, r = 11) => circle(pen, x, y, r * u, { stroke: C.accent, width: 2 });
-      const bar = (k: number) => {
-        const [x, y, p] = snap.frame(k + 1);
-        const l = this.length(k, params);
+      const glow = (k: number) => {
         pen.begin();
-        pen.move(x, y);
-        pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
+        bar(pen, snap.frame(k + 1), this.geo.length(k, params));
         pen.draw({ stroke: C.accent, width: LINK_W + 3, alpha: 0.45 });
       };
       if (focus.kind === 'all') {
-        for (let k = 0; k < nb; k++) bar(k);
+        for (let k = 0; k < nb; k++) glow(k);
       }
-      if (focus.kind === 'body' && focus.index < nb) bar(focus.index);
+      if (focus.kind === 'body' && focus.index < nb) glow(focus.index);
       if (focus.kind === 'frame' && focus.index < nb) {
-        bar(focus.index);
+        glow(focus.index);
         const [x, y, p] = snap.frame(focus.index + 1);
         triad(pen, x, y, p, 34);
       }
@@ -1093,13 +1064,12 @@ export class Figure {
       }
       if (focus.kind === 'loop') {
         const c = this.mech.closures[focus.index];
-        if (c) ring(...this.port(c.b, c.sb, snap, params), 14);
+        if (c) ring(...this.geo.port(c.b, c.sb, snap, params), 14);
       }
       if (focus.kind === 'element') {
         const e = this.mech.elements[focus.index];
         if (e) {
-          const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
-          const [bx, by] = this.port(e.b, e.sb, snap, params);
+          const [[ax, ay], [bx, by]] = this.geo.elementEnds(focus.index, snap, params);
           pen.begin();
           pen.move(ax, ay);
           pen.line(bx, by);
@@ -1127,10 +1097,7 @@ export class Figure {
       const ink = C.ghosts[k % C.ghosts.length]!;
       pen.begin();
       for (let i = 0; i < nb; i++) {
-        const [x, y, p] = slot.frame(i + 1);
-        const l = this.length(i, params);
-        pen.move(x, y);
-        pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
+        bar(pen, slot.frame(i + 1), this.geo.length(i, params));
       }
       pen.draw({ stroke: ink, width: 2.2, alpha: 0.55 });
       if (this.mech.tool >= 0)
@@ -1140,7 +1107,7 @@ export class Figure {
     // prismatic guides on moving bodies, and slots that move with a body
     this.mech.bodies.forEach((b, i) => {
       if (b.joint !== 'prismatic' || b.parent < 0) return;
-      const [jx, jy, jp] = this.jointPose(i, snap, params);
+      const [jx, jy, jp] = this.geo.jointPose(i, snap, params);
       const a = jp + b.axisAngle;
       const half = b.limit > 0 ? b.limit + 0.05 : 0.8;
       const [c, s] = [Math.cos(a), Math.sin(a)];
@@ -1151,14 +1118,13 @@ export class Figure {
     });
     this.mech.closures.forEach((c) => {
       if (c.kind !== 'slot' || c.a < 0) return;
-      const [ax, ay] = this.port(c.a, c.sa, snap, params);
+      const [ax, ay] = this.geo.port(c.a, c.sa, snap, params);
       this.slotGuide(pen, ax, ay, snap.frame(c.a + 1)[2] + c.angle, false);
     });
 
     // springs and dampers: a zigzag, a dashpot, or both side by side between end bars
     this.mech.elements.forEach((e, k) => {
-      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
-      const [bx, by] = this.port(e.b, e.sb, snap, params);
+      const [[ax, ay], [bx, by]] = this.geo.elementEnds(k, snap, params);
       const len = Math.hypot(bx - ax, by - ay);
       if (len < 1e-6) return;
       const ink = k === this.selectedElement ? C.accent : C.ink;
@@ -1224,16 +1190,15 @@ export class Figure {
           }
         }
       }
-      const l = this.length(i, params);
+      const l = this.geo.length(i, params);
       if (l > 1e-3) {
         pen.begin();
-        pen.move(x, y);
-        pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
+        bar(pen, [x, y, p], l);
         pen.draw({ stroke: ink, width: b.joint === 'fixed' ? LINK_W + 0.8 : LINK_W });
       }
       if (b.joint === 'prismatic' && b.shape !== 'block') {
         // a sleeve on the guide
-        const [jx, jy, jp] = this.jointPose(i, snap, params);
+        const [jx, jy, jp] = this.geo.jointPose(i, snap, params);
         const a = jp + b.axisAngle;
         const [c, s] = [Math.cos(a), Math.sin(a)];
         const along = (x - jx) * c + (y - jy) * s;
@@ -1272,7 +1237,7 @@ export class Figure {
       }
     });
     this.mech.closures.forEach((c) => {
-      const [px, py] = this.port(c.b, c.sb, snap, params);
+      const [px, py] = this.geo.port(c.b, c.sb, snap, params);
       if (c.kind === 'slot') {
         const dir = (c.a < 0 ? 0 : snap.frame(c.a + 1)[2]) + c.angle;
         const [cs, sn] = [Math.cos(dir), Math.sin(dir)];
@@ -1295,7 +1260,7 @@ export class Figure {
         const info = j >= 0 ? this.d.coords[j] : undefined;
         if (!info) return;
         const [x, y, p] = snap.frame(i + 1);
-        const [jx, jy, jp] = this.jointPose(i, snap, params);
+        const [jx, jy, jp] = this.geo.jointPose(i, snap, params);
         if (b.joint === 'revolute') {
           const ref = jp;
           const q = wrap(p - ref);
@@ -1340,7 +1305,7 @@ export class Figure {
     // dimension lines: the length lᵢ of every bar, beside it on its counter-clockwise side
     if (f.dims) {
       this.mech.bodies.forEach((_, i) => {
-        const l = this.length(i, params);
+        const l = this.geo.length(i, params);
         if (l < 1e-3) return;
         const [x, y, p] = snap.frame(i + 1);
         const [c, sn] = [Math.cos(p), Math.sin(p)];
@@ -1371,9 +1336,8 @@ export class Figure {
       this.mech.bodies.forEach((raw, i) => {
         const b = normalise(raw);
         if (b.joint === 'fixed' && b.m <= 0) return;
-        const [x, y, p] = snap.frame(i + 1);
-        const r = params[5 * i + 2] ?? b.r;
-        const [cx, cy] = [x + Math.cos(p) * r, y + Math.sin(p) * r];
+        const p = snap.frame(i + 1)[2];
+        const [cx, cy] = this.geo.com(i, snap, params);
         if (b.shape === 'block') {
           // a cart: the label beside it, clear of whatever stands on it
           const off = BLOCK.w / 2 + 16 * u;
@@ -1400,7 +1364,7 @@ export class Figure {
         if (b.joint === 'revolute') {
           arcArrow(pen, x, y, 17 * u, p + Math.PI / 2, p + Math.PI / 2 + v * 1.5 * Math.PI, C.input);
         } else {
-          const [, , jp] = this.jointPose(i, snap, params);
+          const [, , jp] = this.geo.jointPose(i, snap, params);
           const ax = jp + b.axisAngle;
           const len = 0.5 * v;
           arrow(pen, x, y, x + Math.cos(ax) * len, y + Math.sin(ax) * len, C.input, 1.6);
@@ -1440,7 +1404,7 @@ export class Figure {
       this.mech.bodies.forEach((b, i) => {
         const j = this.coord[i]!;
         if (b.joint !== 'prismatic' || !b.actuated || j < 0) return;
-        const [jx, jy, jp] = this.jointPose(i, snap, params);
+        const [jx, jy, jp] = this.geo.jointPose(i, snap, params);
         const a = jp + b.axisAngle;
         const q = snap.v('Q_TARGET', j);
         const [px, py] = [jx + Math.cos(a) * q, jy + Math.sin(a) * q];
