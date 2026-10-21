@@ -905,3 +905,31 @@ fn tuning_settings_reach_the_simulation() {
     assert!((s.primary().plan.tuning.push_max - 5.0).abs() < 1e-12);
     assert!((s.primary().plan.tuning.baumgarte - 20.0).abs() < 1e-12);
 }
+
+#[test]
+fn a_motor_cannot_drive_past_its_no_load_speed() {
+    // LQR loses the acrobot after a hard kick and its elbow motor drives as hard as it can. Without a
+    // torque–speed line the links spin up for ever; with one the motion stays bounded
+    let run = |no_load: f64| {
+        let mut s = with(&presets::acrobot(), Kind::Lqr);
+        s.set_flag(Flag::MotorSpeed, no_load);
+        s.step(500);
+        s.kick(0, 3.0);
+        let mut fastest = [0.0_f64; 2];
+        for k in 0..600 {
+            s.step(100);
+            let o = s.publish();
+            let w = o[off::QD].abs().max(o[off::QD + 1].abs());
+            fastest[usize::from(k >= 300)] = fastest[usize::from(k >= 300)].max(w);
+        }
+        fastest
+    };
+    let free = run(1e9);
+    let limited = run(motion_core::plan::Tuning::default().motor_speed);
+    println!("fastest in the first and last 30 s: free {free:?}, limited {limited:?}");
+    assert!(free[1] > 400.0, "without a speed limit the motor spins the links up: {free:?}");
+    assert!(
+        limited[1] < 300.0 && limited[1] < 2.0 * limited[0],
+        "the limited motor still spins up: {limited:?}"
+    );
+}

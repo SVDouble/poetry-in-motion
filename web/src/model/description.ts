@@ -441,10 +441,13 @@ export const PRESETS: Record<string, () => Mechanism> = {
   '3-RPR platform': () => {
     // a planar parallel robot: three legs on passive floor hinges, each with a driven telescopic actuator,
     // carry a platform — 7 coordinates, 2 pins (4 constraints): 3 DOF, 3 actuators
+    // the middle leg leans: with all three leg lines through one point (a symmetric layout puts the middle
+    // one through the crossing of the outer two) the platform could turn about it unresisted — a singular
+    // pose, where the actuators cannot control it
     const floor: [number, number][] = [
       [-1.4, 0],
       [1.4, 0],
-      [0, 0],
+      [0.7, 0],
     ];
     const top: [number, number][] = [
       [-0.6, 1.2],

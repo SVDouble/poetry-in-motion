@@ -43,6 +43,11 @@ pub trait Controller: std::fmt::Debug {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN;
     /// Live values shown on the controller's page (see [`Spec::telemetry`]).
     fn telemetry(&self, _t: &mut Telemetry<'_>) {}
+    /// Does it regulate around the equilibrium q* (designed there, like LQR and MPC) rather than track the
+    /// reference? Then following a tool target moves q* itself, to the inverse kinematics.
+    fn regulates(&self) -> bool {
+        false
+    }
     /// Controller phase (swing-up: 1 pumping, 2 catching).
     fn phase(&self) -> u32 {
         0

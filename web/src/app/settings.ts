@@ -52,6 +52,7 @@ export interface Settings {
   stopC: number;
   stopDepth: number;
   baumgarte: number;
+  motorSpeed: number;
 }
 
 export const defaultSettings = (): Settings => ({
@@ -94,6 +95,7 @@ export const defaultSettings = (): Settings => ({
   stopC: 300,
   stopDepth: 0.01,
   baumgarte: 20,
+  motorSpeed: 100,
 });
 
 export type Numeric = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
@@ -125,6 +127,7 @@ export const SETTING_FLAGS: [Numeric, Flag][] = [
   ['stopC', 'StopC'],
   ['stopDepth', 'StopDepth'],
   ['baumgarte', 'Baumgarte'],
+  ['motorSpeed', 'MotorSpeed'],
 ];
 
 export interface TuningSpec {
@@ -218,6 +221,14 @@ export const TUNING: Record<'task' | 'world', TuningSpec[]> = {
     },
   ],
   world: [
+    {
+      key: 'motorSpeed',
+      label: String.raw`\omega_{0}`,
+      min: 1,
+      max: 1000,
+      unit: 'rad/s | m/s',
+      hint: 'no-load speed of the motors: the drive they deliver falls linearly to zero at this speed (braking stays at full strength)',
+    },
     {
       key: 'pushMax',
       label: String.raw`F_{\text{push}}^{\max}`,

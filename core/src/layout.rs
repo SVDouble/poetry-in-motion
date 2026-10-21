@@ -154,10 +154,11 @@ pub enum Flag {
     StopC = 30,
     StopDepth = 31,
     Baumgarte = 32,
+    MotorSpeed = 33,
 }
 
 impl Flag {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Coriolis,
         Self::Umax,
         Self::TargetX,
@@ -191,6 +192,7 @@ impl Flag {
         Self::StopC,
         Self::StopDepth,
         Self::Baumgarte,
+        Self::MotorSpeed,
     ];
 
     #[must_use]

@@ -39,11 +39,12 @@
    squares for the command, exact projectors), so a lower goal can never disturb a higher one; the
    seven-joint arm preset has room for all of them. Shift-drag pushes the tool with a spring, Alt-drag places
    the elbow target. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
-   LQR/MPC live in tangent coordinates of the constraint manifold. Every number that shapes behaviour beyond
-   the physics — null-space damping, the damped-least-squares bands, the priority fade, how far inside the
-   workspace an unreachable target is aimed, the inverse-kinematics step and damping, the push limit, the
-   end stops, the Baumgarte rate — is a setting (Goals tab, with defaults to return to), the same for every
-   mechanism.
+   LQR/MPC live in tangent coordinates of the constraint manifold; following a tool target, they move the
+   equilibrium they are designed at along the reference towards the inverse kinematics. Every number that
+   shapes behaviour beyond the physics — null-space damping, the damped-least-squares bands, the priority
+   fade, how far inside the workspace an unreachable target is aimed, the inverse-kinematics step and
+   damping, the push limit, the end stops, the Baumgarte rate, the motors' no-load speed (their torque–speed
+   line) — is a setting (Goals tab, with defaults to return to), the same for every mechanism.
 
 ```
 M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ        (Murray, Li & Sastry, eq. 4.24)

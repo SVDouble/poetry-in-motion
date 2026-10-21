@@ -30,6 +30,10 @@ pub struct Lqr {
 }
 
 impl Controller for Lqr {
+    fn regulates(&self) -> bool {
+        true
+    }
+
     fn design(&mut self, plan: &Plan, model: &mut Model, p: &[f64], dt: f64) {
         self.k = plan
             .lin
@@ -92,6 +96,10 @@ pub struct Mpc {
 }
 
 impl Controller for Mpc {
+    fn regulates(&self) -> bool {
+        true
+    }
+
     fn reset(&mut self) {
         self.du.iter_mut().for_each(|v| *v = 0.0);
         self.since = usize::MAX;

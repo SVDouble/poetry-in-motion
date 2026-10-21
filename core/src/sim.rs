@@ -59,6 +59,8 @@ pub struct Sim {
     tool: Option<Tool>,
     plan_dirty: bool,
     ctrl_dirty: bool,
+    /// Simulated time of the last move of a regulating controller's set-point.
+    retargeted: f64,
     aux: Vec<f64>,
     pub budget: Budget,
 }
@@ -87,6 +89,7 @@ impl Sim {
             tool: None,
             plan_dirty: true,
             ctrl_dirty: true,
+            retargeted: f64::NEG_INFINITY,
             aux: Vec::new(),
             budget: Budget::default(),
         };
@@ -131,6 +134,7 @@ impl Sim {
         self.q[..self.model.n].copy_from_slice(&self.model.q0);
         self.t = 0.0;
         self.steps = 0;
+        self.retargeted = f64::NEG_INFINITY;
         self.settle();
     }
 
@@ -197,6 +201,9 @@ impl Sim {
             Flag::UseTool => {
                 pl.use_tool = v != 0.0;
                 pl.ik_goal = pl.q_ref;
+                if pl.setpoint.take().is_some() {
+                    self.plan_dirty = true;
+                }
             }
             Flag::RefWn => pl.ref_wn = v.max(0.1),
             Flag::PushX => pl.push.get_or_insert([0.0; 2])[0] = v,
@@ -241,6 +248,7 @@ impl Sim {
                     Flag::StopC => tu.stop_c = v,
                     Flag::StopDepth => tu.stop_depth = v,
                     Flag::Baumgarte => tu.baumgarte = v,
+                    Flag::MotorSpeed => tu.motor_speed = v,
                     _ => {}
                 }
             }
@@ -323,6 +331,28 @@ impl Sim {
         qdd
     }
 
+    /// A controller that regulates around an equilibrium (LQR, MPC) follows a tool target by moving that
+    /// equilibrium along the smoothed joint reference towards the inverse kinematics, redesigning at most
+    /// every `RETARGET` seconds: small steps of the set-point, each one a pose it can hold.
+    fn retarget(&mut self) {
+        const RETARGET: f64 = 0.05;
+        const MOVED: f64 = 1e-6;
+        if !(self.ctrl.regulates() && self.plan.follows_ik(&self.model))
+            || self.t - self.retargeted < RETARGET
+        {
+            return;
+        }
+        let n = self.model.n;
+        let at = self.plan.q_star;
+        let to = self.plan.q_ref;
+        let moved = (0..n).map(|i| Plan::error(&self.model, i, at[i], to[i]).abs()).fold(0.0, f64::max);
+        if moved > MOVED {
+            self.plan.setpoint = Some(to);
+            self.plan_dirty = true;
+            self.retargeted = self.t;
+        }
+    }
+
     /// Redesign the plan (equilibrium, linearisation, …) if parameters or targets changed.
     pub fn refresh_plan(&mut self) {
         if self.plan_dirty {
@@ -345,6 +375,7 @@ impl Sim {
         let (n, nu) = (self.model.n, self.model.nu);
         self.redesign(params);
         self.plan.advance(&mut self.model, self.dt);
+        self.retarget();
         let terms = self.model.terms(&self.q, &self.qd);
         let k = dynamics::constraints(&mut self.model, &self.q, &self.qd);
         self.tool = Tool::eval(&mut self.model, &self.q, &self.qd);
@@ -366,8 +397,13 @@ impl Sim {
             umax: self.umax,
         };
         let uc = self.ctrl.update(&self.plan, &mut self.model, &ctx);
+        // the actuator limit, and the motor's torque–speed line: driving along the motion it delivers less
+        // the faster it turns, braking it delivers in full
+        let fade = |v: f64| self.umax * (1.0 - v.abs() / self.plan.tuning.motor_speed).max(0.0);
         for a in 0..nu {
-            self.u[a] = (uc[a] + self.u_manual[a]).clamp(-self.umax, self.umax);
+            let v: f64 = (0..n).map(|i| self.model.b[i * nu + a] * self.qd[i]).sum();
+            let (lo, hi) = if v >= 0.0 { (-self.umax, fade(v)) } else { (-fade(v), self.umax) };
+            self.u[a] = (uc[a] + self.u_manual[a]).clamp(lo, hi);
         }
         for i in 0..n {
             self.tau_u[i] = (0..nu).map(|a| self.model.b[i * nu + a] * self.u[a]).sum();

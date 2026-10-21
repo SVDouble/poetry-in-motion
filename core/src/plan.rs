@@ -40,6 +40,9 @@ pub struct Tuning {
     pub ik_damping: f64,
     /// Largest force of the push on the tool (N): a hand, not a winch.
     pub push_max: f64,
+    /// No-load speed of the motors (rad/s | m/s): the drive they can deliver falls linearly to zero at it
+    /// (braking is always at full strength), like a DC motor's torque–speed line.
+    pub motor_speed: f64,
     /// End stops of limited prismatic joints: stiffness (N/m), damping (N s/m) at the typical
     /// penetration `stop_depth` (m).
     pub stop_k: f64,
@@ -60,6 +63,7 @@ impl Default for Tuning {
             ik_step: 0.05,
             ik_damping: 0.01,
             push_max: 30.0,
+            motor_speed: 100.0,
             stop_k: 2.0e4,
             stop_c: 300.0,
             stop_depth: 0.01,
@@ -162,6 +166,9 @@ pub struct Plan {
     pub tool_target: [f64; 2],
     /// Follow `tool_target` (task controllers directly, joint controllers through IK) instead of q*.
     pub use_tool: bool,
+    /// The equilibrium a regulating controller is designed at while it follows a tool target (None: the
+    /// joint targets q*).
+    pub setpoint: Option<VecN>,
     pub ref_wn: f64,
     /// Pointer position of a push on the tool, and the push stiffness.
     pub push: Option<[f64; 2]>,
@@ -216,6 +223,7 @@ impl Plan {
             q_target,
             tool_target: [0.0; 2],
             use_tool: false,
+            setpoint: None,
             ref_wn: 4.0,
             push: None,
             push_k: 200.0,
@@ -284,7 +292,7 @@ impl Plan {
         let zero = [0.0; MAXN];
         // q* on the manifold: keep the actuated coordinates where the user put them if the loops allow it,
         // and start the passive ones from the current configuration (same assembly mode)
-        let mut seed = self.q_target;
+        let mut seed = self.setpoint.unwrap_or(self.q_target);
         if model.closed() && self.synced {
             for &i in &model.unactuated {
                 seed[i] = self.q_ref[i];
@@ -390,6 +398,12 @@ impl Plan {
         x
     }
 
+    /// Is the tool target followed through the inverse kinematics (a target, a tool, full actuation)?
+    #[must_use]
+    pub fn follows_ik(&self, model: &Model) -> bool {
+        self.use_tool && model.has_tool() && self.ct_ok
+    }
+
     /// Advance the references by one step: joint reference (towards q*, or the IK goal when following the
     /// tool target) and task reference (towards the tool target — the nearest reachable point when it is out
     /// of reach — or the tool position at q*).
@@ -398,7 +412,7 @@ impl Plan {
         if !self.synced {
             return;
         }
-        let ik = self.use_tool && model.has_tool() && self.ct_ok;
+        let ik = self.follows_ik(model);
         if ik {
             self.ik_step(model);
         }
