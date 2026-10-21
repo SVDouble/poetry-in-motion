@@ -95,6 +95,7 @@ class App {
     this.sim = new SimulateStage({
       client,
       resetTrails: () => this.schematic?.resetTrail(),
+      highlight: (i) => this.schematic?.select(i),
       panel: this.panel,
       store: new ControlStore(client, client.layout.slots),
       settings: this.settings,

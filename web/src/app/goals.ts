@@ -453,6 +453,8 @@ export function modelTab(
   params: number[],
   client: SimClient,
   settings: Settings,
+  /** Highlight body i in the figure (−1: none). */
+  highlight: (body: number) => void = () => undefined,
 ): HTMLElement {
   const host = el('div', 'editor');
   const max = { m: 10, g: 20, beta: 2, l: 2, r: 2, I: 2 } as const;
@@ -484,6 +486,22 @@ export function modelTab(
     }
   };
   const frictionOn = betas.some((p) => (params[p.index] ?? p.value) !== 0);
+  // one group per body (hover: the body lights up in the figure), gravity on its own
+  const groups: HTMLElement[] = [];
+  const bodies = [...new Set(d.params.filter((p) => p.kind !== 'g').map((p) => p.body))];
+  for (const b of bodies) {
+    const grid = el('div', 'coeff-grid');
+    d.params.forEach((p, k) => {
+      if (p.kind !== 'g' && p.body === b) grid.append(coeffs[k]!);
+    });
+    const group = el('div', 'coeff-group', el('h4', '', `Body ${b + 1}`), grid);
+    group.addEventListener('pointerenter', () => highlight(b));
+    group.addEventListener('pointerleave', () => highlight(-1));
+    groups.push(group);
+  }
+  d.params.forEach((p, k) => {
+    if (p.kind === 'g') groups.push(el('div', 'coeff-group', el('h4', '', 'Gravity'), coeffs[k]!));
+  });
   host.append(
     card(
       'Coefficients',
@@ -491,7 +509,7 @@ export function modelTab(
         'The equations were derived with symbolic coefficients, so these only change numbers — no re-derivation. Every slot (primary and shadows) shares them. (Uniform-rod links keep r and I as set here until you rebuild.)',
         'prose',
       ),
-      ...coeffs,
+      ...groups,
     ),
     card(
       'What-if',

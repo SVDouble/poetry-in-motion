@@ -398,7 +398,6 @@ kbd {
   max-width: 520px;
   color: var(--muted);
   font-size: 13.5px;
-  font-style: italic;
 }
 
 .overlay.tr {
@@ -758,7 +757,7 @@ kbd {
 
 .katex .lv.cell {
   display: inline-block;
-  min-width: 3.1em;
+  min-width: 2.2em;
   text-align: right;
 }
 
@@ -1251,9 +1250,8 @@ body:not([data-stage="simulate"]) .stagecol {
 }
 
 .hint-small {
-  font-size: 13px;
-  font-style: italic;
-  color: var(--faint);
+  font-size: 13.5px;
+  color: var(--muted);
   margin: 8px 0 0;
 }
 
@@ -2055,4 +2053,35 @@ body:not([data-stage="build"]) .palette {
   overflow-x: auto;
   scrollbar-width: none;
   min-width: 0;
+}
+
+/* ---------- Model tab: coefficients grouped per body ---------- */
+
+.coeff-group {
+  margin: 8px -6px 0;
+  padding: 2px 6px 4px;
+  border-top: 1px solid var(--line);
+}
+
+.coeff-group:hover {
+  background: var(--tint);
+}
+
+.coeff-group h4 {
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.coeff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+/* plot legends: typeset symbols */
+.scope-chip .l .katex {
+  font-size: 1.05em;
 }

@@ -5,7 +5,7 @@
  */
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { fix } from '../eq/tex';
+import { fix, tex } from '../eq/tex';
 
 /** Smallest vertical span of a plot: round-off noise (1e-15 … 1e-6) must not be magnified into curves. */
 const MIN_SPAN = 1e-3;
@@ -29,6 +29,50 @@ import type { Signal, Signals } from './signals';
 
 export interface PlotDef {
   ids: string[];
+}
+
+/** An event of an experiment (a kick, a push…) at simulated time `t`. */
+export interface Mark {
+  t: number;
+  label: string;
+}
+
+/** Tick labels with as many decimals as the tick spacing needs, and a true minus sign. */
+function ticks(v: number[]): string[] {
+  const step = v.length > 1 ? Math.abs(v[1]! - v[0]!) : 1;
+  const dec = Math.max(0, Math.min(4, Math.ceil(-Math.log10(step) - 1e-9)));
+  return v.map((x) => {
+    const s = (Math.abs(x) < step * 1e-6 ? 0 : x).toFixed(dec);
+    return s.startsWith('-') ? `−${s.slice(1)}` : s;
+  });
+}
+
+const SUBSCRIPT = '₀₁₂₃₄₅₆₇₈₉';
+const GREEK: Record<string, string> = {
+  θ: '\\theta',
+  ω: '\\omega',
+  τ: '\\tau',
+  λ: '\\lambda',
+  φ: '\\varphi',
+};
+
+/** A signal name typeset: symbols with subscripts (θ₁, u₂, e θ₁) in KaTeX, words as text. */
+function chipLabel(label: string): HTMLElement {
+  const out = el('span', 'l');
+  label.split(' ').forEach((word, k) => {
+    if (k) out.append(' ');
+    const m = /^([A-Za-zθωτλφ]{1,2})([₀-₉]+)$/.exec(word);
+    if (!m) {
+      out.append(word);
+      return;
+    }
+    const sym = [...m[1]!].map((c) => GREEK[c] ?? c).join('');
+    const sub = [...m[2]!].map((c) => SUBSCRIPT.indexOf(c)).join('');
+    const span = el('span', 'm');
+    tex(span, `${sym}_{${sub}}`);
+    out.append(span);
+  });
+  return out;
 }
 
 export interface Preset {
@@ -96,6 +140,7 @@ class PlotView {
   constructor(
     readonly sigs: Signal[],
     actions: { remove: (id: string) => void; add: (anchor: HTMLElement) => void; drop: () => void },
+    marks: () => readonly Mark[],
   ) {
     this.el = el('div', 'scope-plot');
     const chips = el('div', 'scope-chips');
@@ -104,7 +149,7 @@ class PlotView {
       const value = el('span', 'v');
       this.values.push(value);
       const x = button('×', () => actions.remove(s.id), 'x', 'remove');
-      const chip = el('span', 'scope-chip', el('i', '', ''), el('span', 'l', s.label), value, x);
+      const chip = el('span', 'scope-chip', el('i', '', ''), chipLabel(s.label), value, x);
       (chip.firstChild as HTMLElement).style.background = s.dash
         ? `repeating-linear-gradient(90deg, ${color} 0 3px, transparent 3px 5px)`
         : color;
@@ -116,12 +161,42 @@ class PlotView {
     chips.append(add, drop);
     const canvas = el('div', 'scope-canvas');
     this.el.append(chips, canvas);
+    const font = '11px KaTeX_Main, "Latin Modern Roman", serif';
     const axis: uPlot.Axis = {
       stroke: cssVar('--muted'),
       grid: { stroke: cssVar('--line'), width: 1 },
       ticks: { show: false },
-      font: '11px KaTeX_Main, "Latin Modern Roman", serif',
+      font,
       size: 26,
+    };
+    // the unit on the y axis when every signal of the plot shares it
+    const units = [...new Set(sigs.map((s) => s.unit))];
+    const unit = units.length === 1 && units[0] ? units[0] : '';
+    const accent = cssVar('--accent');
+    // experiment events as dashed vertical lines with their names
+    const drawMarks = (u: uPlot) => {
+      const list = marks();
+      if (!list.length) return;
+      const { ctx } = u;
+      const [top, bottom] = [u.bbox.top, u.bbox.top + u.bbox.height];
+      const lo = u.scales.x!.min ?? 0;
+      const hi = u.scales.x!.max ?? 0;
+      ctx.save();
+      ctx.strokeStyle = accent;
+      ctx.fillStyle = accent;
+      ctx.lineWidth = 1 * devicePixelRatio;
+      ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
+      ctx.font = `italic ${11 * devicePixelRatio}px KaTeX_Main, serif`;
+      for (const m of list) {
+        if (m.t < lo || m.t > hi) continue;
+        const x = u.valToPos(m.t, 'x', true);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.stroke();
+        ctx.fillText(m.label, x + 3 * devicePixelRatio, top + 11 * devicePixelRatio);
+      }
+      ctx.restore();
     };
     this.plot = new uPlot(
       {
@@ -132,15 +207,21 @@ class PlotView {
         legend: { show: false },
         scales: { x: { time: false }, y: { range: yRange } },
         axes: [
-          { ...axis, values: (_u, v) => v.map((t) => `${t.toFixed(0)}s`) },
-          { ...axis, size: 46, values: (_u, v) => v.map((x) => fix(x)) },
+          { ...axis, values: (_u, v) => v.map((t) => `${t.toFixed(0)} s`) },
+          {
+            ...axis,
+            size: 46,
+            values: (_u, v) => ticks(v),
+            ...(unit ? { label: unit, labelSize: 14, labelFont: `italic ${font}`, labelGap: 0 } : {}),
+          },
         ],
+        hooks: { draw: [drawMarks] },
         series: [
           {},
           ...sigs.map((s, k) => ({
             label: s.label,
             stroke: ink(s.color ?? COLORS[k % COLORS.length]!),
-            width: 1.5,
+            width: 1.8,
             points: { show: false },
             ...(s.dash ? { dash: s.dash } : {}),
           })),
@@ -192,6 +273,8 @@ export class Scope {
   private readonly grid: HTMLElement;
   private views: PlotView[] = [];
   private defs: PlotDef[] = [];
+  /** Events of the running experiment, drawn on every plot. */
+  private marks: Mark[] = [];
   private presets: Preset[] = [];
   private active = '';
   /** Label of a layout that is not a preset (an experiment, a controller's watch list, a user edit). */
@@ -228,7 +311,18 @@ export class Scope {
   }
 
   sample(t: number): void {
+    const last = this.rec.n ? this.rec.t[this.rec.n - 1]! : 0;
+    if (t < last) this.marks = []; // time went back (reset): the events belong to the past
     this.rec.sample(t);
+  }
+
+  /** Mark an event at simulated time `t` on every plot. */
+  mark(label: string, t: number): void {
+    this.marks.push({ t, label });
+  }
+
+  clearMarks(): void {
+    this.marks = [];
   }
 
   draw(): void {
@@ -239,6 +333,7 @@ export class Scope {
     for (const v of this.views) v.destroy();
     this.views = [];
     this.rec.n = 0;
+    this.marks = [];
   }
 
   private renderBar(): void {
@@ -279,11 +374,15 @@ export class Scope {
     this.rec.watch(resolved.flat());
     resolved.forEach((sigs, k) => {
       const def = this.defs[k]!;
-      const view = new PlotView(sigs, {
-        remove: (id) => this.edit(() => def.ids.splice(def.ids.indexOf(id), 1)),
-        add: (anchor) => this.pick(anchor, def),
-        drop: () => this.edit(() => this.defs.splice(k, 1)),
-      });
+      const view = new PlotView(
+        sigs,
+        {
+          remove: (id) => this.edit(() => def.ids.splice(def.ids.indexOf(id), 1)),
+          add: (anchor) => this.pick(anchor, def),
+          drop: () => this.edit(() => this.defs.splice(k, 1)),
+        },
+        () => this.marks,
+      );
       this.grid.append(view.el);
       this.views.push(view);
     });

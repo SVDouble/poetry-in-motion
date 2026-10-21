@@ -38,6 +38,8 @@ export interface Shell {
   client: SimClient;
   /** Forget the tool paths (the shadows changed or the simulation restarted). */
   resetTrails(): void;
+  /** Light up body i in the figure (−1: none). */
+  highlight(body: number): void;
   panel: EquationPanel;
   store: ControlStore;
   settings: Settings;
@@ -129,7 +131,8 @@ export class SimulateStage {
     panel.clear();
     const side = $('side');
     if (this.side === 'eq') panel.mount(liveSections({ d, snap: this.snap }));
-    else if (this.side === 'model') side.replaceChildren(modelTab(d, this.s.params(), client, settings));
+    else if (this.side === 'model')
+      side.replaceChildren(modelTab(d, this.s.params(), client, settings, (i) => this.s.highlight(i)));
     else if (this.side === 'goals') {
       side.replaceChildren(
         goalsTab({
@@ -226,6 +229,7 @@ export class SimulateStage {
     if (why) return this.s.flash(why);
     const token = ++this.runToken;
     this.scope.show('experiment', e.plots as PlotDef[], e.title);
+    this.scope.clearMarks();
     this.tab?.ran(kind, e.title);
     if (this.side !== 'control') {
       this.side = 'control';
@@ -248,6 +252,14 @@ export class SimulateStage {
       },
       settingsChanged: () => {
         if (this.side === 'goals') this.mountSide();
+      },
+      // the events a student would look for, on every plot; stamped a moment later so a fresh snapshot
+      // (after a reset) carries the time
+      mark: (event) => {
+        if (!MARKED.has(event)) return;
+        window.setTimeout(() => {
+          if (token === this.runToken) this.scope.mark(event, this.snap.t);
+        }, 30);
       },
     };
     await runExperiment(port, kind, e, () => token === this.runToken);
@@ -385,6 +397,9 @@ export class SimulateStage {
     if (refresh && this.side === 'control') this.tab?.update();
   }
 }
+
+/** Experiment events drawn on the plots. */
+const MARKED = new Set(['kick', 'push', 'release', 'reach', 'stack']);
 
 /** Computed torque where every DOF is actuated, LQR for underactuated mechanisms, else passive. */
 function defaultController(reg: Controllers): number {
