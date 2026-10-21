@@ -50,8 +50,11 @@ fuzz: ## property tests on many random mechanisms (FUZZ_CASES=n, default 1000)
 	FUZZ_CASES=$${FUZZ_CASES:-1000} cargo test --release -p motion-core --test fuzz
 
 e2e: wasm ## crawl the running app in a headless browser (CHROMIUM=/path/to/chromium)
-	cd web && (npx vite --port 5174 --strictPort >/dev/null 2>&1 & echo $$! > .e2e.pid) && sleep 3 && \
-	(APP_URL=http://localhost:5174/ uv run -q e2e/crawl.py; s=$$?; kill $$(cat .e2e.pid); rm -f .e2e.pid; exit $$s)
+	cd web; ./node_modules/.bin/vite --port 5174 --strictPort >/dev/null 2>&1 & pid=$$!; \
+	trap 'kill $$pid 2>/dev/null || true' EXIT; \
+	for _ in $$(seq 100); do curl -sf -o /dev/null http://localhost:5174/ && break; \
+		kill -0 $$pid 2>/dev/null || { echo "vite did not start (port 5174 in use?)"; exit 1; }; sleep 0.1; done; \
+	APP_URL=http://localhost:5174/ uv run -q e2e/crawl.py
 
 lint: ## formatters in check mode + linters + type checkers
 	cargo fmt --all --check
