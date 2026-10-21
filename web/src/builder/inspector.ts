@@ -390,10 +390,9 @@ export interface InspectorEvents {
 export class Inspector {
   readonly el = el('div', 'inspector overlay');
   private sel: Selection | null = null;
-  private at: [number, number] = [0, 0];
 
   constructor(
-    private readonly host: HTMLElement,
+    host: HTMLElement,
     private readonly events: InspectorEvents,
   ) {
     this.el.hidden = true;
@@ -406,10 +405,9 @@ export class Inspector {
     return this.sel;
   }
 
-  /** Open for `sel` near the screen point `at` (viewport pixels). */
-  show(sel: Selection, at: [number, number]): void {
+  /** Open for `sel`. */
+  show(sel: Selection): void {
     this.sel = sel;
-    this.at = at;
     this.render();
   }
 
@@ -448,14 +446,10 @@ export class Inspector {
     this.position();
   }
 
-  /** Docked at the right edge of the view (the mechanism is framed in the middle), on the side away
-   * from the selection when the view is narrow. */
+  /** Docked at the right edge of the view, below the toggles: the mechanism is framed in the middle and
+   * the parts palette sits on the left, which must stay reachable. */
   private position(): void {
-    const r = this.host.getBoundingClientRect();
-    const w = this.el.offsetWidth;
-    const right = this.at[0] < r.width - w - 40;
-    this.el.style.left = right ? '' : '12px';
-    this.el.style.right = right ? '12px' : '';
+    this.el.style.right = '12px';
   }
 }
 

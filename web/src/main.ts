@@ -144,8 +144,7 @@ class App {
         }
         this.adopt(r.mech, r.select.kind === 'body' ? r.select.index : this.editor.selection);
         if (r.select.kind === 'element') this.editor.selectElement(r.select.index);
-        const at = this.stage.toScreen(b?.x ?? a.x, b?.y ?? a.y);
-        this.inspector.show({ kind: r.select.kind, index: r.select.index }, at);
+        this.inspector.show({ kind: r.select.kind, index: r.select.index });
       },
       placing: (state) => {
         if (state === 'first')
@@ -667,18 +666,17 @@ class App {
     if (this.stageName === 'build') {
       if (kind !== 'down') return;
       // springs and dampers first: they are thin and often lie over bodies
-      const at = this.stage.toScreen(x, y);
       const k = this.pickElement(x, y);
       if (k >= 0) {
         this.editor.selectElement(k);
-        this.inspector.show({ kind: 'element', index: k }, at);
+        this.inspector.show({ kind: 'element', index: k });
         return;
       }
       const i = this.robot.pick(x, y, this.snap, this.params);
       if (i >= 0) {
         this.editor.selectElement(-1);
         this.editor.select(i);
-        this.inspector.show({ kind: 'body', index: i }, at);
+        this.inspector.show({ kind: 'body', index: i });
       } else this.closeInspector();
       return;
     }
