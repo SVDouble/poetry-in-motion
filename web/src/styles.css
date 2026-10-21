@@ -661,8 +661,9 @@ kbd {
   list-style: none;
   cursor: pointer;
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 10px;
+  gap: 0 10px;
   padding: 8px 14px;
   user-select: none;
 }
@@ -2228,6 +2229,16 @@ body:not([data-stage="build"]) .palette {
   padding: 6px 16px;
   background: var(--paper-2);
   border-bottom: 1px solid var(--line);
+}
+
+.eq-sub {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-style: italic;
+  font-weight: normal;
+  margin-top: 1px;
+  padding-left: 20px;
 }
 
 .eq-toc button {

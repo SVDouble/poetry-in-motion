@@ -972,6 +972,7 @@ class App {
     if (simulating && this.running) this.timeline.record(this.snap);
     this.timeline.setVisible(simulating && !this.running);
     this.timeline.tick();
+    this.sim.setCursor(this.timeline.replaying ? this.view.t : null);
     const refresh = now - c.eq >= 1000 / EQ_HZ;
     this.sim.frame(now, refresh);
     this.schematic?.draw(this.stage.mapping(), this.schematicFrame());

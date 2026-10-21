@@ -104,7 +104,8 @@ export class EquationPanel {
     this.clear(!into);
     this.root = into ?? this.home;
     const openState = loadOpenState();
-    // a sticky table of contents: every step, its one-line summary on hover, a click opens and goes there
+    // a sticky table of contents: every step (its one-line summary also heads the step), a click opens and
+    // goes there
     const links: [HTMLButtonElement, () => HTMLDetailsElement][] = [];
     if (toc) {
       const nav = document.createElement('nav');
@@ -130,7 +131,7 @@ export class EquationPanel {
         saveOpenState(openState);
       });
       const summary = document.createElement('summary');
-      summary.innerHTML = `<span class="eq-title">${spec.title}</span>${spec.cite ? `<span class="eq-cite">${spec.cite}</span>` : ''}`;
+      summary.innerHTML = `<span class="eq-title">${spec.title}</span>${spec.cite ? `<span class="eq-cite">${spec.cite}</span>` : ''}${spec.summary ? `<span class="eq-sub">${spec.summary}</span>` : ''}`;
       const body = document.createElement('div');
       body.className = 'eq-body';
       details.append(summary, body);

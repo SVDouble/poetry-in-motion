@@ -380,6 +380,11 @@ export class SimulateStage {
     if (this.side === 'control') this.tab?.render();
   }
 
+  /** Show the recorded moment `t` on the plots (rewinding), or null: now. */
+  setCursor(t: number | null): void {
+    this.scope.cursor = t;
+  }
+
   /** Where the tool is being pushed towards (Shift-drag), or null. */
   get pushPoint(): [number, number] | null {
     return this.active ? this.pushAt : null;

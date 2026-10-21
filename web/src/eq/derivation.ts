@@ -95,7 +95,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
 
   step('Centre-of-mass positions & velocities', undefined, (b) => {
     b.text(
-      'The centre of mass of body $i$ is $p_i = g_{si}\\,(r_i, 0, 1)^T$. Differentiating along a motion, $\\dot p_i = \\sum_j \\frac{\\partial p_i}{\\partial q_j}\\dot q_j$; the angular velocity is $\\omega_i = \\dot\\varphi_i$.',
+      'The centre of mass of body $i$ is $p_i = g_{si}\\,(r_i, 0, 1)^T$. Differentiating along a motion, $\\dot p_i = \\sum_j \\frac{\\partial p_i}{\\partial q_j}\\dot q_j$; the angular velocity is $\\omega_i = \\dot\\varphi_i$. Point at a row and the figure draws the columns $\\partial p_i / \\partial q_j$ (dashed): the velocity each joint gives the centre of mass per unit rate.',
     );
     for (const body of d.bodies) {
       b.math(
@@ -140,10 +140,17 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
         'All Christoffel symbols vanish: $M$ does not depend on $q$, so there are no Coriolis or centrifugal forces.',
       );
     } else {
-      const rows = d.gamma.map((g) => String.raw`\Gamma_{${g.i}${g.j}${g.k}} &= ${g.tex}`);
-      b.math(String.raw`\begin{aligned}${rows.join(String.raw`\\`)}\end{aligned}`, {
-        caption: 'non-zero symbols with j ≤ k',
-      });
+      // one block per row i (the equation of joint i), lit up on the figure when pointed at
+      const byRow = new Map<number, string[]>();
+      for (const g of d.gamma)
+        byRow.set(g.i, [...(byRow.get(g.i) ?? []), String.raw`\Gamma_{${g.i}${g.j}${g.k}} &= ${g.tex}`]);
+      const last = [...byRow.keys()].at(-1);
+      for (const [i, rows] of byRow) {
+        b.math(String.raw`\begin{aligned}${rows.join(String.raw`\\`)}\end{aligned}`, {
+          focus: `joint:${i - 1}`,
+          ...(i === last ? { caption: 'non-zero symbols with j ≤ k, by row' } : {}),
+        });
+      }
     }
     b.math(String.raw`C_{ij}(q, \dot q) = \sum_k \Gamma_{ijk}\,\dot q_k`);
     b.math(String.raw`${cls('t-c', String.raw`C(q,\dot q)`)} = ${texMat(d.C)}`, { focus: 'velocities' });
@@ -197,8 +204,9 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
       String.raw`${cls('t-m', String.raw`M(q)\,\ddot q`)} + ${cls('t-c', String.raw`C(q,\dot q)\,\dot q`)} + ${cls('t-n', String.raw`N(q,\dot q)`)} = ${cls('t-tau', String.raw`\tau`)}`,
     );
     b.text('Written out row by row for this mechanism:');
-    const rows = d.eom.map((e, i) => String.raw`${e} &= \tau_{${i + 1}}`);
-    b.math(String.raw`\begin{aligned}${rows.join(String.raw`\\`)}\end{aligned}`);
+    d.eom.forEach((e, i) => {
+      b.math(String.raw`${e} = \tau_{${i + 1}}`, { focus: `joint:${i}` });
+    });
     if (d.nu === n) {
       b.text('Every joint is actuated ($\\tau = u$): the system is <b>fully actuated</b>.');
     } else if (d.nu === 0) {

@@ -653,6 +653,8 @@ export class Figure {
   private gAt: [number, number] | null = null;
   /** On screen: the gravity arrow sits in a corner of the view, wherever the view is (null: unknown). */
   screenG: [number, number] | null = null;
+  /** On screen: where the arrow scales are listed (the bottom-left corner of the view; null: unknown). */
+  screenKey: [number, number] | null = null;
   /** Highlighted body and spring/damper (−1: none). */
   selected = -1;
   selectedElement = -1;
@@ -850,7 +852,8 @@ export class Figure {
       if (e.a >= 0) out.push({ body: e.a, x: ax, y: ay, fx: t * ux, fy: t * uy, label: name });
     });
     // −Aᵀλ: a pin φ = p_a − p_b pushes point a with −λ and point b with +λ; a slot φ = nᵀ(p_b − p_a)
-    // pushes point b with −λ n and point a with +λ n (the moment it puts on a is left out)
+    // pushes point b with −λ n and body a with +λ n where b touches it (at p_b: that is the moment the
+    // turning of n puts on a)
     let row = 0;
     this.mech.closures.forEach((c, k) => {
       const [ax, ay] = c.a < 0 ? [c.gx, c.gy] : this.port(c.a, c.sa, snap, params);
@@ -869,7 +872,7 @@ export class Figure {
         const [nx, ny] = [-Math.sin(dir), Math.cos(dir)];
         const l = snap.v('LAMBDA', row);
         add(c.b, bx, by, -l * nx, -l * ny);
-        add(c.a, ax, ay, l * nx, l * ny);
+        add(c.a, bx, by, l * nx, l * ny);
         row += 1;
       }
     });
@@ -914,37 +917,66 @@ export class Figure {
       return [x + Math.cos(p) * r, y + Math.sin(p) * r];
     };
     const moving = (k: number) => this.mech.bodies[k]!.joint !== 'fixed' || (params[5 * k] ?? 0) > 0;
-    // arrows scaled per picture: the largest is 70 px long
-    const scaleOf = (vs: [number, number][], px = 70) => {
-      const big = Math.max(1e-9, ...vs.map(([x, y]) => Math.hypot(x, y)));
-      return (px * u) / big;
-    };
+    // fixed scales, so that arrows compare across time: a round force (about the heaviest weight) and a
+    // round speed (about the size of the mechanism per second) are each drawn L long, listed in a key
+    const size = Math.max(this.bounds.width, this.bounds.height);
+    const L = 0.12 * size;
+    const weight = Math.max(1e-3, ...this.mech.bodies.map((_, k) => (params[5 * k] ?? 0) * g));
+    const [fRef, vRef] = [roundDown(weight), roundDown(0.5 * size)];
+    const [fScale, vScale] = [L / fRef, L / vRef];
     const focus = f.focus ?? null;
     const showVel = f.velocities || focus?.kind === 'velocities' || focus?.kind === 'com';
     const showGrav = f.forces || focus?.kind === 'gravity';
+    const showForce = showGrav || (f.freeBody ?? -1) >= 0;
+    if (showVel || showForce) {
+      const [kx, ky] = this.screenKey ?? [
+        this.bounds.cx - this.bounds.width / 2 + 0.1,
+        this.bounds.cy - this.bounds.height / 2 + 0.1,
+      ];
+      const rows: [string, string, string][] = [];
+      if (showForce) rows.push([C.ink, String.raw`${fmt(fRef)}\,\mathrm{N}`, 'kf']);
+      if (showVel) rows.push([C.accent, String.raw`${fmt(vRef)}\,\mathrm{m/s}`, 'kv']);
+      rows.forEach(([ink, src, id], r) => {
+        const y = ky + r * 20 * u;
+        arrow(pen, kx, y, kx + L, y, ink, 1.6);
+        // labels are centred on their point: clear of the arrowhead by half their width
+        label(id, kx + L + (id === 'kv' ? 34 : 24) * u, y, src);
+      });
+    }
 
     if (showVel) {
       const vs = this.mech.bodies.map((_, k): [number, number] => [
         snap.v('VCOM', 2 * k),
         snap.v('VCOM', 2 * k + 1),
       ]);
-      const sc = scaleOf(vs);
       vs.forEach((v, k) => {
         if (!moving(k) || (focus?.kind === 'com' && focus.index !== k)) return;
-        vector(pen, label, `v${k}`, com(k), v, sc, C.accent, `v_{c${k + 1}}`);
+        vector(pen, label, `v${k}`, com(k), v, vScale, C.accent, `v_{c${k + 1}}`);
       });
+      // pointing at a centre of mass: the columns of its Jacobian, v_c = Σ_j (∂p_c/∂q_j) q̇_j — how fast
+      // it moves per unit rate of each joint (drawn even at rest, where v_c is zero)
+      if (focus?.kind === 'com' && focus.index < nb) {
+        const k = focus.index;
+        const maxn = snap.layout.maxn;
+        this.d.coords.forEach((c, j) => {
+          const col: [number, number] = [
+            snap.v('JCOM', 2 * k * maxn + j),
+            snap.v('JCOM', (2 * k + 1) * maxn + j),
+          ];
+          const src = String.raw`\partial_{${c.tex}}\, p_{c${k + 1}}`;
+          vector(pen, label, `j${j}`, com(k), col, vScale, C.frame, src, [4, 3]);
+        });
+      }
     }
     const forces = f.forces || f.freeBody !== undefined ? this.pointForces(snap, params) : [];
     if (showGrav || f.forces) {
       const weights = this.mech.bodies.map((_, k): [number, number] => [0, -(params[5 * k] ?? 0) * g]);
-      const all = [...weights, ...forces.map((p): [number, number] => [p.fx, p.fy])];
-      const sc = scaleOf(all);
       weights.forEach((w, k) => {
-        if (moving(k)) vector(pen, label, `w${k}`, com(k), w, sc, C.gravity, `m_{${k + 1}}g`);
+        if (moving(k)) vector(pen, label, `w${k}`, com(k), w, fScale, C.gravity, `m_{${k + 1}}g`);
       });
       if (f.forces) {
         forces.forEach((p, k) => {
-          vector(pen, label, `pf${k}`, [p.x, p.y], [p.fx, p.fy], sc, C.input, p.label);
+          vector(pen, label, `pf${k}`, [p.x, p.y], [p.fx, p.fy], fScale, C.input, p.label);
         });
       }
     }
@@ -977,23 +1009,32 @@ export class Figure {
       });
       const list: { at: [number, number]; f: [number, number]; src: string; dash?: boolean }[] = [];
       list.push({ at: com(i), f: [0, -m * g], src: `m_{${i + 1}}g` });
-      list.push({ at: [jx, jy], f: this.reaction(i, snap, params, forces), src: `R_{${i + 1}}` });
+      // the force through joint k on body k (sign +1) or on its parent (−1); a prismatic joint passes the
+      // drive (and friction) along its axis, and a normal force across it: drawn apart
+      const joint = (k: number, sign: number, at: [number, number]) => {
+        const [rx, ry] = this.reaction(k, snap, params, forces).map((v) => sign * v) as [number, number];
+        const b = this.mech.bodies[k]!;
+        const minus = sign < 0 ? '-' : '';
+        if (b.joint !== 'prismatic') {
+          list.push({ at, f: [rx, ry], src: `${minus}R_{${k + 1}}` });
+          return;
+        }
+        const a = this.jointPose(k, snap, params)[2] + b.axisAngle;
+        const [ux, uy] = [Math.cos(a), Math.sin(a)];
+        const along = rx * ux + ry * uy;
+        list.push({ at, f: [along * ux, along * uy], src: `${minus}F_{${k + 1}}` });
+        list.push({ at, f: [rx - along * ux, ry - along * uy], src: `${minus}N_{${k + 1}}` });
+      };
+      joint(i, 1, [jx, jy]);
       this.mech.bodies.forEach((b, c) => {
-        if (b.parent !== i) return;
-        const [cx, cy] = snap.frame(c + 1);
-        const [rx, ry] = this.reaction(c, snap, params, forces);
-        list.push({ at: [cx, cy], f: [-rx, -ry], src: `-R_{${c + 1}}` });
+        if (b.parent === i) joint(c, -1, snap.frame(c + 1).slice(0, 2) as [number, number]);
       });
       for (const p of forces) if (p.body === i) list.push({ at: [p.x, p.y], f: [p.fx, p.fy], src: p.label });
       const ma: [number, number] = [m * snap.v('ACOM', 2 * i), m * snap.v('ACOM', 2 * i + 1)];
       list.push({ at: com(i), f: ma, src: `m_{${i + 1}}a_{${i + 1}}`, dash: true });
-      const sc = scaleOf(
-        list.map((x) => x.f),
-        80,
-      );
       list.forEach((x, k) => {
         const ink = x.dash ? C.inertial : x.src.includes('g') ? C.gravity : C.input;
-        vector(pen, label, `fb${k}`, x.at, x.f, sc, ink, x.src, x.dash ? [5, 3] : undefined);
+        vector(pen, label, `fb${k}`, x.at, x.f, fScale, ink, x.src, x.dash ? [5, 3] : undefined);
       });
       // joint moments: the drive and friction at its own joint, their reactions at the children's
       const moment = (k: number) => {
@@ -1439,6 +1480,16 @@ export class Figure {
 
 // ------------------------------------------------------------------------------------------- overlays
 
+/** The largest 1, 2 or 5 × 10ᵏ not above v (a scale that reads easily). */
+function roundDown(v: number): number {
+  const e = 10 ** Math.floor(Math.log10(v));
+  const m = v / e;
+  return (m >= 5 ? 5 : m >= 2 ? 2 : 1) * e;
+}
+
+/** A scale value as TeX: no trailing zeros. */
+const fmt = (v: number) => String(Number(v.toPrecision(2)));
+
 /** An arrow of length `len` (world) at (x, y) along (dx, dy), labelled at its head. */
 function vector(
   pen: Pen,
@@ -1575,6 +1626,7 @@ export class SchematicView {
       }
       // gravity: an arrow in the bottom-right corner, clear of the overlays (in world coordinates)
       this.fig.screenG = [(m.w - 34 - m.x0) / m.k, (m.y0 - (m.h - 84)) / m.k];
+      this.fig.screenKey = [(18 - m.x0) / m.k, (m.y0 - (m.h - 22)) / m.k];
       this.prepare(this.backPen, m, dpr);
       this.fig.paintStatic(this.backPen, f.annotate);
       this.dirty = true;

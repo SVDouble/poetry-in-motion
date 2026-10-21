@@ -89,6 +89,8 @@ layout! { off, FIELDS;
     ALPHA: MAXB,
     /// Force along each spring/damper: k (ℓ − ℓ₀) + c ℓ̇ (positive: pulling its ends together).
     ELEMENT_F: MAXE,
+    /// Per body: the centre-of-mass Jacobian ∂p_c/∂q (rows x, y; columns padded to MAXN).
+    JCOM: 2 * MAXB * MAXN,
     /// One block per slot (see `slot`).
     SLOT: SLOTS * slot::LEN,
 }

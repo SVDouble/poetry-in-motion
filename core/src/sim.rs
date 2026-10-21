@@ -549,6 +549,11 @@ impl Sim {
             .map(|r| a[ao.dvcom + r] + (0..n).map(|j| a[ao.jcom + r * n + j] * qdd[j]).sum::<f64>())
             .collect();
         put(off::VCOM, &a[ao.vcom..ao.vcom + 2 * nb]);
+        let mut jcom = vec![0.0; 2 * nb * MAXN];
+        for r in 0..2 * nb {
+            jcom[r * MAXN..r * MAXN + n].copy_from_slice(&a[ao.jcom + r * n..ao.jcom + (r + 1) * n]);
+        }
+        put(off::JCOM, &jcom);
         put(off::ACOM, &acom);
         let rate = |k: usize, v: &[f64]| -> f64 {
             let ang = &self.model.frame_angles[k + 1];

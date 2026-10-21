@@ -64,6 +64,7 @@ export const FIELDS = [
   'OMEGA',
   'ALPHA',
   'ELEMENT_F',
+  'JCOM',
   'SLOT',
 ] as const;
 

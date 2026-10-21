@@ -115,7 +115,8 @@ class Recorder {
   sample(time: number): boolean {
     const last = this.n ? this.t[this.n - 1]! : Number.NaN;
     if (time === last) return false;
-    if (time < last) this.n = 0; // time went backwards (reset)
+    // time went back (a reset, or resuming from a recorded moment): what came after it did not happen
+    if (time < last) this.n = this.index(time);
     if (this.n === CAPACITY) {
       this.t.copyWithin(0, 1);
       for (const c of this.cols.values()) c.data.copyWithin(0, 1);
@@ -125,6 +126,17 @@ class Recorder {
     for (const c of this.cols.values()) c.data[this.n] = c.sig.get();
     this.n++;
     return true;
+  }
+
+  /** Number of samples taken before `time` (binary search: the times increase). */
+  index(time: number): number {
+    let [lo, hi] = [0, this.n];
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.t[mid]! < time) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   series(id: string): Float64Array {
@@ -141,6 +153,7 @@ class PlotView {
     readonly sigs: Signal[],
     actions: { remove: (id: string) => void; add: (anchor: HTMLElement) => void; drop: () => void },
     marks: () => readonly Mark[],
+    private readonly cursor: () => number | null,
   ) {
     this.el = el('div', 'scope-plot');
     const chips = el('div', 'scope-chips');
@@ -173,14 +186,28 @@ class PlotView {
     const units = [...new Set(sigs.map((s) => s.unit))];
     const unit = units.length === 1 && units[0] ? units[0] : '';
     const accent = cssVar('--accent');
-    // experiment events as dashed vertical lines with their names
+    const ink0 = cssVar('--ink');
+    // experiment events as dashed vertical lines with their names; the moment shown while rewinding as a
+    // solid one
     const drawMarks = (u: uPlot) => {
       const list = marks();
-      if (!list.length) return;
+      const at = cursor();
       const { ctx } = u;
       const [top, bottom] = [u.bbox.top, u.bbox.top + u.bbox.height];
       const lo = u.scales.x!.min ?? 0;
       const hi = u.scales.x!.max ?? 0;
+      if (at !== null && at >= lo && at <= hi) {
+        const x = u.valToPos(at, 'x', true);
+        ctx.save();
+        ctx.strokeStyle = ink0;
+        ctx.lineWidth = 1.2 * devicePixelRatio;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (!list.length) return;
       ctx.save();
       ctx.strokeStyle = accent;
       ctx.fillStyle = accent;
@@ -245,8 +272,11 @@ class PlotView {
       this.plot.setData(data); // rescales y to the data; x is fixed to the rolling window below
       this.plot.setScale('x', { min: Math.max(0, t1 - WINDOW_S), max: Math.max(WINDOW_S, t1) });
     });
+    // the values at the moment shown (rewinding), else now
+    const at = this.cursor();
+    const k0 = at === null || !rec.n ? -1 : Math.min(rec.n - 1, rec.index(at));
     this.sigs.forEach((s, k) => {
-      const text = fix(s.get());
+      const text = fix(k0 < 0 ? s.get() : rec.series(s.id)[k0]!);
       const v = this.values[k]!;
       if (v.textContent !== text) v.textContent = text;
     });
@@ -275,6 +305,8 @@ export class Scope {
   private defs: PlotDef[] = [];
   /** Events of the running experiment, drawn on every plot. */
   private marks: Mark[] = [];
+  /** The recorded moment being shown (rewinding), or null: now. */
+  cursor: number | null = null;
   private presets: Preset[] = [];
   private active = '';
   /** Label of a layout that is not a preset (an experiment, a controller's watch list, a user edit). */
@@ -312,7 +344,7 @@ export class Scope {
 
   sample(t: number): void {
     const last = this.rec.n ? this.rec.t[this.rec.n - 1]! : 0;
-    if (t < last) this.marks = []; // time went back (reset): the events belong to the past
+    if (t < last) this.marks = this.marks.filter((m) => m.t <= t); // time went back: forget what came after
     this.rec.sample(t);
   }
 
@@ -382,6 +414,7 @@ export class Scope {
           drop: () => this.edit(() => this.defs.splice(k, 1)),
         },
         () => this.marks,
+        () => this.cursor,
       );
       this.grid.append(view.el);
       this.views.push(view);
