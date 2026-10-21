@@ -124,7 +124,12 @@ impl Kind {
         let tool = || if model.has_tool() { Ok(()) } else { Err("needs a tool point") };
         match self {
             Self::Passive => Ok(()),
-            Self::Pd | Self::PdGravity | Self::Lqr | Self::Mpc => actuated(),
+            Self::Pd | Self::PdGravity => actuated(),
+            Self::Lqr | Self::Mpc => actuated().and(if plan.stabilisable {
+                Ok(())
+            } else {
+                Err("cannot hold q*: an unstable mode there is out of reach of every input")
+            }),
             Self::ComputedTorque | Self::Passivity => full(),
             // shaping the tool's potential through Jᵀ needs an actuator per degree of freedom
             Self::Vmc | Self::Impedance | Self::Admittance => tool().and_then(|()| full()),

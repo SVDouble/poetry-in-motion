@@ -309,15 +309,17 @@ export const PRESETS: Record<string, () => Mechanism> = {
     closures: [],
     elements: [],
     bodies: [
-      link(-1, 'revolute', { l: 1, q0: HALF_PI - 0.3 }),
+      // a driven arm raised a little above its target, carrying a passive pendulum on its middle (swung out)
+      // and a driven forearm at its tip
+      link(-1, 'revolute', { l: 1, q0: 0.4 }),
       link(0, 'revolute', {
         l: 0.7,
         m: 0.6,
         mountS: 0.5,
-        mountAngle: 0.8,
+        mountAngle: -HALF_PI,
         actuated: false,
         beta: 0.02,
-        q0: 0,
+        q0: 0.6,
       }),
       link(0, 'revolute', { l: 0.7, m: 0.6, mountS: 1, mountAngle: -0.6, q0: 0 }),
     ],

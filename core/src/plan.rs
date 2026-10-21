@@ -5,6 +5,7 @@
 
 use crate::MAXN;
 use crate::dynamics::{self, Constraints, MAXK, MatN, Terms, VecN, inverse_dynamics, mat_vec};
+use crate::lqr::{c2d, dlqr};
 use crate::mat::{DMat, solve_dense};
 use crate::model::Model;
 
@@ -126,6 +127,9 @@ pub struct Plan {
     /// Degrees of freedom (dimension of the tangent space).
     pub dof: usize,
     pub lin: Option<Lin>,
+    /// Can linear feedback hold q*? False when an unstable mode of the linearisation is out of reach of
+    /// every input (e.g. a passive bar standing on a point that the inputs only move along it).
+    pub stabilisable: bool,
     /// M(q*): shapes joint-space gains (K = ω² M(q*)), so that near q* every closed-loop mode has the
     /// designed natural frequency and damping.
     pub m_star: MatN,
@@ -177,6 +181,7 @@ impl Plan {
             u_ff: [0.0; MAXN],
             eq_residual: 0.0,
             ct_ok: false,
+            stabilisable: false,
             dof: model.n,
             lin: None,
             m_star: core::array::from_fn(|k| f64::from(u8::from(k % (MAXN + 1) == 0))),
@@ -238,6 +243,12 @@ impl Plan {
             (qs, v0) = (seed, zero);
             dynamics::project(model, &mut qs, &mut v0);
         }
+        // a passive joint cannot be held anywhere: it rests where its potential torque vanishes. Keep the
+        // actuated coordinates at their targets and let the passive ones settle (open chains; with loops
+        // the constraint forces share the load and the projection above already balances it)
+        if !model.closed() && !model.unactuated.is_empty() {
+            settle_passive(model, &mut qs);
+        }
         self.q_star = qs;
         if let Some(t) = Tool::eval(model, &qs, &zero) {
             self.x_star = t.p;
@@ -259,6 +270,7 @@ impl Plan {
         let z = k.map_or_else(|| DMat::identity(n), |k| k.tangent_basis());
         self.dof = z.cols;
         self.lin = if model.nu > 0 && z.cols > 0 { Some(self.linearise(model, z)) } else { None };
+        self.stabilisable = self.lin.as_ref().is_some_and(stabilisable);
         let vars = model.vars;
         let passive: Vec<usize> = if model.closed() { (0..n).collect() } else { model.unactuated.clone() };
         self.e_ref = passive
@@ -484,6 +496,83 @@ impl Plan {
             }
         }
         mat_vec(n, &self.m_star, &a)
+    }
+}
+
+/// Does a reference LQR (unit weights) stabilise the linearisation? Its closed loop over 2¹⁴ steps of
+/// 10 ms (≈ 164 s) must decay: a mode no input reaches grows (or, undamped, at least does not die out).
+fn stabilisable(l: &Lin) -> bool {
+    let (nx, nu) = (l.a.rows, l.b.cols);
+    let dt = 0.01;
+    let (ad, bd) = c2d(&l.a, &l.b, dt);
+    let Some(k) = dlqr(&ad, &bd, &DMat::identity(nx).scale(dt), &DMat::identity(nu).scale(dt)) else {
+        return false;
+    };
+    let mut m = &ad - &(&bd * &k);
+    for _ in 0..14 {
+        m = &m * &m;
+        let big = m.max_abs();
+        if !big.is_finite() || big > 1e12 {
+            return false;
+        }
+    }
+    m.max_abs() < 1.0
+}
+
+/// Newton's method on the passive rows of ∂V/∂q (gravity and springs), from the user's targets: the
+/// passive coordinates move to the nearest static equilibrium with the actuated ones held. `q` is left as
+/// it was if no equilibrium is found (the residual then tells).
+fn settle_passive(model: &mut Model, q: &mut VecN) {
+    let pas = model.unactuated.clone();
+    let m = pas.len();
+    let residual = |model: &mut Model, q: &VecN| -> (Vec<f64>, f64) {
+        let g = model.potential_grad(q);
+        let r: Vec<f64> = pas.iter().map(|&i| g[i]).collect();
+        let norm = r.iter().map(|v| v * v).sum::<f64>().sqrt();
+        (r, norm)
+    };
+    let mut x = *q;
+    let (mut r, mut norm) = residual(model, &x);
+    for _ in 0..60 {
+        if norm < 1e-10 {
+            break;
+        }
+        // ∂(∂V/∂q_p)/∂q_p by central differences of the same model
+        let h = 1e-6;
+        let mut jac = vec![0.0; m * m];
+        for (c, &j) in pas.iter().enumerate() {
+            let (mut plus, mut minus) = (x, x);
+            plus[j] += h;
+            minus[j] -= h;
+            let (gp, gm) = (model.potential_grad(&plus), model.potential_grad(&minus));
+            for (row, &i) in pas.iter().enumerate() {
+                jac[row * m + c] = (gp[i] - gm[i]) / (2.0 * h);
+            }
+        }
+        let mut dx: Vec<f64> = r.iter().map(|v| -v).collect();
+        if !solve_dense(m, &mut jac, &mut dx) {
+            return;
+        }
+        // a bounded step, halved until the residual drops
+        let big = dx.iter().fold(0.0_f64, |a, v| a.max(v.abs()));
+        let mut t = if big > 0.5 { 0.5 / big } else { 1.0 };
+        loop {
+            let mut trial = x;
+            for (c, &j) in pas.iter().enumerate() {
+                trial[j] += t * dx[c];
+            }
+            let (rt, nt) = residual(model, &trial);
+            if nt < norm || t < 1e-4 {
+                (x, r, norm) = (trial, rt, nt);
+                break;
+            }
+            t *= 0.5;
+        }
+    }
+    if norm < 1e-8 {
+        for &j in &pas {
+            q[j] = if model.revolute[j] { wrap(x[j]) } else { x[j] };
+        }
     }
 }
 

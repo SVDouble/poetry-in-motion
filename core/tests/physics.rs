@@ -754,3 +754,55 @@ fn gravity_compensation_also_cancels_the_springs() {
     let q = &s.primary().q[..2];
     assert!((q[0] - 0.3).abs() < 1e-3 && (q[1] - 0.8).abs() < 1e-3, "q = {q:?}");
 }
+
+/// A driven arm with a passive branch at `s` along it (`mount`: its mounting angle, `beta`: its joint
+/// friction, `target`: its target), and a driven forearm at its tip; the arm starts 0.4 rad up, the branch
+/// swung out by 0.6 rad (the Branching arm preset).
+fn branching(mount: f64, s: f64, beta: f64, target: f64) -> Desc {
+    let mut arm = presets::link(None, JointKind::Revolute, 1.0, 1.0);
+    arm.q0 = 0.4;
+    let mut branch = presets::link(Some(0), JointKind::Revolute, 0.6, 0.7);
+    (branch.mount_s, branch.mount_angle, branch.actuated, branch.values[4]) = (s, mount, false, beta);
+    (branch.q0, branch.q_target) = (0.6, target);
+    let mut forearm = presets::link(Some(0), JointKind::Revolute, 0.6, 0.7);
+    (forearm.mount_s, forearm.mount_angle) = (1.0, -0.6);
+    Desc { bodies: vec![arm, branch, forearm], g: 9.81, tool: Some(2), closures: vec![], elements: vec![] }
+}
+
+#[test]
+fn a_passive_joint_settles_into_equilibrium_and_lqr_carries_it_there() {
+    // the branch's target (0.8 rad above the arm) is no equilibrium: q* lets it settle where gravity
+    // balances (hanging), and LQR then swings the arm there with the pendulum in tow
+    let mut s = with(&branching(-FRAC_PI_2, 0.5, 0.02, 0.8), Kind::Lqr);
+    s.step(1);
+    let o = s.publish().to_vec();
+    assert!(o[off::EQ_RESIDUAL] < 1e-8, "q* is no equilibrium: residual {}", o[off::EQ_RESIDUAL]);
+    let hanging = o[off::Q_TARGET + 1];
+    assert!(hanging.abs() < 1e-6, "the branch should hang straight down at q* (θ₂* = {hanging})");
+    // the arm returns and stays (no spin); the carried pendulum is damped only through the arm and its joint
+    // friction, so its swing decays slowly — compare the first and the last five seconds
+    let (mut early, mut late, mut arm) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for k in 0..20_000 {
+        s.step(1);
+        let q = &s.primary().q;
+        if k < 5_000 {
+            early = early.max(q[1].abs());
+        } else if k >= 15_000 {
+            late = late.max(q[1].abs());
+            arm = arm.max(q[0].abs()).max(q[2].abs());
+        }
+    }
+    assert!(arm < 0.05, "the arm should settle at its target: deviation {arm}");
+    assert!(late < 0.5 * early, "the pendulum's swing should decay: {early} → {late}");
+}
+
+#[test]
+fn lqr_refuses_an_equilibrium_that_no_input_can_hold() {
+    // a frictionless passive bar standing upright on the arm's own pivot: turning the arm cannot move it
+    let d = branching(FRAC_PI_2, 0.0, 0.0, 0.0);
+    let mut s = sim(&d);
+    s.set_controller(0, Some(Kind::Lqr));
+    assert_eq!(s.primary().kind, Kind::Passive, "LQR must not take on an unstabilisable equilibrium");
+    s.set_controller(0, Some(Kind::Mpc));
+    assert_eq!(s.primary().kind, Kind::Passive, "nor MPC");
+}
