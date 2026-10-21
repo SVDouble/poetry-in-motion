@@ -212,10 +212,36 @@ class Crawl:
         await self.wait(200)
 
     async def chrome(self, preset: str) -> None:
-        for toggle in ["Frames", "Labels", "Trail", "Shadows", "Coriolis forces", "Keyboard legend"]:
+        for toggle in [
+            "Frames",
+            "Labels",
+            "Dimensions",
+            "Velocities",
+            "Forces",
+            "Free-body diagram",
+            "Torque bars",
+            "Energy gauge",
+            "Trail",
+            "Shadows",
+            "Coriolis forces",
+            "Keyboard legend",
+        ]:
             self.where = f"{preset}/view {toggle}"
             await self.view_toggle(toggle)
             await self.view_toggle(toggle)
+        self.where = f"{preset}/rewind"
+        await self.page.keyboard.press("p")
+        await self.wait(300)
+        if not await self.js("!document.querySelector('.timeline').hidden"):
+            self.fail("no timeline while paused")
+        await self.js(
+            "(() => { const s = document.querySelector('.timeline input');"
+            " s.value = String(Math.floor(+s.max / 2)); s.dispatchEvent(new Event('input')); })()"
+        )
+        await self.click(".timeline button", "◀")
+        await self.click(".timeline button", "▶")
+        await self.click(".timeline button", "Resume here")
+        await self.wait(300)
         self.where = f"{preset}/model friction"
         await self.click(".side-head .segmented button", "Model")
         await self.click(".segmented button", "none")
@@ -278,6 +304,12 @@ class Crawl:
         self.where = f"{preset}/derive"
         await self.click("[data-stage=derive]")
         await self.wait(600)
+        await self.click(".eq-toc button", last=True)
+        focus = self.page.locator("[data-focus]").first
+        if await focus.count():
+            await focus.scroll_into_view_if_needed()
+            await focus.hover()
+            await self.wait(150)
         self.where = f"{preset}/simulate"
         await self.click("[data-stage=simulate]")
         await self.wait(600)

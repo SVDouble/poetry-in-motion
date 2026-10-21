@@ -27,6 +27,13 @@ export interface Settings {
   labels: boolean;
   /** Dimension lines (bar lengths) on the figure. */
   dims: boolean;
+  /** Velocity arrows; forces (weights, springs, loops, push); a free-body diagram of a clicked body. */
+  velocities: boolean;
+  forces: boolean;
+  freeBody: boolean;
+  /** Per-joint bars of M q̈, C q̇, N against τ; the energy gauge. */
+  torqueBars: boolean;
+  energyGauge: boolean;
   /** Show the keyboard legend on the viewport. */
   keys: boolean;
 }
@@ -50,6 +57,11 @@ export const defaultSettings = (): Settings => ({
   ghosts: true,
   labels: true,
   dims: false,
+  velocities: false,
+  forces: false,
+  freeBody: false,
+  torqueBars: false,
+  energyGauge: false,
   keys: false,
 });
 

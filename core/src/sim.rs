@@ -521,5 +521,21 @@ impl Sim {
         put(off::NC, &[self.model.nc as f64, self.model.ncon as f64, violation]);
         put(off::LAMBDA, &self.lambda[..self.model.ncon]);
         put(off::AT_LAMBDA, &at_lambda[..n]);
+        // body kinematics: v_c = J_c q̇ (tape), a_c = J_c q̈ + (∂v_c/∂q) q̇, ω = k·q̇ and α = k·q̈ (frame
+        // angles are linear in q)
+        let acom: Vec<f64> = (0..2 * nb)
+            .map(|r| a[ao.dvcom + r] + (0..n).map(|j| a[ao.jcom + r * n + j] * qdd[j]).sum::<f64>())
+            .collect();
+        put(off::VCOM, &a[ao.vcom..ao.vcom + 2 * nb]);
+        put(off::ACOM, &acom);
+        let rate = |k: usize, v: &[f64]| -> f64 {
+            let ang = &self.model.frame_angles[k + 1];
+            (0..n).map(|j| f64::from(ang.k[j]) * v[j]).sum()
+        };
+        let omega: Vec<f64> = (0..nb).map(|k| rate(k, &qd)).collect();
+        let alpha: Vec<f64> = (0..nb).map(|k| rate(k, &qdd)).collect();
+        put(off::OMEGA, &omega);
+        put(off::ALPHA, &alpha);
+        put(off::ELEMENT_F, &elements.tension[..self.model.element_values.len()]);
     }
 }

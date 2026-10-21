@@ -1,10 +1,12 @@
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
+import { Gauges } from './app/gauges';
 import { History } from './app/history';
 import { closeLoop, type DragContext, dragJoint, dragTip } from './app/manipulate';
 import { defaultSettings, type Settings } from './app/settings';
 import { SimulateStage } from './app/simulate';
+import { Timeline } from './app/timeline';
 import { Editor } from './builder/editor';
 import { Gizmos } from './builder/gizmos';
 import { type EditContext, Inspector, removeSelection, type Selection } from './builder/inspector';
@@ -28,7 +30,7 @@ import {
 } from './model/description';
 import { poseBounds } from './scene/kinematics';
 import { RobotView } from './scene/robot';
-import { type SchematicFrame, SchematicView } from './scene/schematic';
+import { type Focus, parseFocus, type SchematicFrame, SchematicView } from './scene/schematic';
 import { Stage } from './scene/stage';
 import { setDark } from './scene/theme';
 import { SimClient } from './sim/client';
@@ -159,6 +161,27 @@ class App {
     });
     this.palette = new Palette({ start: (kind) => this.gizmos.beginPlace(kind) });
     $('viewport').append(this.palette.el);
+    this.gauges = new Gauges(this.settings);
+    this.timeline = new Timeline(client.layout, {
+      advance: (steps) => client.send({ type: 'advance', steps }),
+      resume: (s) => {
+        for (let j = 0; j < (this.derivation?.n ?? 0); j++)
+          client.send({ type: 'state', i: j, q: s.v('Q', j), qd: s.v('QD', j) });
+        this.setRunning(true);
+      },
+    });
+    this.readout.className = 'readout overlay';
+    this.readout.hidden = true;
+    $('viewport').append(this.gauges.el, this.timeline.el, this.readout);
+    // pointing at an equation lights up what it is about
+    const side = $('side');
+    side.addEventListener('pointerover', (e) => {
+      const el = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-focus]') : null;
+      this.focus = parseFocus(el?.dataset.focus);
+    });
+    side.addEventListener('pointerleave', () => {
+      this.focus = null;
+    });
     this.inspector = new Inspector($('viewport'), {
       context: () => this.editContext(),
       remove: (sel) => this.removeSelected(sel),
@@ -174,6 +197,17 @@ class App {
 
   private readonly palette: Palette;
   private readonly inspector: Inspector;
+  private readonly gauges: Gauges;
+  private readonly timeline: Timeline;
+  /** Body shown as a free-body diagram (−1: none), and what an equation being pointed at is about. */
+  private freeBody = -1;
+  private focus: Focus | null = null;
+  private readonly readout = document.createElement('div');
+
+  /** The snapshot to draw: live, or the moment being looked back at. */
+  private get view() {
+    return this.timeline.view(this.snap);
+  }
 
   /** Take a new document from the view (palette, inspector, snapping): history, panel, rebuild. */
   private adopt(m: Mechanism, selected = this.editor.selection): void {
@@ -190,6 +224,46 @@ class App {
       refuse: (msg) => this.flash(msg),
       length: (k) => this.elementLength(k),
     };
+  }
+
+  /** Hovering a joint or a centre of mass: its numbers, next to the pointer. */
+  private hover(x: number, y: number): void {
+    const d = this.derivation;
+    const robot = this.robot;
+    const el = this.readout;
+    if (!d || !robot) return;
+    const s = this.view;
+    const reach = 9 * this.stage.metresPerPixel;
+    let html = '';
+    let best = reach;
+    this.mech.bodies.forEach((b, k) => {
+      const [fx, fy, p] = s.frame(k + 1);
+      const j = d.coords.findIndex((c) => c.body === k);
+      if (j >= 0 && Math.hypot(x - fx, y - fy) < best) {
+        best = Math.hypot(x - fx, y - fy);
+        const ang = b.joint === 'revolute';
+        const [q, qd, tau] = [s.v('Q', j), s.v('QD', j), s.v('TAU', j)];
+        html = `<b>${ang ? 'θ' : 'd'}<sub>${k + 1}</sub></b> = ${q.toFixed(3)} ${ang ? 'rad' : 'm'}<br>rate ${qd.toFixed(3)} ${ang ? 'rad/s' : 'm/s'}<br>${ang ? 'torque' : 'force'} τ = ${tau.toFixed(2)} ${ang ? 'N·m' : 'N'}`;
+      }
+      const r = this.params[5 * k + 2] ?? 0;
+      const [cx, cy] = [fx + Math.cos(p) * r, fy + Math.sin(p) * r];
+      const m = this.params[5 * k] ?? 0;
+      if (m > 0 && Math.hypot(x - cx, y - cy) < best) {
+        best = Math.hypot(x - cx, y - cy);
+        const [vx, vy] = [s.v('VCOM', 2 * k), s.v('VCOM', 2 * k + 1)];
+        const w = s.v('OMEGA', k);
+        const inertia = this.params[5 * k + 3] ?? 0;
+        const t = 0.5 * m * (vx * vx + vy * vy) + 0.5 * inertia * w * w;
+        const total = s.v('ENERGY');
+        html = `<b>body ${k + 1}</b>: m = ${m.toFixed(2)} kg<br>|v<sub>c</sub>| = ${Math.hypot(vx, vy).toFixed(3)} m/s, ω = ${w.toFixed(3)} rad/s<br>T<sub>${k + 1}</sub> = ½mv² + ½Iω² = ${t.toFixed(3)} J${total > 1e-9 ? ` (${((100 * t) / total).toFixed(0)} % of T)` : ''}`;
+      }
+    });
+    el.hidden = !html;
+    if (!html) return;
+    el.innerHTML = html;
+    const [sx, sy] = this.stage.toScreen(x, y);
+    el.style.left = `${sx + 16}px`;
+    el.style.top = `${sy + 12}px`;
   }
 
   /** Distance between the ends of spring/damper k at the current pose. */
@@ -330,6 +404,9 @@ class App {
     this.schematic = new SchematicView(this.mech, res.derivation, this.robot.bounds());
     $('viewport').prepend(this.schematic.host);
     this.sim.load(res.derivation, res.controllers);
+    this.gauges.load(res.derivation);
+    this.timeline.clear();
+    this.freeBody = -1;
     // a different mechanism is framed afresh; edits keep the view unless the user has not touched it
     if (this.mech.name !== this.framedName || this.mech.name === 'Custom') {
       if (this.mech.name !== this.framedName) this.userView = false;
@@ -442,6 +519,8 @@ class App {
     this.gizmos.visible = s === 'build';
     this.gizmos.connectFrom = null;
     if (s !== 'build') this.inspector.hide();
+    this.gauges.apply(s === 'simulate');
+    this.readout.hidden = true;
     if (!this.userView) this.fitView();
     this.closePopover();
     closePopover();
@@ -484,7 +563,7 @@ class App {
         title('Derivation', `Lagrange's method for this topology · ${ms}`),
         next('Simulate →', 'simulate'),
       );
-      this.panel.mount(derivationSections(this.mech, d));
+      this.panel.mount(derivationSections(this.mech, d), undefined, true);
     } else {
       head.append(title('Simulation', `${d.n - constraints} DOF · 1 kHz RK4`));
       this.sim.enter(head);
@@ -507,7 +586,19 @@ class App {
     const redraw = () => {
       if (this.schematic) this.schematic.dirty = true;
     };
-    type Key = 'frames' | 'labels' | 'dims' | 'trail' | 'coriolis' | 'ghosts' | 'keys';
+    type Key =
+      | 'frames'
+      | 'labels'
+      | 'dims'
+      | 'velocities'
+      | 'forces'
+      | 'freeBody'
+      | 'torqueBars'
+      | 'energyGauge'
+      | 'trail'
+      | 'coriolis'
+      | 'ghosts'
+      | 'keys';
     const groups: [string, [Key, string, string, () => void][]][] = [
       [
         'Figure',
@@ -515,6 +606,12 @@ class App {
           ['labels', 'Labels', 'joint coordinates, masses and gravity', redraw],
           ['frames', 'Frames', 'coordinate frames {s}, {1} … {n} and {t}', redraw],
           ['dims', 'Dimensions', 'the length lᵢ of every bar', redraw],
+          ...(sim
+            ? ([
+                ['velocities', 'Velocities', 'of the centres of mass', redraw],
+                ['forces', 'Forces', 'weights, springs and dampers, loops, the push', redraw],
+              ] as [Key, string, string, () => void][])
+            : []),
           ...(sim
             ? ([
                 [
@@ -541,6 +638,22 @@ class App {
                   'Coriolis forces',
                   'off is non-physical: watch the energy drift',
                   () => this.client.flag('Coriolis', t.coriolis ? 1 : 0),
+                ],
+                [
+                  'freeBody',
+                  'Free-body diagram',
+                  'click a body: every force on it, and m a',
+                  () => {
+                    if (!t.freeBody) this.freeBody = -1;
+                    redraw();
+                  },
+                ],
+                ['torqueBars', 'Torque bars', 'M q̈ + C q̇ + N = τ, joint by joint', () => this.gauges.apply()],
+                [
+                  'energyGauge',
+                  'Energy gauge',
+                  'kinetic, potential, lost and supplied',
+                  () => this.gauges.apply(),
                 ],
                 ['keys', 'Keyboard legend', 'the keys that drive the joints', () => this.sim.renderKeys()],
               ],
@@ -629,7 +742,7 @@ class App {
     const simulating = this.stageName === 'simulate';
     this.ghostSlots ??= this.snap.slots.slice(1);
     return {
-      snap: this.snap,
+      snap: this.view,
       params: this.params,
       running: simulating,
       push: this.sim.pushPoint,
@@ -637,6 +750,10 @@ class App {
       annotate: this.settings.labels,
       frames: this.settings.frames,
       dims: this.settings.dims,
+      velocities: simulating && this.settings.velocities,
+      forces: simulating && this.settings.forces,
+      freeBody: simulating && this.settings.freeBody ? this.freeBody : -1,
+      focus: this.focus,
       trail: this.settings.trail,
     };
   }
@@ -688,6 +805,7 @@ class App {
   private reset(): void {
     this.client.send({ type: 'reset' });
     this.schematic?.resetTrail();
+    this.timeline.clear();
   }
 
   private chrome(): void {
@@ -792,7 +910,22 @@ class App {
       } else this.closeInspector();
       return;
     }
-    if (this.stageName === 'simulate') this.sim.pointer(x, y, kind, pressed, shift, alt);
+    if (this.stageName !== 'simulate') return;
+    if (!pressed && kind === 'move') {
+      this.hover(x, y);
+      return;
+    }
+    this.readout.hidden = true;
+    // free-body diagram: a click on a body picks it (anywhere else still moves the target)
+    if (this.settings.freeBody && kind === 'down') {
+      const i = this.robot.pick(x, y, this.view, this.params);
+      if (i >= 0) {
+        this.freeBody = i;
+        return;
+      }
+    }
+    if (this.timeline.replaying) return;
+    this.sim.pointer(x, y, kind, pressed, shift, alt);
   }
 
   private key(e: KeyboardEvent, down: boolean): void {
@@ -835,9 +968,14 @@ class App {
   private frame(now: number): void {
     const c = this.clock;
     this.client.pull();
+    const simulating = this.stageName === 'simulate';
+    if (simulating && this.running) this.timeline.record(this.snap);
+    this.timeline.setVisible(simulating && !this.running);
+    this.timeline.tick();
     const refresh = now - c.eq >= 1000 / EQ_HZ;
     this.sim.frame(now, refresh);
     this.schematic?.draw(this.stage.mapping(), this.schematicFrame());
+    if (simulating) this.gauges.draw(this.view, now);
     if (this.stageName === 'build' && this.robot)
       this.gizmos.update(this.mech, this.robot, this.snap, this.params);
     c.frames++;

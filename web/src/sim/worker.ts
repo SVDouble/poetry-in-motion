@@ -173,6 +173,10 @@ const handlers: Handlers = {
   kick: (c, m) => c.kick(m.i, m.v),
   state: (c, m) => c.set_state(m.i, m.q, m.qd),
   reset: (c) => c.reset(),
+  advance: (c, m) => {
+    c.step(Math.max(1, Math.min(1000, Math.round(m.steps))));
+    c.publish();
+  },
   run: (_c, m) => {
     running = m.running;
   },

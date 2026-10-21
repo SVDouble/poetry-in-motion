@@ -859,3 +859,30 @@ fn joints_beyond_the_tool_keep_their_posture_while_the_arm_reaches_out() {
         );
     }
 }
+
+#[test]
+fn body_velocities_and_accelerations_match_the_motion() {
+    // v_c, a_c, ω, α of every body against central differences of the published positions and velocities
+    let mut s = with(&frictionless(presets::arm2()), Kind::Passive);
+    s.set_state(0, 0.3, 1.5);
+    s.step(200);
+    let take = |w: &mut World| {
+        w.step(1);
+        w.publish().to_vec()
+    };
+    let (a, b, c) = (take(&mut s), take(&mut s), take(&mut s));
+    let h = 1e-3;
+    for i in 0..4 {
+        let v = (c[off::COMS + i] - a[off::COMS + i]) / (2.0 * h);
+        let acc = (c[off::VCOM + i] - a[off::VCOM + i]) / (2.0 * h);
+        assert!((v - b[off::VCOM + i]).abs() < 1e-4, "v_c[{i}]: {} vs {v}", b[off::VCOM + i]);
+        assert!((acc - b[off::ACOM + i]).abs() < 1e-3, "a_c[{i}]: {} vs {acc}", b[off::ACOM + i]);
+    }
+    for k in 0..2 {
+        let phi = |o: &[f64]| o[off::FRAMES + 3 * (k + 1) + 2];
+        let w = (phi(&c) - phi(&a)) / (2.0 * h);
+        let al = (c[off::OMEGA + k] - a[off::OMEGA + k]) / (2.0 * h);
+        assert!((w - b[off::OMEGA + k]).abs() < 1e-4, "ω[{k}]: {} vs {w}", b[off::OMEGA + k]);
+        assert!((al - b[off::ALPHA + k]).abs() < 1e-3, "α[{k}]: {} vs {al}", b[off::ALPHA + k]);
+    }
+}

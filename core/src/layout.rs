@@ -6,7 +6,7 @@
 
 use crate::MAXN;
 use crate::control::TELEMETRY_LEN;
-use crate::mech::{MAXB, MAXM};
+use crate::mech::{MAXB, MAXE, MAXM};
 
 /// Frames in a snapshot: the spatial frame, one per body and the tool.
 pub const MAXF: usize = MAXB + 2;
@@ -82,6 +82,13 @@ layout! { off, FIELDS;
     NC: 1, NCON: 1, CONSTRAINT: 1,
     LAMBDA: MAXM,
     AT_LAMBDA: MAXN,
+    /// Per body: centre-of-mass velocity and acceleration (x, y pairs), angular velocity and acceleration.
+    VCOM: 2 * MAXB,
+    ACOM: 2 * MAXB,
+    OMEGA: MAXB,
+    ALPHA: MAXB,
+    /// Force along each spring/damper: k (ℓ − ℓ₀) + c ℓ̇ (positive: pulling its ends together).
+    ELEMENT_F: MAXE,
     /// One block per slot (see `slot`).
     SLOT: SLOTS * slot::LEN,
 }

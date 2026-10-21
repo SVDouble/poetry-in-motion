@@ -12,6 +12,8 @@ export type ToWorker =
   | { type: 'kick'; i: number; v: number }
   | { type: 'state'; i: number; q: number; qd: number }
   | { type: 'reset' }
+  /** Advance the physics by `steps` while paused (frame by frame). */
+  | { type: 'advance'; steps: number }
   | { type: 'run'; running: boolean }
   | { type: 'speed'; speed: number };
 

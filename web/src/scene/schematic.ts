@@ -11,7 +11,7 @@
  */
 import { tex } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
-import { actuatorIndex, coordIndex, type Mechanism, normalise } from '../model/description';
+import { actuatorIndex, coordIndex, isDescendant, type Mechanism, normalise } from '../model/description';
 import type { SlotView, Snapshot } from '../sim/layout';
 import { BLOCK, type Bounds, compose, type Pose } from './geometry';
 import type { Mapping } from './stage';
@@ -50,6 +50,10 @@ interface Inks {
   warn: string;
   /** Coordinate frames. */
   frame: string;
+  /** The colours of the terms of M q̈ + C q̇ + N = τ: weights are green like N, moments red like τ. */
+  gravity: string;
+  inertial: string;
+  coriolis: string;
   /** Shadow controllers, in their slot inks. */
   ghosts: string[];
 }
@@ -62,6 +66,9 @@ const inks = (draw: (c: number) => string): Inks => ({
   input: draw(palette.input),
   warn: draw(palette.warn),
   frame: draw(palette.frame),
+  gravity: draw(palette.gravity),
+  inertial: draw(palette.inertial),
+  coriolis: draw(palette.coriolis),
   ghosts: SLOT_COLORS.slice(1).map(draw),
 });
 
@@ -552,11 +559,44 @@ export interface SchematicFrame {
   frames: boolean;
   /** Dimension lines: the length of every bar. */
   dims?: boolean;
+  /** Velocity arrows at the centres of mass (and the tool). */
+  velocities?: boolean;
+  /** Forces: weights, springs and dampers, loop closures, the push. */
+  forces?: boolean;
+  /** Free-body diagram of this body (−1: none): it is cut free and every force on it is drawn. */
+  freeBody?: number;
+  /** What an equation being pointed at is about. */
+  focus?: Focus | null;
   /** The tool's path (of every slot shown). */
   trail: boolean;
 }
 
 const TRAIL = 240;
+
+/** What an equation is about, to light up in the figure (see `data-focus` in the panels). */
+export type Focus =
+  | { kind: 'body' | 'frame' | 'com' | 'element' | 'loop' | 'joint'; index: number }
+  | { kind: 'gravity' | 'velocities' | 'tool' | 'all' };
+
+/** Parse a `data-focus` attribute: "body:2", "gravity", … */
+export function parseFocus(s: string | undefined): Focus | null {
+  if (!s) return null;
+  const [kind, idx] = s.split(':');
+  if (kind === 'gravity' || kind === 'velocities' || kind === 'tool' || kind === 'all') return { kind };
+  if (['body', 'frame', 'com', 'element', 'loop', 'joint'].includes(kind!) && idx !== undefined)
+    return { kind: kind as 'body', index: Number(idx) };
+  return null;
+}
+
+/** A force at a point of a body (world coordinates, N). */
+interface PointForce {
+  body: number;
+  x: number;
+  y: number;
+  fx: number;
+  fy: number;
+  label: string;
+}
 
 /** A ring buffer of recent tool positions. */
 class Path {
@@ -790,6 +830,242 @@ export class Figure {
     }
     b.push(cx - w, cy - h, cx + w, cy + h);
     pen.label(id, x, y, src, dx, dy);
+  }
+
+  /** Forces at points of bodies, other than weights and joint reactions: springs and dampers, loop
+   * closures (their multipliers λ), the push on the tool. */
+  private pointForces(snap: Snapshot, params: number[]): PointForce[] {
+    const out: PointForce[] = [];
+    const nb = this.mech.bodies.length;
+    this.mech.elements.forEach((e, k) => {
+      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
+      const [bx, by] = this.port(e.b, e.sb, snap, params);
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 1e-9) return;
+      // tension pulls the ends together
+      const t = snap.v('ELEMENT_F', k);
+      const [ux, uy] = [(bx - ax) / len, (by - ay) / len];
+      const name = `F_{${k + 1}}`;
+      out.push({ body: e.b, x: bx, y: by, fx: -t * ux, fy: -t * uy, label: name });
+      if (e.a >= 0) out.push({ body: e.a, x: ax, y: ay, fx: t * ux, fy: t * uy, label: name });
+    });
+    // −Aᵀλ: a pin φ = p_a − p_b pushes point a with −λ and point b with +λ; a slot φ = nᵀ(p_b − p_a)
+    // pushes point b with −λ n and point a with +λ n (the moment it puts on a is left out)
+    let row = 0;
+    this.mech.closures.forEach((c, k) => {
+      const [ax, ay] = c.a < 0 ? [c.gx, c.gy] : this.port(c.a, c.sa, snap, params);
+      const [bx, by] = this.port(c.b, c.sb, snap, params);
+      const name = `\\lambda_{${k + 1}}`;
+      const add = (body: number, x: number, y: number, fx: number, fy: number) => {
+        if (body >= 0) out.push({ body, x, y, fx, fy, label: name });
+      };
+      if (c.kind === 'pin') {
+        const [lx, ly] = [snap.v('LAMBDA', row), snap.v('LAMBDA', row + 1)];
+        add(c.a, ax, ay, -lx, -ly);
+        add(c.b, bx, by, lx, ly);
+        row += 2;
+      } else {
+        const dir = (c.a < 0 ? 0 : snap.frame(c.a + 1)[2]) + c.angle;
+        const [nx, ny] = [-Math.sin(dir), Math.cos(dir)];
+        const l = snap.v('LAMBDA', row);
+        add(c.b, bx, by, -l * nx, -l * ny);
+        add(c.a, ax, ay, l * nx, l * ny);
+        row += 1;
+      }
+    });
+    if (this.mech.tool >= 0) {
+      const [fx, fy] = [snap.v('FEXT'), snap.v('FEXT', 1)];
+      const [tx, ty] = snap.frame(nb + 1);
+      if (Math.hypot(fx, fy) > 1e-9)
+        out.push({ body: this.mech.tool, x: tx, y: ty, fx, fy, label: 'F_{ext}' });
+    }
+    return out;
+  }
+
+  /** Force the parent (or the ground) exerts on body i at its joint: Newton for the subtree hanging from
+   * it, R = Σ m (a_c − g) − (the other forces on the subtree from outside it). */
+  private reaction(i: number, snap: Snapshot, params: number[], forces: PointForce[]): [number, number] {
+    const g = params[params.length - 1] ?? 9.81;
+    let [rx, ry] = [0, 0];
+    this.mech.bodies.forEach((_, k) => {
+      if (!isDescendant(this.mech, k, i)) return;
+      const m = params[5 * k] ?? 0;
+      rx += m * snap.v('ACOM', 2 * k);
+      ry += m * (snap.v('ACOM', 2 * k + 1) + g);
+    });
+    for (const f of forces) {
+      if (!isDescendant(this.mech, f.body, i)) continue;
+      rx -= f.fx;
+      ry -= f.fy;
+    }
+    return [rx, ry];
+  }
+
+  /** Velocities, forces, a free-body diagram and what an equation points at. */
+  private paintOverlays(pen: Pen, f: SchematicFrame): void {
+    const { snap, params } = f;
+    const u = pen.u;
+    const nb = this.mech.bodies.length;
+    const g = params[params.length - 1] ?? 9.81;
+    const label = (id: string, x: number, y: number, src: string) => this.label(pen, id, x, y, src);
+    const com = (k: number): [number, number] => {
+      const [x, y, p] = snap.frame(k + 1);
+      const r = params[5 * k + 2] ?? 0;
+      return [x + Math.cos(p) * r, y + Math.sin(p) * r];
+    };
+    const moving = (k: number) => this.mech.bodies[k]!.joint !== 'fixed' || (params[5 * k] ?? 0) > 0;
+    // arrows scaled per picture: the largest is 70 px long
+    const scaleOf = (vs: [number, number][], px = 70) => {
+      const big = Math.max(1e-9, ...vs.map(([x, y]) => Math.hypot(x, y)));
+      return (px * u) / big;
+    };
+    const focus = f.focus ?? null;
+    const showVel = f.velocities || focus?.kind === 'velocities' || focus?.kind === 'com';
+    const showGrav = f.forces || focus?.kind === 'gravity';
+
+    if (showVel) {
+      const vs = this.mech.bodies.map((_, k): [number, number] => [
+        snap.v('VCOM', 2 * k),
+        snap.v('VCOM', 2 * k + 1),
+      ]);
+      const sc = scaleOf(vs);
+      vs.forEach((v, k) => {
+        if (!moving(k) || (focus?.kind === 'com' && focus.index !== k)) return;
+        vector(pen, label, `v${k}`, com(k), v, sc, C.accent, `v_{c${k + 1}}`);
+      });
+    }
+    const forces = f.forces || f.freeBody !== undefined ? this.pointForces(snap, params) : [];
+    if (showGrav || f.forces) {
+      const weights = this.mech.bodies.map((_, k): [number, number] => [0, -(params[5 * k] ?? 0) * g]);
+      const all = [...weights, ...forces.map((p): [number, number] => [p.fx, p.fy])];
+      const sc = scaleOf(all);
+      weights.forEach((w, k) => {
+        if (moving(k)) vector(pen, label, `w${k}`, com(k), w, sc, C.gravity, `m_{${k + 1}}g`);
+      });
+      if (f.forces) {
+        forces.forEach((p, k) => {
+          vector(pen, label, `pf${k}`, [p.x, p.y], [p.fx, p.fy], sc, C.input, p.label);
+        });
+      }
+    }
+
+    // free-body diagram: the body cut free with every force on it, and m a_c as the resultant
+    const i = f.freeBody ?? -1;
+    if (i >= 0 && i < nb) {
+      const m = params[5 * i] ?? 0;
+      const [jx, jy] = snap.frame(i + 1);
+      // cut free: the rest of the mechanism fades, the body is drawn again on top
+      pen.begin();
+      pen.move(-1e3, -1e3);
+      pen.line(1e3, -1e3);
+      pen.line(1e3, 1e3);
+      pen.line(-1e3, 1e3);
+      pen.close();
+      pen.draw({ fill: C.paper, alpha: 0.72 });
+      const l = this.length(i, params);
+      const p = snap.frame(i + 1)[2];
+      if (l > 1e-3) {
+        pen.begin();
+        pen.move(jx, jy);
+        pen.line(jx + Math.cos(p) * l, jy + Math.sin(p) * l);
+        pen.draw({ stroke: C.ink, width: LINK_W });
+      }
+      comSymbol(pen, ...com(i), p);
+      hinge(pen, jx, jy);
+      this.mech.bodies.forEach((b, c) => {
+        if (b.parent === i) hinge(pen, ...(snap.frame(c + 1).slice(0, 2) as [number, number]));
+      });
+      const list: { at: [number, number]; f: [number, number]; src: string; dash?: boolean }[] = [];
+      list.push({ at: com(i), f: [0, -m * g], src: `m_{${i + 1}}g` });
+      list.push({ at: [jx, jy], f: this.reaction(i, snap, params, forces), src: `R_{${i + 1}}` });
+      this.mech.bodies.forEach((b, c) => {
+        if (b.parent !== i) return;
+        const [cx, cy] = snap.frame(c + 1);
+        const [rx, ry] = this.reaction(c, snap, params, forces);
+        list.push({ at: [cx, cy], f: [-rx, -ry], src: `-R_{${c + 1}}` });
+      });
+      for (const p of forces) if (p.body === i) list.push({ at: [p.x, p.y], f: [p.fx, p.fy], src: p.label });
+      const ma: [number, number] = [m * snap.v('ACOM', 2 * i), m * snap.v('ACOM', 2 * i + 1)];
+      list.push({ at: com(i), f: ma, src: `m_{${i + 1}}a_{${i + 1}}`, dash: true });
+      const sc = scaleOf(
+        list.map((x) => x.f),
+        80,
+      );
+      list.forEach((x, k) => {
+        const ink = x.dash ? C.inertial : x.src.includes('g') ? C.gravity : C.input;
+        vector(pen, label, `fb${k}`, x.at, x.f, sc, ink, x.src, x.dash ? [5, 3] : undefined);
+      });
+      // joint moments: the drive and friction at its own joint, their reactions at the children's
+      const moment = (k: number) => {
+        const b = this.mech.bodies[k]!;
+        const j = this.coord[k]!;
+        if (b.joint !== 'revolute' || j < 0) return 0;
+        const a = this.actuator[k]!;
+        return (a >= 0 ? snap.v('U', a) : 0) - (params[5 * k + 4] ?? 0) * snap.v('QD', j);
+      };
+      const umax = snap.v('UMAX') || 1;
+      const arc = (k: number, sign: number, x: number, y: number, name: string) => {
+        const mm = sign * moment(k);
+        if (Math.abs(mm) < 1e-6) return;
+        const span = Math.max(0.3, Math.min(1.6, (Math.abs(mm) / umax) * 6)) * Math.PI * Math.sign(mm);
+        arcArrow(pen, x, y, 24 * u, Math.PI / 2, Math.PI / 2 + span, C.input);
+        this.label(pen, `fm${name}`, x - 30 * u, y + 30 * u, name);
+      };
+      arc(i, 1, jx, jy, `M_{${i + 1}}`);
+      this.mech.bodies.forEach((b, c) => {
+        if (b.parent === i) {
+          const [cx, cy] = snap.frame(c + 1);
+          arc(c, -1, cx, cy, `-M_{${c + 1}}`);
+        }
+      });
+    }
+
+    // what an equation points at
+    if (focus) {
+      const ring = (x: number, y: number, r = 11) => circle(pen, x, y, r * u, { stroke: C.accent, width: 2 });
+      const bar = (k: number) => {
+        const [x, y, p] = snap.frame(k + 1);
+        const l = this.length(k, params);
+        pen.begin();
+        pen.move(x, y);
+        pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
+        pen.draw({ stroke: C.accent, width: LINK_W + 3, alpha: 0.45 });
+      };
+      if (focus.kind === 'all') {
+        for (let k = 0; k < nb; k++) bar(k);
+      }
+      if (focus.kind === 'body' && focus.index < nb) bar(focus.index);
+      if (focus.kind === 'frame' && focus.index < nb) {
+        bar(focus.index);
+        const [x, y, p] = snap.frame(focus.index + 1);
+        triad(pen, x, y, p, 34);
+      }
+      if (focus.kind === 'com' && focus.index < nb) ring(...com(focus.index));
+      if (focus.kind === 'joint') {
+        const k = this.mech.bodies.findIndex((_, b) => this.coord[b] === focus.index);
+        if (k >= 0) ring(snap.frame(k + 1)[0], snap.frame(k + 1)[1], 13);
+      }
+      if (focus.kind === 'tool' && this.mech.tool >= 0) {
+        const [tx, ty, tp] = snap.frame(nb + 1);
+        ring(tx, ty);
+        triad(pen, tx, ty, tp, 28);
+      }
+      if (focus.kind === 'loop') {
+        const c = this.mech.closures[focus.index];
+        if (c) ring(...this.port(c.b, c.sb, snap, params), 14);
+      }
+      if (focus.kind === 'element') {
+        const e = this.mech.elements[focus.index];
+        if (e) {
+          const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.port(e.a, e.sa, snap, params);
+          const [bx, by] = this.port(e.b, e.sb, snap, params);
+          pen.begin();
+          pen.move(ax, ay);
+          pen.line(bx, by);
+          pen.draw({ stroke: C.accent, width: 8, alpha: 0.3 });
+        }
+      }
+    }
   }
 
   paintDynamic(pen: Pen, f: SchematicFrame): void {
@@ -1116,6 +1392,7 @@ export class Figure {
       arrow(pen, tx, ty, tx + Math.cos(a) * 32 * u, ty + Math.sin(a) * 32 * u, C.accent, 1);
     }
     if (f.push) spring(pen, tx, ty, f.push[0], f.push[1], C.input);
+    this.paintOverlays(pen, f);
 
     // joint targets on actuated rails (where the joint controllers are taking them)
     if (f.running && snap.v('KIND') !== 0) {
@@ -1159,6 +1436,34 @@ export class Figure {
 
 /** The figure on screen: a canvas for the ground (redrawn when the view changes), one for everything that
  * moves (redrawn when something changed), and KaTeX labels over them. */
+
+// ------------------------------------------------------------------------------------------- overlays
+
+/** An arrow of length `len` (world) at (x, y) along (dx, dy), labelled at its head. */
+function vector(
+  pen: Pen,
+  label: (id: string, x: number, y: number, src: string) => void,
+  id: string,
+  [x, y]: [number, number],
+  [dx, dy]: [number, number],
+  scale: number,
+  ink: string,
+  src: string,
+  dash?: readonly number[],
+): void {
+  const n = Math.hypot(dx, dy);
+  if (n * scale < 4 * pen.u) return;
+  const [ex, ey] = [x + dx * scale, y + dy * scale];
+  if (dash) {
+    pen.begin();
+    pen.move(x, y);
+    pen.line(ex, ey);
+    pen.draw({ stroke: ink, width: 1.3, dash });
+    head(pen, ex, ey, Math.atan2(dy, dx), ink);
+  } else arrow(pen, x, y, ex, ey, ink, 1.6);
+  if (src) label(id, ex + (dx / n) * 12 * pen.u, ey + (dy / n) * 12 * pen.u, src);
+}
+
 /** A small drawing of a mechanism at its initial pose (frames from forward kinematics), fitted into
  * `canvas`: the preset gallery. No labels, no annotations, the current theme's inks. */
 export function drawThumbnail(
@@ -1285,7 +1590,7 @@ export class SchematicView {
     // parameters (lengths, centres of mass) can change while paused
     let sum = 0;
     for (let i = 0; i < f.params.length; i++) sum += f.params[i]! * (i + 1);
-    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${f.frames},${f.dims},${sum}`;
+    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${f.frames},${f.dims},${f.velocities},${f.forces},${f.freeBody},${f.focus ? JSON.stringify(f.focus) : ''},${sum}`;
     if (!this.dirty && fKey === this.frameKey) return;
     this.frameKey = fKey;
     this.dirty = false;

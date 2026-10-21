@@ -59,6 +59,11 @@ export const FIELDS = [
   'CONSTRAINT',
   'LAMBDA',
   'AT_LAMBDA',
+  'VCOM',
+  'ACOM',
+  'OMEGA',
+  'ALPHA',
+  'ELEMENT_F',
   'SLOT',
 ] as const;
 

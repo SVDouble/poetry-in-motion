@@ -12,6 +12,23 @@ import { texMat } from './tex';
 const col = (xs: string[]) => texMat(xs.map((x) => [x]));
 const cls = (c: string, s: string) => String.raw`\htmlClass{${c}}{${s}}`;
 
+/** One line per step, for the table of contents. */
+const SUMMARY: Record<string, string> = {
+  'Topology & generalised coordinates': 'which joints move, and the coordinates q that describe them',
+  'Forward kinematics': 'where every body is: a chain of rigid motions from the ground',
+  'Centre-of-mass positions & velocities': 'where each mass is and how fast it moves',
+  'Kinetic energy': 'T, a quadratic form in the velocities',
+  'Potential energy': 'V from gravity at the centres of mass',
+  'Inertia matrix': 'M(q), the Hessian of T in the velocities',
+  'Christoffel symbols & Coriolis matrix': 'C(q, q̇), the velocity-product forces',
+  'Gravity & friction': 'N(q, q̇): ∂V/∂q and joint friction',
+  'Springs & dampers': 'forces of springs and dampers through ∂ℓ/∂q',
+  'Equations of motion': 'M q̈ + C q̇ + N = τ, row by row',
+  'Loop-closure constraints': 'φ(q) = 0, the constraint Jacobian and the multipliers',
+  'Tool kinematics & Jacobians': 'the tool point and how joint rates move it',
+  Notation: 'the shorthands used above',
+};
+
 const portName = (frac: number) =>
   frac === 0 ? 'origin' : frac === 1 ? 'tip' : `$${frac.toFixed(2).replace(/0+$/, '')}\\,l$ along`;
 
@@ -37,8 +54,11 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
       id: `d-${steps.length}`,
       title: `${steps.length + 1}. ${title}`,
       ...(cite ? { cite } : {}),
+      ...(SUMMARY[title] ? { summary: SUMMARY[title] } : {}),
       build,
     });
+  /** Body index of a body label ("1" → 0). */
+  const idx = (label: string) => Number(label) - 1;
 
   step('Topology & generalised coordinates', 'MLS §4.2', (b) => {
     const nb = mech.bodies.length;
@@ -63,10 +83,13 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
     );
     for (const body of d.bodies) {
       const p = body.parent;
-      b.math(String.raw`g_{${p}${body.label}} = ${texMat(body.gLocal)}`);
+      const focus = `frame:${idx(body.label)}`;
+      b.math(String.raw`g_{${p}${body.label}} = ${texMat(body.gLocal)}`, { focus });
       if (p !== 's')
-        b.math(String.raw`g_{s${body.label}} = g_{s${p}}\,g_{${p}${body.label}} = ${texMat(body.gWorld)}`);
-      b.math(String.raw`\varphi_{${body.label}} = ${body.phi}`);
+        b.math(String.raw`g_{s${body.label}} = g_{s${p}}\,g_{${p}${body.label}} = ${texMat(body.gWorld)}`, {
+          focus,
+        });
+      b.math(String.raw`\varphi_{${body.label}} = ${body.phi}`, { focus });
     }
   });
 
@@ -77,6 +100,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
     for (const body of d.bodies) {
       b.math(
         String.raw`p_{${body.label}} = ${col(body.com)},\quad v_{${body.label}} = \dot p_{${body.label}} = ${col(body.vcom)},\quad \omega_{${body.label}} = ${body.omega}`,
+        { focus: `com:${idx(body.label)}` },
       );
     }
   });
@@ -84,14 +108,16 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
   step('Kinetic energy', 'MLS (4.10)', (b) => {
     b.text('Each body contributes translational and rotational kinetic energy (about its centre of mass):');
     b.math(String.raw`T_i = \tfrac12 m_i\,v_i^{T} v_i + \tfrac12 I_i\,\omega_i^2`);
-    for (const body of d.bodies) b.math(String.raw`T_{${body.label}} = ${body.T}`);
-    b.math(String.raw`T = \sum_i T_i = ${d.T}`);
+    for (const body of d.bodies)
+      b.math(String.raw`T_{${body.label}} = ${body.T}`, { focus: `body:${idx(body.label)}` });
+    b.math(String.raw`T = \sum_i T_i = ${d.T}`, { focus: 'all' });
   });
 
   step('Potential energy', undefined, (b) => {
     b.text('Gravity acts on each centre of mass: $V_i = m_i\\,g\\,y_i$.');
-    for (const body of d.bodies) b.math(String.raw`V_{${body.label}} = ${body.V}`);
-    b.math(String.raw`V = \sum_i V_i = ${d.V}`);
+    for (const body of d.bodies)
+      b.math(String.raw`V_{${body.label}} = ${body.V}`, { focus: `com:${idx(body.label)}` });
+    b.math(String.raw`V = \sum_i V_i = ${d.V}`, { focus: 'gravity' });
   });
 
   step('Inertia matrix', 'MLS (4.20)', (b) => {
@@ -99,7 +125,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
       'The kinetic energy is a quadratic form in the velocities, $T = \\tfrac12 \\dot q^{T} M(q)\\,\\dot q$, so the inertia matrix is its Hessian. It is symmetric and positive definite.',
     );
     b.math(String.raw`M_{ij}(q) = \frac{\partial^2 T}{\partial \dot q_i\,\partial \dot q_j}`);
-    b.math(String.raw`${cls('t-m', 'M(q)')} = ${texMat(d.M)}`);
+    b.math(String.raw`${cls('t-m', 'M(q)')} = ${texMat(d.M)}`, { focus: 'all' });
   });
 
   step('Christoffel symbols & Coriolis matrix', 'MLS (4.22)–(4.23)', (b) => {
@@ -120,7 +146,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
       });
     }
     b.math(String.raw`C_{ij}(q, \dot q) = \sum_k \Gamma_{ijk}\,\dot q_k`);
-    b.math(String.raw`${cls('t-c', String.raw`C(q,\dot q)`)} = ${texMat(d.C)}`);
+    b.math(String.raw`${cls('t-c', String.raw`C(q,\dot q)`)} = ${texMat(d.C)}`, { focus: 'velocities' });
     b.text(
       'With this particular $C$, $\\dot M - 2C$ is skew-symmetric (MLS Lemma 4.2): the Coriolis forces do no work, which is why the energy of the unforced system is conserved.',
     );
@@ -130,6 +156,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
     b.text('Conservative forces come from the potential; viscous joint friction adds $\\beta_i \\dot q_i$:');
     b.math(
       String.raw`${cls('t-n', String.raw`N(q,\dot q)`)} = \frac{\partial V}{\partial q} + \operatorname{diag}(\beta)\,\dot q = ${col(d.N)}`,
+      { focus: 'gravity' },
     );
   });
 
@@ -149,6 +176,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
           String.raw`p_a = ${where(e.a, e.sa)} = ${col(e.pa)},\quad p_b = ${where(e.b, e.sb)} = ${col(e.pb)}`,
           {
             caption: `${kind} ${k + 1}: ${e.a === 's' ? 'ground' : `body ${e.a}`} ↔ body ${e.b} · k = ${e.k} N/m, ℓ₀ = ${e.l0} m, c = ${e.d} N·s/m`,
+            focus: `element:${k}`,
           },
         );
         b.math(
@@ -203,6 +231,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
           String.raw`p_a = ${where(c.a, c.sa)} = ${col(c.pa)},\quad p_b = ${where(c.b, c.sb)} = ${col(c.pb)},\quad ${law}`,
           {
             caption: `${c.kind} ${k + 1}: ${c.a === 's' ? 'ground' : `body ${c.a}`} ↔ body ${c.b}`,
+            focus: `loop:${k}`,
           },
         );
       });
@@ -233,7 +262,7 @@ export function derivationSections(mech: Mechanism, d: Derivation): SectionSpec[
       b.text(
         `The tool is the tip of body ${tool.body}. Its position and the Jacobians map joint velocities to tool velocities:`,
       );
-      b.math(String.raw`p_{st}(q) = ${col(tool.p)},\qquad \varphi_{t} = ${tool.phi}`);
+      b.math(String.raw`p_{st}(q) = ${col(tool.p)},\qquad \varphi_{t} = ${tool.phi}`, { focus: 'tool' });
       b.math(
         String.raw`\dot p_{st} = \frac{\partial p_{st}}{\partial q}\,\dot q,\qquad \frac{\partial p_{st}}{\partial q} = ${texMat(tool.Jp)}`,
       );

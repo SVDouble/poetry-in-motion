@@ -17,6 +17,8 @@ pub struct ElementForces {
     /// Energy stored in the springs, ½ Σ k (ℓ − ℓ₀)², and power lost in the dampers, Σ d ℓ̇².
     pub energy: f64,
     pub dissipation: f64,
+    /// Force along each element, k (ℓ − ℓ₀) + c ℓ̇.
+    pub tension: [f64; MAXE],
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +85,25 @@ pub struct AuxOffsets {
     pub tool_p: usize,
     pub jp: usize,
     pub js: usize,
+    /// Centre-of-mass velocities (2 nb), their Jacobians ∂v/∂q̇ (2 nb × n, row-major) and ∂v/∂q · q̇ (2 nb).
+    pub vcom: usize,
+    pub jcom: usize,
+    pub dvcom: usize,
     pub len: usize,
+}
+
+/// Centre-of-mass kinematics for a = J q̈ + (∂v/∂q) q̇: the Jacobians ∂v/∂q̇ (2 nb × n, row-major) and the
+/// terms (∂v/∂q) q̇ (2 nb).
+fn com_kinematics(d: &Derived) -> (Vec<Expr>, Vec<Expr>) {
+    let (n, vars) = (d.n(), d.vars);
+    let s = vars.space();
+    let vcom: Vec<&Expr> = d.bodies.iter().flat_map(|b| [&b.vcom[0], &b.vcom[1]]).collect();
+    let jcom = vcom.iter().flat_map(|v| (0..n).map(|j| v.diff_var(vars.qd(j)))).collect();
+    let dvcom = vcom
+        .iter()
+        .map(|v| (0..n).fold(s.zero(), |acc, j| acc.add(&d.dq(v, j).mul(&s.var(vars.qd(j))))))
+        .collect();
+    (jcom, dvcom)
 }
 
 fn push<'a>(field: &mut usize, xs: &[&'a Expr], all: &mut Vec<&'a Expr>) {
@@ -152,6 +172,11 @@ impl Model {
         push(&mut off.tool_p, &tool_p, &mut aux_exprs);
         push(&mut off.jp, &jp, &mut aux_exprs);
         push(&mut off.js, &js, &mut aux_exprs);
+        let vcom: Vec<&Expr> = d.bodies.iter().flat_map(|b| [&b.vcom[0], &b.vcom[1]]).collect();
+        let (jcom, dvcom) = com_kinematics(d);
+        push(&mut off.vcom, &vcom, &mut aux_exprs);
+        push(&mut off.jcom, &jcom.iter().collect::<Vec<_>>(), &mut aux_exprs);
+        push(&mut off.dvcom, &dvcom.iter().collect::<Vec<_>>(), &mut aux_exprs);
         off.len = aux_exprs.len();
 
         let points = Tape::compile(vars, &frame_xy);
@@ -232,7 +257,13 @@ impl Model {
     /// Forces, stored energy and losses of the springs and dampers at a state.
     pub fn element_forces(&mut self, q: &[f64], qd: &[f64]) -> ElementForces {
         let n = self.n;
-        let mut f = ElementForces { spring: [0.0; MAXN], damper: [0.0; MAXN], energy: 0.0, dissipation: 0.0 };
+        let mut f = ElementForces {
+            spring: [0.0; MAXN],
+            damper: [0.0; MAXN],
+            energy: 0.0,
+            dissipation: 0.0,
+            tension: [0.0; MAXE],
+        };
         let Some(tape) = &mut self.elements else { return f };
         let ne = self.element_values.len();
         let mut buf = [0.0; MAXE * (MAXN + 1)];
@@ -248,6 +279,7 @@ impl Model {
             let dl = |j: usize| grad[j] / (2.0 * l);
             let rate: f64 = (0..n).map(|j| dl(j) * qd[j]).sum();
             let (fs, fd) = (k * (l - l0), d * rate);
+            f.tension[e] = fs + fd;
             for j in 0..n {
                 f.spring[j] -= fs * dl(j);
                 f.damper[j] -= fd * dl(j);

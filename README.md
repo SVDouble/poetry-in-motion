@@ -49,6 +49,15 @@ Nothing is special-cased: the cart-pole and the arm are presets of the builder, 
 M, C, N, V, B and the tool Jacobian of whatever was built. Closed loops are handled as holonomic constraints
 φ(q) = 0, derived symbolically like everything else (MLS ch. 6): `M q̈ + C q̇ + N + Aᵀλ = τ`, `A = ∂φ/∂q`.
 
+Seeing the dynamics: the View menu draws velocities of the centres of mass, forces (weights, springs and
+dampers, loop forces from the multipliers λ, the push), and a **free-body diagram** of any clicked body — cut
+free, with its joint reactions from Newton's law for the subtree it carries, the reactions it passes on, its
+joint moments and m a as the resultant. Per-joint **torque bars** show which of M q̈, C q̇, N makes up τ; an
+**energy gauge** shows what is stored, supplied and lost. Pausing shows a **timeline**: scrub back through
+the last 20 s, step frame by frame, resume from any moment. Pointing at a formula in the derivation lights up
+what it is about in the figure (a frame, a centre of mass, gravity, a spring, a loop, the tool); hovering a
+joint or a centre of mass shows its numbers.
+
 The whole app is drawn like a mechanics textbook: ink on paper in Computer Modern, and the mechanism as a
 figure in the symbols of such texts — bars, hinge circles (a second ring for a driven joint), pin supports on
 hatched ground, carts on rails, the centre-of-mass symbol, joint angles as arcs from dash-dotted reference

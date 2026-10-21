@@ -37,9 +37,11 @@ export class SectionBuilder {
   }
 
   /** Display maths. Use `this.live` inside `src` for live numbers. */
-  math(src: string, opts: { active?: () => boolean; caption?: string } = {}): HTMLElement {
+  math(src: string, opts: { active?: () => boolean; caption?: string; focus?: string } = {}): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'math';
+    // what the formula is about, lit up in the figure while it is pointed at (see `parseFocus`)
+    if (opts.focus) wrap.dataset.focus = opts.focus;
     const m = document.createElement('div');
     m.className = 'math-body';
     wrap.append(m);
@@ -66,6 +68,8 @@ export interface SectionSpec {
   title: string;
   /** Short reference shown next to the title, e.g. "MLS (4.24)". */
   cite?: string;
+  /** One line on what the step does (the table of contents). */
+  summary?: string;
   open?: boolean;
   build(b: SectionBuilder): void;
 }
@@ -96,13 +100,30 @@ export class EquationPanel {
   }
 
   /** Render `specs` into `into`, or into the panel's own element (cleared first). */
-  mount(specs: SectionSpec[], into?: HTMLElement): void {
+  mount(specs: SectionSpec[], into?: HTMLElement, toc = false): void {
     this.clear(!into);
     this.root = into ?? this.home;
     const openState = loadOpenState();
+    // a sticky table of contents: every step, its one-line summary on hover, a click opens and goes there
+    const links: [HTMLButtonElement, () => HTMLDetailsElement][] = [];
+    if (toc) {
+      const nav = document.createElement('nav');
+      nav.className = 'eq-toc';
+      for (const spec of specs) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        const m = /^(\d+)\.\s*(.*)$/.exec(spec.title);
+        b.innerHTML = m ? `<b>${m[1]}</b> ${m[2]}` : spec.title;
+        if (spec.summary) b.title = spec.summary;
+        nav.append(b);
+        links.push([b, () => document.getElementById(spec.id) as HTMLDetailsElement]);
+      }
+      this.root.append(nav);
+    }
     for (const spec of specs) {
       const details = document.createElement('details');
       details.className = 'eq-section';
+      details.id = spec.id;
       details.open = openState[spec.id] ?? spec.open ?? true;
       details.addEventListener('toggle', () => {
         openState[spec.id] = details.open;
@@ -118,6 +139,13 @@ export class EquationPanel {
       spec.build(builder);
       this.sections.push({ details, builder, visible: true });
       this.observer.observe(details);
+    }
+    for (const [b, target] of links) {
+      b.addEventListener('click', () => {
+        const d = target();
+        d.open = true;
+        d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
     }
   }
 

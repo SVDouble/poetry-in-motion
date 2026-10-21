@@ -118,6 +118,9 @@ export class TestCore {
       case 'reset':
         c.reset();
         return;
+      case 'advance':
+        c.step(m.steps);
+        return;
       default: // build, run, speed: not used by tests through this path
     }
   }

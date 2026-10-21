@@ -2132,3 +2132,119 @@ body:not([data-stage="build"]) .palette {
 .preset-card canvas {
   display: block;
 }
+
+/* ---------- gauges, timeline, readouts, table of contents ---------- */
+
+.gauges {
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 1px solid var(--ink);
+  background: var(--veil);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.gauges[hidden] {
+  display: none;
+}
+
+.gauges canvas {
+  /* not the figure's full-size canvases */
+  position: static;
+  display: block;
+}
+
+.timeline {
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--ink);
+  background: var(--veil);
+  box-shadow: var(--shadow);
+  max-width: calc(100% - 24px);
+}
+
+.timeline[hidden] {
+  display: none;
+}
+
+.timeline input[type="range"] {
+  width: 240px;
+  min-width: 80px;
+  accent-color: var(--ink);
+}
+
+.timeline .btn {
+  white-space: nowrap;
+}
+
+.timeline-time {
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 8.5em;
+}
+
+.readout {
+  pointer-events: none;
+  padding: 4px 8px;
+  border: 1px solid var(--ink);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.readout[hidden] {
+  display: none;
+}
+
+/* pointing at a formula that the figure can show */
+.math[data-focus] {
+  cursor: help;
+}
+
+.math[data-focus]:hover {
+  background: var(--tint);
+  border-left-color: var(--accent);
+}
+
+.eq-toc {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  margin: 0 -16px 6px;
+  padding: 6px 16px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.eq-toc button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.eq-toc button b {
+  color: var(--text);
+}
+
+.eq-toc button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
