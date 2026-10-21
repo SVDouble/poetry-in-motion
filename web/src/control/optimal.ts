@@ -1,6 +1,5 @@
 /** Pages of the optimal controllers about the equilibrium q*: LQR and MPC. */
 import type { SectionBuilder } from '../eq/panel';
-import { sci } from '../eq/tex';
 import { idleNote, type Page, type PageContext } from './page';
 
 /** The linearisation about q* in tangent coordinates (shared by LQR, MPC and the swing-up catch). */
@@ -21,7 +20,7 @@ export function linearisation(b: SectionBuilder, c: PageContext): void {
     String.raw`A = ${b.live.mat(2 * r, 2 * r, (i, j) => snap.v('LIN_A', i * 2 * r + j))},\quad B_x = ${b.live.mat(2 * r, nu, (i, j) => snap.v('LIN_B', i * nu + j))}`,
   );
   b.math(
-    String.raw`u^{*} = ${b.live.vec(nu, (i) => snap.v('U_FF', i))},\qquad \Big\| ${loops ? String.raw`B u^{*} - A^{T}\lambda^{*}` : 'B u^{*}'} - \frac{\partial V}{\partial q}(q^{*})\Big\|_\infty = ${b.live.num(() => snap.v('EQ_RESIDUAL'), sci)}`,
+    String.raw`u^{*} = ${b.live.vec(nu, (i) => snap.v('U_FF', i))},\qquad \Big\| ${loops ? String.raw`B u^{*} - A^{T}\lambda^{*}` : 'B u^{*}'} - \frac{\partial V}{\partial q}(q^{*})\Big\|_\infty = ${b.live.num(() => snap.v('EQ_RESIDUAL'))}`,
     { caption: 'feed-forward holding q*; q* is an equilibrium only if the residual vanishes' },
   );
 }

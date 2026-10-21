@@ -32,7 +32,16 @@ type LabFn = (c: PageContext) => Lab;
 function hierarchy(c: PageContext, key: string): Experiment[] {
   if (!c.d.tool || c.loops) return [];
   const leaks = [tele(key, 'leak'), tele(key, 'leak_sec')];
-  const out: Experiment[] = [];
+  const out: Experiment[] = [
+    {
+      title: 'Reaching beyond the workspace',
+      goal: 'Aim at a point twice as far from the base as the tool: out of reach.',
+      actions: [{ do: 'hold' }, { do: 'reach', factor: 2 }],
+      plots: [{ ids: range(c.n, (i) => `q:${i}`) }, { ids: ['taskerr', 'w'] }],
+      notice:
+        'The arm stretches towards the target and stays there, at rest. A spring towards a point it can never reach would pull ever harder against the stretched pose, where $J$ loses the radial direction ($w \\to 0$, $\\Lambda$ unbounded) — so the reference stops at the nearest reachable point, found by inverse kinematics (Levenberg–Marquardt, which ends there instead of flipping the elbow), a hair inside the boundary. What is left near the singularity is handled by adaptive damped least squares (exact while the task is well conditioned, bounded as it loses a direction) and by damping the motion the task lets go of. The tool error stays: no controller can reach further than the arm.',
+    },
+  ];
   if (c.dof >= 5) {
     out.push({
       title: 'A stack of tasks',

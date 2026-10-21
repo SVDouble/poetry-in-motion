@@ -1,5 +1,5 @@
 /** Pages of the joint-space controllers. */
-import { sci, texMat } from '../eq/tex';
+import { texMat } from '../eq/tex';
 import { solve } from './nullspace';
 import { actuatedIdx, col, idleNote, type Page, type PageContext, qVec, realise } from './page';
 
@@ -231,7 +231,7 @@ export const passivity = (c: PageContext): Page => {
     concrete(b) {
       references(c, b);
       b.math(
-        String.raw`s = ${b.live.vec(n, (i) => c.tele('s', i))},\quad V = ${b.live.num(() => c.tele('lyap'))},\quad \dot V = ${b.live.num(() => c.tele('lyap_dot'), sci)}`,
+        String.raw`s = ${b.live.vec(n, (i) => c.tele('s', i))},\quad V = ${b.live.num(() => c.tele('lyap'))},\quad \dot V = ${b.live.num(() => c.tele('lyap_dot'))}`,
         { caption: 'the Lyapunov function below, evaluated on the simulation' },
       );
       realise(b, c, String.raw`M\ddot q_r + C\dot q_r + N - K_D s`);

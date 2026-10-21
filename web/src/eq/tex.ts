@@ -14,7 +14,9 @@ export const fix: Format = (v) => {
   if (!Number.isFinite(v)) return '—';
   const a = Math.abs(v);
   const s = a >= 1000 ? a.toFixed(0) : a >= 100 ? a.toFixed(1) : a >= 10 ? a.toFixed(2) : a.toFixed(3);
-  return (v < 0 && Number(s) !== 0 ? MINUS : '') + s;
+  // below the shown precision a value is zero: no flicker of round-off digits, no "−0.000"
+  if (Number(s) === 0) return '0';
+  return (v < 0 ? MINUS : '') + s;
 };
 
 export const sci: Format = (v) => {

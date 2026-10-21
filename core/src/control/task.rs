@@ -33,9 +33,14 @@ fn task_inertia(n: usize, t: &Terms, jp: &[f64]) -> Option<([f64; 4], [f64; 2 * 
     Some(([d / det, -b / det, -b / det, a / det], minv_jt))
 }
 
-/// Effective task mass for the damping of a virtual spring: mean eigenvalue of Λ.
+/// Effective task mass for the damping of a virtual spring: the harmonic mean of Λ's eigenvalues,
+/// 2 / tr(J M⁻¹ Jᵀ). (Their plain mean is unbounded at a singular pose, and so would be the damping gain:
+/// far too stiff for a 1 ms controller.)
 fn task_mass(n: usize, t: &Terms, jp: &[f64]) -> f64 {
-    task_inertia(n, t, jp).map_or(1.0, |(l, _)| f64::midpoint(l[0], l[3])).max(1e-6)
+    task_inertia(n, t, jp).map_or(1.0, |(_, minv_jt)| {
+        let tr: f64 = (0..2).map(|r| (0..n).map(|c| jp[r * n + c] * minv_jt[c * 2 + r]).sum::<f64>()).sum();
+        2.0 / tr.max(1e-12)
+    })
 }
 
 /// One level of a [`Stack`]: its restricted Jacobian Ĵ = J P (rows × n), the damped task inertia Λ̂ and the
@@ -48,15 +53,32 @@ struct Level {
     pinv: [f64; 2 * MAXN],
 }
 
-/// Damping of a level's command, relative to the task's own (unprojected) size: directions the levels
-/// above have nearly used up, or a singular pose, get a bounded command instead of an exploding one. The
-/// primary task stays nearly exact; lower levels are best-effort and damped more, so an unreachable goal
-/// rests at the boundary instead of flipping the arm through the singularity there.
-const DLS_PRIMARY: f64 = 1e-2;
-const DLS_SECONDARY: f64 = 1e-1;
+/// Adaptive damped least squares (Nakamura & Hanafusa; Chiaverini): for an eigen-direction μ of Ĵ M⁻¹ Ĵᵀ
+/// the command uses μ / (μ² + δ²) with δ = 0 while μ ≥ ε (exact) and δ = δ_max (1 − μ/ε) below it, so the
+/// gain stays bounded (≈ 1 / 2δ_max) and fades to zero at a singularity instead of exploding next to it.
+/// ε and δ_max are fractions of the task's own (unprojected) size; lower levels are best-effort, damped
+/// earlier and more.
+fn damped_inverse(mu: f64, eps: f64, dmax: f64) -> f64 {
+    if mu <= 0.0 {
+        return 0.0;
+    }
+    let d = if mu < eps { dmax * (1.0 - mu / eps) } else { 0.0 };
+    mu / (mu * mu + d * d)
+}
+const DLS_PRIMARY: (f64, f64) = (0.02, 0.01);
 
-/// Joint damping (1/s) in the tool's null space under the secondary levels.
-const NULL_DAMPING: f64 = 8.0;
+/// How much of an eigen-direction (relative size r = μ / task size) a level keeps out of the levels below:
+/// all of it above 1e-3, none below 1e-4, a smoothstep in between (continuous, so nothing switches).
+fn keep_weight(r: f64) -> f64 {
+    let (lo, hi) = (1e-4, 1e-3);
+    let t = ((r - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+const DLS_SECONDARY: (f64, f64) = (0.1, 0.05);
+
+/// Joint damping (1/s) in what the tool task does not serve: its null space, and near a singularity the
+/// directions its damped inverse lets go of (an unreachable target at the boundary of the workspace).
+const SOFT_DAMPING: f64 = 8.0;
 
 /// Strict task priorities in the metric of M (Khatib; Siciliano–Slotine): level k acts only in the null
 /// space of levels 1 … k−1, through the motion projector `P_k = P_{k−1} − Ĵ#_k Ĵ_k` (P₀ = I). Torques of
@@ -113,17 +135,20 @@ impl Stack {
             })
             .sum::<f64>()
             .max(1e-300);
-        let floor = 1e-6 * scale;
-        // per eigen-direction μ of A: the projector uses the exact truncated inverse 1/μ (lower levels must
-        // be confined exactly), the command the damped μ/(μ² + δ²) — any Λ̂ keeps the command out of the
-        // levels above, since M⁻¹Ĵᵀ lies in their null space
-        let delta = if self.levels == 0 { DLS_PRIMARY } else { DLS_SECONDARY } * scale;
+        // per eigen-direction μ of A: the projector uses the exact inverse 1/μ (lower levels must be confined
+        // exactly), faded out smoothly for directions the levels above (or a singular pose) have all but used
+        // up — a hard cut-off would switch that direction in and out of the null space as the arm hovers at
+        // the threshold, kicking lower levels on and off (a limit cycle at a stretched arm). The command uses
+        // the damped μ/(μ² + δ²): any Λ̂ keeps it out of the levels above, since M⁻¹Ĵᵀ lies in their null space
+        let fade = |mu: f64| keep_weight(mu / scale);
+        let (eps, dmax) = if self.levels == 0 { DLS_PRIMARY } else { DLS_SECONDARY };
+        let (eps, dmax) = (eps * scale, dmax * scale);
         self.levels += 1;
         let (exact, cmd) = if rows == 1 {
             let x = a(0, 0);
             (
-                [if x > floor { 1.0 / x } else { 0.0 }, 0.0, 0.0, 0.0],
-                [if x > floor { x / (x * x + delta * delta) } else { 0.0 }, 0.0, 0.0, 0.0],
+                [if x > 0.0 { fade(x) / x } else { 0.0 }, 0.0, 0.0, 0.0],
+                [damped_inverse(x, eps, dmax), 0.0, 0.0, 0.0],
             )
         } else {
             let (x, y, z) = (a(0, 0), a(0, 1), a(1, 1));
@@ -145,7 +170,8 @@ impl Stack {
                 let (vx, vy) = (vx / norm, vy / norm);
                 let outer = [vx * vx, vx * vy, vx * vy, vy * vy];
                 // a direction (or a whole task) that cannot move at all contributes nothing — not 0/0
-                let (e, c) = if mu > floor { (1.0 / mu, mu / (mu * mu + delta * delta)) } else { (0.0, 0.0) };
+                let (e, c) =
+                    if mu > 0.0 { (fade(mu) / mu, damped_inverse(mu, eps, dmax)) } else { (0.0, 0.0) };
                 for k in 0..4 {
                     exact[k] += outer[k] * e;
                     cmd[k] += outer[k] * c;
@@ -181,12 +207,6 @@ impl Stack {
         core::array::from_fn(|i| if i < n { (0..n).map(|k| self.p[k * n + i] * tau[k]).sum() } else { 0.0 })
     }
 
-    /// P v: the part of `v` that leaves every level pushed so far untouched.
-    fn apply(&self, v: &VecN) -> VecN {
-        let n = self.n;
-        core::array::from_fn(|i| if i < n { (0..n).map(|k| self.p[i * n + k] * v[k]).sum() } else { 0.0 })
-    }
-
     /// P (pref − q̈): the part of a preferred acceleration that leaves every level pushed so far untouched.
     fn project_accel(&self, pref: &VecN, qdd: &VecN) -> VecN {
         let n = self.n;
@@ -206,6 +226,27 @@ impl Stack {
 }
 
 impl Level {
+    /// v − Ĵ# (J v): what this level's (damped) command leaves of v.
+    fn soft_complement(&self, n: usize, j: &[f64], v: &VecN) -> VecN {
+        let jv: [f64; 2] =
+            core::array::from_fn(
+                |r| if r < self.rows { (0..n).map(|c| j[r * n + c] * v[c]).sum() } else { 0.0 },
+            );
+        core::array::from_fn(|i| {
+            if i < n { v[i] - (0..self.rows).map(|r| self.pinv[i * 2 + r] * jv[r]).sum::<f64>() } else { 0.0 }
+        })
+    }
+
+    /// Jᵀ Λ̂ J v (n): the part of M v this level's command accounts for (for passive soft damping).
+    fn task_part(&self, n: usize, j: &[f64], v: &VecN) -> VecN {
+        let jv: [f64; 2] =
+            core::array::from_fn(
+                |r| if r < self.rows { (0..n).map(|c| j[r * n + c] * v[c]).sum() } else { 0.0 },
+            );
+        let f: [f64; 2] = core::array::from_fn(|r| (0..self.rows).map(|s| self.lam[r * 2 + s] * jv[s]).sum());
+        core::array::from_fn(|i| if i < n { (0..self.rows).map(|r| j[r * n + i] * f[r]).sum() } else { 0.0 })
+    }
+
     /// Ĵᵀ Λ̂ a: the torque that gives this level the acceleration `a` without touching the levels above.
     fn torque(&self, n: usize, a: [f64; 2]) -> VecN {
         let f: [f64; 2] = core::array::from_fn(|r| (0..self.rows).map(|s| self.lam[r * 2 + s] * a[s]).sum());
@@ -272,6 +313,7 @@ pub struct Vmc {
     lyap_prev: Option<f64>,
     lyap_dot: f64,
     sec: Secondary,
+    tau_soft: VecN,
 }
 
 impl Controller for Vmc {
@@ -295,6 +337,7 @@ impl Controller for Vmc {
         // null space of everything above it
         self.projector.clear();
         self.tau_null = [0.0; MAXN];
+        self.tau_soft = [0.0; MAXN];
         self.sec = Secondary::default();
         self.leak = 0.0;
         if c.k.is_none()
@@ -302,8 +345,13 @@ impl Controller for Vmc {
         {
             let tasks = plan.sub_tasks(model, c.q, c.qd);
             self.sec.record(&tasks);
-            stack.push(2, &tool.jp);
-
+            let primary = stack.push(2, &tool.jp);
+            // passive damping of what the tool task does not see: −d (M − Jᵀ Λ̂ J) q̇ is symmetric positive
+            // semi-definite (Λ̂ ≤ Λ), vanishes along the task and catches the elbow mode at a singular pose
+            let qd: VecN = core::array::from_fn(|i| if i < n { c.qd[i] } else { 0.0 });
+            let (mq, task) = (mat_vec(n, &c.terms.m, &qd), primary.task_part(n, &tool.jp, &qd));
+            self.tau_soft =
+                core::array::from_fn(|i| if i < n { -SOFT_DAMPING * (mq[i] - task[i]) } else { 0.0 });
             let mut below: Vec<VecN> = Vec::with_capacity(tasks.len() + 1);
             for t in &tasks {
                 let lv = stack.push(t.rows, &t.j);
@@ -323,7 +371,8 @@ impl Controller for Vmc {
         self.w = manipulability(n, &tool.jp);
         let mut dv = [0.0; MAXN];
         model.gravity.eval(c.q, c.qd, &mut dv);
-        let f: VecN = core::array::from_fn(|i| self.tau_task[i] + dv[i] + self.tau_null[i]);
+        let f: VecN =
+            core::array::from_fn(|i| self.tau_task[i] + dv[i] + self.tau_null[i] + self.tau_soft[i]);
 
         let mq = mat_vec(n, &c.terms.m, c.qd);
         let ke = 0.5 * (0..n).map(|i| c.qd[i] * mq[i]).sum::<f64>();
@@ -384,15 +433,15 @@ fn stacked_accel(
     let tasks = plan.sub_tasks(model, c.q, c.qd);
     sec.record(&tasks);
     let mut qdd = [0.0; MAXN];
-    stack.push(2, &tool.jp).resolve(n, &tool.jp, [xdd[0] - tool.jdqd[0], xdd[1] - tool.jdqd[1]], &mut qdd);
+    let primary = stack.push(2, &tool.jp);
+    primary.resolve(n, &tool.jp, [xdd[0] - tool.jdqd[0], xdd[1] - tool.jdqd[1]], &mut qdd);
     let task_only = qdd;
-    // a base of damping in the tool's null space: the secondary levels override it along their own
-    // directions, and where they fade (an unreachable goal at a singular boundary) it lets the arm settle
-    if !tasks.is_empty() {
-        let damp = stack.apply(&core::array::from_fn(|i| if i < n { -NULL_DAMPING * c.qd[i] } else { 0.0 }));
-        for i in 0..n {
-            qdd[i] += damp[i];
-        }
+    // damping in what the tool task does not serve: its null space (the levels below override it along
+    // their own directions), and near a singularity the directions its damped command lets go of
+    let soft: VecN = core::array::from_fn(|i| if i < n { -SOFT_DAMPING * c.qd[i] } else { 0.0 });
+    let damp = primary.soft_complement(n, &tool.jp, &soft);
+    for i in 0..n {
+        qdd[i] += damp[i];
     }
     let mut after = Vec::with_capacity(tasks.len());
     for t in &tasks {
@@ -400,7 +449,9 @@ fn stacked_accel(
         stack.push(t.rows, &t.j).resolve(n, &t.j, b, &mut qdd);
         after.push(qdd);
     }
-    let fix = stack.project_accel(pref, &qdd);
+    // what remains of the null space is set to the preference — damped, so that it is never left free
+    let pref: VecN = core::array::from_fn(|i| pref[i] + soft[i]);
+    let fix = stack.project_accel(&pref, &qdd);
     for i in 0..n {
         qdd[i] += fix[i];
     }
@@ -415,6 +466,28 @@ fn stacked_accel(
     }
     let leak = moved(&tool.jp, 2, &task_only);
     (qdd, task_only, sec, leak)
+}
+
+/// Inputs for `B u − Aᵀλ = bias + commanded` with the commanded part scaled by the largest α ∈ [0, 1] that
+/// keeps every |u| ≤ u_max. Under torque limits the arm then accelerates more gently along the same
+/// direction; clipping each joint on its own would distort the motion and break the cancellation the
+/// law relies on (an unreachable target far away would set the arm spinning).
+fn feasible(model: &Model, c: &Ctx<'_>, bias: &VecN, commanded: &VecN) -> VecN {
+    let (ub, _) = inverse_dynamics(model, c.k, bias);
+    let (uc, _) = inverse_dynamics(model, c.k, commanded);
+    let alpha = (0..model.nu)
+        .map(|a| {
+            if uc[a] > 1e-12 {
+                (c.umax - ub[a]) / uc[a]
+            } else if uc[a] < -1e-12 {
+                (-c.umax - ub[a]) / uc[a]
+            } else {
+                1.0
+            }
+        })
+        .fold(1.0_f64, f64::min)
+        .clamp(0.0, 1.0);
+    core::array::from_fn(|a| ub[a] + alpha * uc[a])
 }
 
 /// M⁻¹ τ₀ scaled: the null-space preference as an acceleration.
@@ -462,18 +535,15 @@ impl Controller for Impedance {
         self.sec = sec;
         let mq = mat_vec(n, &c.terms.m, &qdd);
         let h = c.terms.h(n, c.qd);
-        let f: VecN = core::array::from_fn(|i| {
-            if i < n {
-                mq[i] + h[i] - (0..2).map(|r| tool.jp[r * n + i] * plan.f_ext[r]).sum::<f64>()
-            } else {
-                0.0
-            }
+        // M q̈ + C q̇ + N − Jᵀ F_ext: the commanded part M q̈, and what holds the arm and cancels the push
+        let bias: VecN = core::array::from_fn(|i| {
+            if i < n { h[i] - (0..2).map(|r| tool.jp[r * n + i] * plan.f_ext[r]).sum::<f64>() } else { 0.0 }
         });
         let dq: VecN = core::array::from_fn(|i| qdd[i] - qdd_task[i]);
         self.tau_null = mat_vec(n, &c.terms.m, &dq);
         self.leak = leak;
         self.w = manipulability(n, &tool.jp);
-        inverse_dynamics(model, c.k, &f).0
+        feasible(model, c, &bias, &mq)
     }
 
     fn telemetry(&self, t: &mut Telemetry<'_>) {
@@ -530,8 +600,7 @@ impl Controller for Admittance {
         let (qdd, ..) = stacked_accel(plan, model, c, tool, xdd, &pref);
         let mq = mat_vec(n, &c.terms.m, &qdd);
         let h = c.terms.h(n, c.qd);
-        let f: VecN = core::array::from_fn(|i| mq[i] + h[i]);
-        inverse_dynamics(model, c.k, &f).0
+        feasible(model, c, &h, &mq)
     }
 
     fn telemetry(&self, t: &mut Telemetry<'_>) {

@@ -5,10 +5,18 @@
  */
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { fix, sci } from '../eq/tex';
+import { fix } from '../eq/tex';
 
-/** Fixed point, or scientific for tiny non-zero values (residuals, leakage). */
-const num = (v: number) => (v !== 0 && Math.abs(v) < 1e-3 ? sci(v) : fix(v));
+/** Smallest vertical span of a plot: round-off noise (1e-15 … 1e-6) must not be magnified into curves. */
+const MIN_SPAN = 1e-3;
+
+/** y-range of a plot: the data with 5 % margin, but never narrower than MIN_SPAN (relative for large values). */
+function yRange(_u: uPlot, lo: number | null, hi: number | null): uPlot.Range.MinMax {
+  if (lo === null || hi === null || !Number.isFinite(lo) || !Number.isFinite(hi)) return [-1, 1];
+  const mid = (lo + hi) / 2;
+  const half = Math.max((hi - lo) * 0.55, (MIN_SPAN / 2) * Math.max(1, Math.abs(mid)));
+  return [mid - half, mid + half];
+}
 
 import { css, palette } from '../scene/theme';
 import { closePopover, popover } from '../ui/popover';
@@ -118,10 +126,10 @@ class PlotView {
         pxAlign: 0,
         cursor: { show: true, drag: { x: false, y: false } },
         legend: { show: false },
-        scales: { x: { time: false } },
+        scales: { x: { time: false }, y: { range: yRange } },
         axes: [
           { ...axis, values: (_u, v) => v.map((t) => `${t.toFixed(0)}s`) },
-          { ...axis, size: 46, values: (_u, v) => v.map((x) => num(x)) },
+          { ...axis, size: 46, values: (_u, v) => v.map((x) => fix(x)) },
         ],
         series: [
           {},
@@ -153,7 +161,7 @@ class PlotView {
       this.plot.setScale('x', { min: Math.max(0, t1 - WINDOW_S), max: Math.max(WINDOW_S, t1) });
     });
     this.sigs.forEach((s, k) => {
-      const text = num(s.get());
+      const text = fix(s.get());
       const v = this.values[k]!;
       if (v.textContent !== text) v.textContent = text;
     });

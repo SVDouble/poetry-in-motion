@@ -5,7 +5,7 @@
 import type { Derivation } from '../model/derivation';
 import type { Snapshot } from '../sim/layout';
 import type { SectionSpec } from './panel';
-import { sci, texMat } from './tex';
+import { texMat } from './tex';
 
 export const C_M = 't-m';
 export const C_C = 't-c';
@@ -103,7 +103,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
         b.math(
           String.raw`E - E_0 = \underbrace{${w(0)}}_{\text{inputs}} + \underbrace{${w(1)}}_{\text{push, kicks}} + \underbrace{${w(2)}}_{\text{end stops}} - \underbrace{${w(3)}}_{\text{friction}}${d.closures.length ? String.raw` + \underbrace{${w(4)}}_{\text{loops}}` : ''}`,
         );
-        b.math(String.raw`\text{residual} = ${b.live.num(() => snap.v('BUDGET'), sci)}\,\mathrm{J}`, {
+        b.math(String.raw`\text{residual} = ${b.live.num(() => snap.v('BUDGET'))}\,\mathrm{J}`, {
           caption: 'integration error (or non-physical what-ifs: switch Coriolis off and watch it grow)',
         });
       },
@@ -131,7 +131,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
           String.raw`C(q,\dot q) = ${b.live.mat(n, n, (i, j) => snap.m('C', i, j), undefined, `lv ${C_C}`)}`,
         );
         b.math(
-          String.raw`\max_{ij}\left|(\dot M - 2C) + (\dot M - 2C)^{T}\right| = ${b.live.num(() => snap.v('SKEW'), sci)}`,
+          String.raw`\max_{ij}\left|(\dot M - 2C) + (\dot M - 2C)^{T}\right| = ${b.live.num(() => snap.v('SKEW'))}`,
           { caption: 'passivity (MLS Lemma 4.2)' },
         );
       },
@@ -171,7 +171,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
       cite: 'MLS §6.1',
       build(b) {
         b.math(
-          String.raw`\varphi(q) = ${col(d.phi)} = 0,\qquad \max_i |\varphi_i| = ${b.live.num(() => snap.v('CONSTRAINT'), sci)}\,\mathrm{m}`,
+          String.raw`\varphi(q) = ${col(d.phi)} = 0,\qquad \max_i |\varphi_i| = ${b.live.num(() => snap.v('CONSTRAINT'))}\,\mathrm{m}`,
         );
         b.math(
           String.raw`\lambda = ${b.live.vec(m, (i) => snap.v('LAMBDA', i))},\qquad A^{T}\lambda = ${b.live.vec(n, (i) => snap.v('AT_LAMBDA', i))}`,

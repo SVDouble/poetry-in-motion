@@ -229,6 +229,14 @@ const CHECKS: Record<string, Check> = {
       return all(fail(lag > 0.01, `lag only ${fmt(lag)} m`), settles(tr, 'taskerr', 0.02));
     },
   },
+  'Reaching beyond the workspace': {
+    ids: () => Array.from({ length: 7 }, (_, i) => `qd:${i}`),
+    verify: (tr) => {
+      const end = tr.t[tr.t.length - 1]!;
+      const moving = Math.max(...Array.from({ length: 7 }, (_, i) => tr.max(`qd:${i}`, end - 1)));
+      return fail(moving < 1e-2, `still moving at ${fmt(moving)} rad/s`);
+    },
+  },
   'A stack of tasks': {
     ids: (key) => ['taskerr', 'orienterr', 'elbowerr', `tele:${key}:leak:0`, `tele:${key}:leak_sec:0`],
     verify: (tr, key) => {

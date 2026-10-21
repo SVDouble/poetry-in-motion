@@ -138,6 +138,11 @@ pub struct Plan {
     pub qdd_ref: VecN,
     pub ik_goal: VecN,
     pub reachable: bool,
+    /// Where the IK aims the tool: the target itself when it is reachable, otherwise (just inside) the
+    /// nearest point the mechanism can reach.
+    pub ik_point: [f64; 2],
+    /// The adaptive part of the IK's damping.
+    ik_mu: f64,
     pub x_ref: [f64; 2],
     pub xd_ref: [f64; 2],
     pub xdd_ref: [f64; 2],
@@ -182,6 +187,8 @@ impl Plan {
             qdd_ref: [0.0; MAXN],
             ik_goal: q_target,
             reachable: true,
+            ik_point: [0.0; 2],
+            ik_mu: 0.01,
             x_ref: [0.0; 2],
             xd_ref: [0.0; 2],
             xdd_ref: [0.0; 2],
@@ -203,8 +210,10 @@ impl Plan {
         self.qd_ref = [0.0; MAXN];
         self.qdd_ref = [0.0; MAXN];
         self.ik_goal[..n].copy_from_slice(&q[..n]);
+        self.ik_mu = 0.01;
         if let Some(t) = Tool::eval(model, q, &[0.0; MAXN]) {
             self.x_ref = t.p;
+            self.ik_point = t.p;
         }
         self.xd_ref = [0.0; 2];
         self.xdd_ref = [0.0; 2];
@@ -320,7 +329,8 @@ impl Plan {
     }
 
     /// Advance the references by one step: joint reference (towards q*, or the IK goal when following the
-    /// tool target) and task reference (towards the tool target, or the tool position at q*).
+    /// tool target) and task reference (towards the tool target — the nearest reachable point when it is out
+    /// of reach — or the tool position at q*).
     pub fn advance(&mut self, model: &mut Model, dt: f64) {
         let n = model.n;
         if !self.synced {
@@ -338,7 +348,14 @@ impl Plan {
             self.qd_ref[i] += self.qdd_ref[i] * dt;
             self.q_ref[i] += self.qd_ref[i] * dt;
         }
-        let goal = if self.use_tool { self.tool_target } else { self.x_star };
+        // a target out of reach is replaced by the nearest point the arm can reach: a task-space spring
+        // stretched towards a point it can never get to pulls the arm ever harder against its own
+        // singularity (an acceleration that cannot be realised bends a redundant arm back and forth)
+        let goal = match (self.use_tool, ik && !self.reachable) {
+            (true, true) => self.ik_point,
+            (true, false) => self.tool_target,
+            (false, _) => self.x_star,
+        };
         for r in 0..2 {
             self.xdd_ref[r] = wn * wn * (goal[r] - self.x_ref[r]) - 2.0 * wn * self.xd_ref[r];
             self.xd_ref[r] += self.xdd_ref[r] * dt;
@@ -346,13 +363,26 @@ impl Plan {
         }
     }
 
-    /// One damped-least-squares step of inverse kinematics on `ik_goal`, keeping loops closed:
-    /// `[A; J] Δq ≈ [−φ; e]`.
+    /// ‖e‖² + ‖φ‖² of the tool target and the loop closures at `q`, with the tool there.
+    fn ik_cost(&self, model: &mut Model, q: &[f64]) -> Option<(f64, Tool)> {
+        let zero = [0.0; MAXN];
+        let tool = Tool::eval(model, q, &zero)?;
+        let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
+        let phi = dynamics::constraints(model, q, &zero)
+            .map_or(0.0, |k| (0..k.m).map(|r| k.phi[r] * k.phi[r]).sum());
+        Some((e[0].mul_add(e[0], e[1] * e[1]) + phi, tool))
+    }
+
+    /// Two Levenberg–Marquardt steps of inverse kinematics on `ik_goal`, keeping loops closed:
+    /// `[A; J] Δq ≈ [−φ; e]` with λ = ½‖e‖² + μ (Sugihara, 2011). A step is kept only when it lowers the
+    /// error (μ then halves), otherwise μ quadruples and the step is retried: Gauss–Newton close to a
+    /// solution, a descent on ‖e‖² far from one, which ends at the nearest reachable point when the target
+    /// is out of reach (a fixed λ flips the elbow back and forth across the stretched pose instead).
     fn ik_step(&mut self, model: &mut Model) {
         let n = model.n;
         let zero = [0.0; MAXN];
         for _ in 0..2 {
-            let Some(tool) = Tool::eval(model, &self.ik_goal, &zero) else { return };
+            let Some((cost, tool)) = self.ik_cost(model, &self.ik_goal) else { return };
             let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
             let k = dynamics::constraints(model, &self.ik_goal, &zero);
             let m = k.as_ref().map_or(0, |k| k.m);
@@ -368,22 +398,39 @@ impl Plan {
             s[m * n..(m + 2) * n].copy_from_slice(&tool.jp[..2 * n]);
             rhs[m] = e[0];
             rhs[m + 1] = e[1];
+            let lambda = 0.5 * e[0].mul_add(e[0], e[1] * e[1]) + self.ik_mu;
             let mut sst = [0.0; MAXK * MAXK];
             for i in 0..rows {
                 for j in 0..rows {
                     sst[i * rows + j] = (0..n).map(|c| s[i * n + c] * s[j * n + c]).sum::<f64>()
-                        + if i == j { if i < m { 1e-9 } else { 0.01 } } else { 0.0 };
+                        + if i == j { if i < m { 1e-9 } else { lambda } } else { 0.0 };
                 }
             }
             if !solve_dense(rows, &mut sst[..rows * rows], &mut rhs[..rows]) {
                 return;
             }
+            let mut q = self.ik_goal;
             for c in 0..n {
                 let step: f64 = (0..rows).map(|i| s[i * n + c] * rhs[i]).sum();
-                self.ik_goal[c] += step.clamp(-0.05, 0.05);
+                q[c] += step.clamp(-0.05, 0.05);
             }
-            self.reachable = e[0].hypot(e[1]) < 2e-3;
+            match self.ik_cost(model, &q) {
+                Some((c, _)) if c < cost => {
+                    self.ik_goal = q;
+                    self.ik_mu = (self.ik_mu * 0.5).max(1e-3);
+                }
+                _ => self.ik_mu = (self.ik_mu * 4.0).min(1e3),
+            }
         }
+        let Some((_, tool)) = self.ik_cost(model, &self.ik_goal) else { return };
+        let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
+        let dist = e[0].hypot(e[1]);
+        self.reachable = dist < 2e-3;
+        // out of reach the IK ends on the boundary of the workspace, where the arm is singular: aim a little
+        // inside it (0.5 % of the arm's size √tr(J Jᵀ), continuous at the boundary) to keep it controllable
+        let size = tool.jp[..2 * n].iter().map(|v| v * v).sum::<f64>().sqrt();
+        let back = if dist > 0.0 { (0.005 * size).min(dist) / dist } else { 0.0 };
+        self.ik_point = [tool.p[0] - back * e[0], tool.p[1] - back * e[1]];
     }
 
     /// Task-space reference at this step: (x_d, ẋ_d, ẍ_d).

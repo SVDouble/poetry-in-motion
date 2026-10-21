@@ -53,6 +53,9 @@ export type Action =
   | { do: 'hang' }
   /** Reset, then start exactly at the equilibrium q* (at rest): where linear controllers are designed. */
   | { do: 'atTarget' }
+  /** Aim the tool at the base plus `factor` times the vector from the base to the tool (beyond reach for
+   * factor ≳ 2). */
+  | { do: 'reach'; factor: number }
   /** Switch the secondary tasks on (natural frequency ω), with targets relative to the current pose:
    * the tool turned by `dphi`, the elbow moved by `delbow` (omit a field to leave that task off). */
   | { do: 'stack'; w: number; dphi?: number; delbow?: [number, number] }

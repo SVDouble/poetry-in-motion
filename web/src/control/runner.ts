@@ -94,6 +94,16 @@ async function act(port: Port, a: Action): Promise<void> {
       port.reset();
       port.mark?.('reset');
       return;
+    case 'reach': {
+      const snap = port.snap();
+      const [bx, by] = snap.frame(1);
+      const [tx, ty] = [snap.v('TOOL_P'), snap.v('TOOL_P', 1)];
+      port.flag('TargetX', bx + a.factor * (tx - bx));
+      port.flag('TargetY', by + a.factor * (ty - by));
+      port.setUseTool(true);
+      port.mark?.('reach');
+      return;
+    }
     case 'stack': {
       // targets relative to where the tool and the elbow are now
       const snap = port.snap();

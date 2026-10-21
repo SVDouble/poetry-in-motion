@@ -1,6 +1,6 @@
 /** Pages of the task-space controllers acting on the tool: virtual model control, impedance, admittance. */
 import type { SectionBuilder } from '../eq/panel';
-import { sci, texMat } from '../eq/tex';
+import { texMat } from '../eq/tex';
 import { col, idleNote, type Page, type PageContext, realise } from './page';
 
 /** Tool position, its Jacobian and the live task state. */
@@ -40,13 +40,16 @@ export const vmc = (c: PageContext): Page => {
     },
     generic(b) {
       b.math(
-        String.raw`\tau = J(q)^{T}\Big(K\,(x_d - x) - D\,(\dot x - \dot x_d)\Big) + \frac{\partial V}{\partial q}(q) + N_{\perp}\,\tau_0`,
+        String.raw`\tau = J(q)^{T}\Big(K\,(x_d - x) - D\,(\dot x - \dot x_d)\Big) + \frac{\partial V}{\partial q}(q) + N_{\perp}\,\tau_0 - d\,\big(M - J^{T}\hat\Lambda J\big)\,\dot q`,
       );
       b.text(
-        String.raw`Virtual work: a force $F$ at the tool does the work $F^{T}\delta x = F^{T}J\,\delta q$, so the equivalent joint torque is $J^{T}F$. The damping is set from the task-space inertia $\Lambda = (J M^{-1} J^{T})^{-1}$ so that the tool behaves like a damped oscillator with ratio ζ:`,
+        String.raw`Virtual work: a force $F$ at the tool does the work $F^{T}\delta x = F^{T}J\,\delta q$, so the equivalent joint torque is $J^{T}F$. The damping is set from the task-space inertia $\Lambda = (J M^{-1} J^{T})^{-1}$ so that the tool behaves like a damped oscillator with ratio ζ — through the harmonic mean of its eigenvalues, which stays finite at a singular pose (their plain mean would not, and an unbounded damping gain is unstable in a 1 kHz controller):`,
       );
       b.math(
-        String.raw`D = 2\zeta\sqrt{K\,\bar\lambda(\Lambda)},\qquad \bar\lambda = \tfrac12\operatorname{tr}\Lambda`,
+        String.raw`D = 2\zeta\sqrt{K\,\bar\lambda},\qquad \bar\lambda = \frac{2}{\operatorname{tr}\big(J M^{-1} J^{T}\big)}`,
+      );
+      b.text(
+        String.raw`The last term damps what the task cannot see: $M - J^{T}\hat\Lambda J$ is symmetric and positive semi-definite ($\hat\Lambda \le \Lambda$ is the task inertia with its near-singular directions damped), so it only removes energy. Away from singularities it acts in the null space alone; at a stretched arm it catches the elbow mode, which barely moves the tool and would otherwise ring.`,
       );
       nullSpace(b, c, 'through the dynamically consistent projector');
       b.math(
@@ -61,13 +64,13 @@ export const vmc = (c: PageContext): Page => {
       if (c.dof > 2 && !c.loops) {
         b.math(String.raw`N_{\perp} = ${b.live.mat(n, n, (i, j) => c.tele('projector', i * n + j))}`);
         b.math(
-          String.raw`\|J M^{-1} N_{\perp}\tau_0\| = ${b.live.num(() => c.tele('leak'), sci)}\,\mathrm{m/s^2}`,
+          String.raw`\|J M^{-1} N_{\perp}\tau_0\| = ${b.live.num(() => c.tele('leak'))}\,\mathrm{m/s^2}`,
           { caption: 'leakage: tool acceleration caused by the secondary goals (zero up to round-off)' },
         );
       }
       realise(b, c, String.raw`J^{T}F + \frac{\partial V}{\partial q} + N_{\perp}\tau_0`);
       b.math(
-        String.raw`w = \sqrt{\det J J^{T}} = ${b.live.num(() => c.tele('w'))},\qquad V_L = ${b.live.num(() => c.tele('lyap'))}\,\mathrm{J},\quad \dot V_L = ${b.live.num(() => c.tele('lyap_dot'), sci)}\,\mathrm{W}`,
+        String.raw`w = \sqrt{\det J J^{T}} = ${b.live.num(() => c.tele('w'))},\qquad V_L = ${b.live.num(() => c.tele('lyap'))}\,\mathrm{J},\quad \dot V_L = ${b.live.num(() => c.tele('lyap_dot'))}\,\mathrm{W}`,
       );
       idleNote(b, c);
     },
@@ -75,15 +78,15 @@ export const vmc = (c: PageContext): Page => {
       b.text('The closed-loop energy is the kinetic energy plus the energy stored in the virtual spring:');
       b.math(String.raw`V_L = \tfrac12\dot q^{T}M\dot q + \tfrac12 (x_d - x)^{T}K(x_d - x)`);
       b.math(
-        String.raw`\dot V_L = \dot q^{T}\big(\tau - \tfrac{\partial V}{\partial q}\big) - \dot q^{T}\operatorname{diag}\beta\,\dot q - \dot x^{T}K(x_d - x) = -\dot x^{T}D\,\dot x - \dot q^{T}\operatorname{diag}\beta\,\dot q + \dot q^{T}N_\perp\tau_0`,
+        String.raw`\dot V_L = -\dot x^{T}D\,\dot x - d\,\dot q^{T}\big(M - J^{T}\hat\Lambda J\big)\dot q - \dot q^{T}\operatorname{diag}\beta\,\dot q + \dot q^{T}N_\perp\tau_0`,
       );
       b.text(
-        'For a fixed target and no secondary goal the energy can only decrease: the tool converges to x<sub>d</sub> (LaSalle), unless it gets stuck at a singularity. The law is passive from the push F<sub>ext</sub> to the tool velocity, which is why it behaves gracefully when you push it.',
+        'For a fixed target and no secondary goal the energy can only decrease: the tool converges to x<sub>d</sub> (LaSalle). A target out of reach is no exception: x<sub>d</sub> then stops at the nearest point the arm can reach (found by inverse kinematics, a hair inside the boundary), and the arm comes to rest there, stretched towards the target. The law is passive from the push F<sub>ext</sub> to the tool velocity, which is why it behaves gracefully when you push it.',
       );
     },
     limits(b) {
       b.text(
-        'Tracking is only approximate (the spring lags a moving target). Near singularities (w → 0) the Jacobian transpose cannot produce force in some direction. The null-space projection needs M and an open chain here; with loops the secondary goals are disabled.',
+        'Tracking is only approximate (the spring lags a moving target). Near singularities (w → 0) the Jacobian transpose cannot produce force in some direction: a target out of reach is approached as far as the arm goes, not reached. The null-space projection needs M and an open chain here; with loops the secondary goals are disabled.',
       );
     },
   };
@@ -132,7 +135,7 @@ export const impedance = (c: PageContext): Page => {
       nullSpace(b, c, 'as an acceleration preference');
       if (c.dof > 2) {
         b.math(
-          String.raw`M(\ddot q - \ddot q_{\text{task}}) = ${b.live.vec(n, (i) => c.tele('tau_null', i))},\qquad \|J(\ddot q - \ddot q_{\text{task}})\| = ${b.live.num(() => c.tele('leak'), sci)}`,
+          String.raw`M(\ddot q - \ddot q_{\text{task}}) = ${b.live.vec(n, (i) => c.tele('tau_null', i))},\qquad \|J(\ddot q - \ddot q_{\text{task}})\| = ${b.live.num(() => c.tele('leak'))}`,
           { caption: 'the part of the torque spent on secondary goals, and its effect on the tool (zero)' },
         );
       }
@@ -146,7 +149,7 @@ export const impedance = (c: PageContext): Page => {
     },
     limits(b) {
       b.text(
-        'Needs the push to be measured (here the simulation knows it exactly — a perfect force sensor). Choosing Λ<sub>d</sub> far below the natural task inertia Λ(q) makes the controller fight the robot and amplifies sensor noise; choosing Λ<sub>d</sub> = Λ(q) removes the need for force sensing (and turns it into VMC). Singular poses make Λ(q) unbounded. And like every law that cancels the dynamics it relies on the actuators delivering the computed torque: lower u<sub>max</sub> until a push saturates them and the cancellation turns into a limit cycle — VMC, which cancels nothing, stays calm.',
+        'Needs the push to be measured (here the simulation knows it exactly — a perfect force sensor). Choosing Λ<sub>d</sub> far below the natural task inertia Λ(q) makes the controller fight the robot and amplifies sensor noise; choosing Λ<sub>d</sub> = Λ(q) removes the need for force sensing (and turns it into VMC). Singular poses make Λ(q) unbounded: near them the commanded acceleration is resolved with adaptive damped least squares (exact while the task is well conditioned, bounded and fading as it loses a direction), and the directions it lets go of are damped. A target out of reach would ask for an acceleration no pose can realise, pulling ever harder against the singularity (a redundant arm then snakes back and forth); x<sub>d</sub> therefore stops at the nearest reachable point, and the arm comes to rest stretched towards the target. Like every law that cancels the dynamics it relies on the actuators delivering the computed torque; when they cannot, the commanded part is scaled down as a whole (same direction, gentler) rather than clipped joint by joint, which would break the cancellation.',
       );
     },
   };

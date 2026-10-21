@@ -646,3 +646,43 @@ fn an_unreachable_orientation_saturates_calmly() {
         assert!(worst < 0.05, "{kind:?}: still moving at {worst} rad/s");
     }
 }
+
+#[test]
+fn an_unreachable_tool_target_leaves_the_arm_at_rest_reaching_towards_it() {
+    // beyond the reach the arm stretches towards the target and stays there: no elbow flipping (adaptive
+    // damped least squares), no ringing (damping of what the task cannot see), no switching (smooth
+    // projectors), and no snaking of a redundant arm (impedance and admittance aim at the nearest reachable
+    // point, VMC simply pulls)
+    for d in [presets::arm2(), presets::arm7()] {
+        let n = d.bodies.len();
+        let reach: f64 = d.bodies.iter().map(|b| b.values[1]).sum();
+        for kind in [Kind::Vmc, Kind::Impedance, Kind::Admittance] {
+            for factor in [1.05, 1.2, 2.0, 4.0] {
+                let mut s = with(&d, kind);
+                let target = [factor * reach * 0.6, factor * reach * 0.8];
+                aim(&mut s, target[0], target[1]);
+                s.step(10_000);
+                let (mut lo, mut hi, mut speed) = ([f64::MAX; 7], [f64::MIN; 7], 0.0_f64);
+                for _ in 0..1000 {
+                    s.step(1);
+                    let o = s.publish();
+                    for i in 0..n {
+                        (lo[i], hi[i]) = (lo[i].min(o[off::Q + i]), hi[i].max(o[off::Q + i]));
+                        speed = speed.max(o[off::QD + i].abs());
+                    }
+                }
+                let o = s.publish().to_vec();
+                assert!(
+                    speed < 1e-2 && (0..n).all(|i| hi[i] - lo[i] < 1e-3),
+                    "{n} joints, {kind:?} at {factor}·reach: still moving ({speed} rad/s)"
+                );
+                let (tool, aimed) = (o[off::TOOL_P + 1].atan2(o[off::TOOL_P]), target[1].atan2(target[0]));
+                let r = o[off::TOOL_P].hypot(o[off::TOOL_P + 1]);
+                assert!(
+                    (tool - aimed).abs() < 0.02 && r > 0.99 * reach,
+                    "{n} joints, {kind:?} at {factor}·reach: tool at radius {r}, {tool} rad vs {aimed}"
+                );
+            }
+        }
+    }
+}
