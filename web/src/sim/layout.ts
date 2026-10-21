@@ -118,6 +118,7 @@ export const FLAGS = [
   'StopDepth',
   'Baumgarte',
   'MotorSpeed',
+  'Lead',
 ] as const;
 
 export type Field = (typeof FIELDS)[number];

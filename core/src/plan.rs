@@ -38,6 +38,8 @@ pub struct Tuning {
     /// Largest change of one coordinate per IK iteration (rad or m), and the IK's least damping.
     pub ik_step: f64,
     pub ik_damping: f64,
+    /// How far ahead of the state a regulator's design point may lead on the way to its target (rad | m).
+    pub lead: f64,
     /// Largest force of the push on the tool (N): a hand, not a winch.
     pub push_max: f64,
     /// No-load speed of the motors (rad/s | m/s): the drive they can deliver falls linearly to zero at it
@@ -62,6 +64,7 @@ impl Default for Tuning {
             reach_margin: 0.005,
             ik_step: 0.05,
             ik_damping: 0.01,
+            lead: 0.1,
             push_max: 30.0,
             motor_speed: 100.0,
             stop_k: 2.0e4,
@@ -166,8 +169,7 @@ pub struct Plan {
     pub tool_target: [f64; 2],
     /// Follow `tool_target` (task controllers directly, joint controllers through IK) instead of q*.
     pub use_tool: bool,
-    /// The equilibrium a regulating controller is designed at while it follows a tool target (None: the
-    /// joint targets q*).
+    /// Where a regulating controller (LQR, MPC) is designed while it travels to its target (None: at q*).
     pub setpoint: Option<VecN>,
     pub ref_wn: f64,
     /// Pointer position of a push on the tool, and the push stiffness.
@@ -176,7 +178,10 @@ pub struct Plan {
     pub goals: Goals,
     pub tuning: Tuning,
     // ---- design
+    /// The equilibrium the controllers aim for (the joint targets on the manifold, passive joints settled).
     pub q_star: VecN,
+    /// Where the linearisation, u* and the gains are made: q*, or on the way there the setpoint.
+    pub q_lin: VecN,
     /// Tool position at q* (task target when no tool target is set).
     pub x_star: [f64; 2],
     pub u_ff: VecN,
@@ -238,6 +243,7 @@ impl Plan {
             },
             tuning: Tuning::default(),
             q_star: q_target,
+            q_lin: q_target,
             x_star: [0.0; 2],
             u_ff: [0.0; MAXN],
             eq_residual: 0.0,
@@ -286,13 +292,14 @@ impl Plan {
         self.synced = true;
     }
 
-    /// Recompute everything that depends on parameters (`p`) or targets.
-    pub fn design(&mut self, model: &mut Model, p: &[f64]) {
-        let n = model.n;
+    /// The equilibrium nearest to `target`: on the manifold, keeping the actuated coordinates where they are
+    /// put if the loops allow it and starting the passive ones from the current configuration (same
+    /// assembly mode); a passive joint of an open chain cannot be held anywhere, so it settles where its
+    /// potential torque vanishes (with loops the constraint forces share the load and the projection
+    /// already balances it).
+    fn equilibrium(&self, model: &mut Model, target: VecN) -> VecN {
         let zero = [0.0; MAXN];
-        // q* on the manifold: keep the actuated coordinates where the user put them if the loops allow it,
-        // and start the passive ones from the current configuration (same assembly mode)
-        let mut seed = self.setpoint.unwrap_or(self.q_target);
+        let mut seed = target;
         if model.closed() && self.synced {
             for &i in &model.unactuated {
                 seed[i] = self.q_ref[i];
@@ -304,21 +311,27 @@ impl Plan {
             (qs, v0) = (seed, zero);
             dynamics::project(model, &mut qs, &mut v0);
         }
-        // a passive joint cannot be held anywhere: it rests where its potential torque vanishes. Keep the
-        // actuated coordinates at their targets and let the passive ones settle (open chains; with loops
-        // the constraint forces share the load and the projection above already balances it)
         if !model.closed() && !model.unactuated.is_empty() {
             settle_passive(model, &mut qs);
         }
-        self.q_star = qs;
-        if let Some(t) = Tool::eval(model, &qs, &zero) {
+        qs
+    }
+
+    /// Recompute everything that depends on parameters (`p`) or targets.
+    pub fn design(&mut self, model: &mut Model, p: &[f64]) {
+        let n = model.n;
+        let zero = [0.0; MAXN];
+        self.q_star = self.equilibrium(model, self.q_target);
+        if let Some(t) = Tool::eval(model, &self.q_star, &zero) {
             self.x_star = t.p;
         }
+        self.v_star = model.energies(&self.q_star, &zero)[1];
+        let qs = self.setpoint.map_or(self.q_star, |s| self.equilibrium(model, s));
+        self.q_lin = qs;
         let t = model.terms(&qs, &zero);
         let k = dynamics::constraints(model, &qs, &zero);
         let dv = model.potential_grad(&qs);
         (self.u_ff, self.eq_residual) = inverse_dynamics(model, k.as_ref(), &dv);
-        self.v_star = model.energies(&qs, &zero)[1];
         // gains shaped by the full inertia: K = ω² M(q*) puts every linearised mode at ω (a diagonal choice
         // leaves strongly coupled chains with modes hundreds of times stiffer or slower than designed)
         self.m_star = [0.0; MAXN * MAXN];
@@ -342,11 +355,11 @@ impl Plan {
             .max(1e-6);
     }
 
-    /// Linearisation of the (constrained) dynamics about (q*, u*) in tangent coordinates, by central
+    /// Linearisation of the (constrained) dynamics about (q_lin, u*) in tangent coordinates, by central
     /// differences of the same model the simulator integrates.
     fn linearise(&self, model: &mut Model, z: DMat) -> Lin {
         let (n, nu, r) = (model.n, model.nu, z.cols);
-        let (qs, u_ff) = (self.q_star, self.u_ff);
+        let (qs, u_ff) = (self.q_lin, self.u_ff);
         let mut f = |xi: &[f64], xid: &[f64], du: &[f64]| -> Vec<f64> {
             let mut q: VecN = core::array::from_fn(|i| {
                 if i < n { qs[i] + (0..r).map(|c| z[(i, c)] * xi[c]).sum::<f64>() } else { 0.0 }
@@ -389,7 +402,7 @@ impl Plan {
         let Some(l) = &self.lin else { return Vec::new() };
         let (n, r) = (model.n, l.z.cols);
         let dq: VecN =
-            core::array::from_fn(|i| if i < n { -Self::error(model, i, q[i], self.q_star[i]) } else { 0.0 });
+            core::array::from_fn(|i| if i < n { -Self::error(model, i, q[i], self.q_lin[i]) } else { 0.0 });
         let mut x = vec![0.0; 2 * r];
         for c in 0..r {
             x[c] = (0..n).map(|i| l.z[(i, c)] * dq[i]).sum();

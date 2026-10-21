@@ -11,18 +11,28 @@
 
 use crate::mat::DMat;
 
-/// Zero-order-hold discretisation by truncated Taylor series of `exp([[A, B], [0, 0]] dt)`.
+/// Zero-order-hold discretisation, `exp([[A, B], [0, 0]] dt)`: a Taylor series over a short step, then squared.
 #[must_use]
 pub fn c2d(a: &DMat, b: &DMat, dt: f64) -> (DMat, DMat) {
     let n = a.rows;
-    let ad_dt = a.scale(dt);
-    let mut term = DMat::identity(n); // (A dt)^k / k!
+    // scaling and squaring: the series converges fast only for a short step (‖A h‖ ≤ ½); a stiff mode (a
+    // light body with friction) over a long step would make it cancel catastrophically
+    let norm = a.data.iter().map(|v| v.abs()).fold(0.0, f64::max) * n as f64 * dt;
+    let squarings = if norm > 0.5 { (norm / 0.5).log2().ceil() as i32 } else { 0 };
+    let h = dt / 2f64.powi(squarings);
+    let ah = a.scale(h);
+    let mut term = DMat::identity(n); // (A h)^k / k!
     let mut ad = DMat::identity(n);
-    let mut gamma = DMat::identity(n).scale(dt); // Σ (A dt)^k dt / (k+1)!
+    let mut gamma = DMat::identity(n).scale(h); // Σ (A h)^k h / (k+1)!
     for k in 1..16 {
-        term = (&term * &ad_dt).scale(1.0 / f64::from(k));
+        term = (&term * &ah).scale(1.0 / f64::from(k));
         ad = &ad + &term;
-        gamma = &gamma + &term.scale(dt / f64::from(k + 1));
+        gamma = &gamma + &term.scale(h / f64::from(k + 1));
+    }
+    // over 2h: e^{2Ah} = (e^{Ah})², ∫₀^{2h} e^{As} ds = Γ_h + e^{Ah} Γ_h
+    for _ in 0..squarings {
+        gamma = &gamma + &(&ad * &gamma);
+        ad = &ad * &ad;
     }
     (ad, &gamma * b)
 }
@@ -76,6 +86,18 @@ mod tests {
         let k = dlqr(&ad, &bd, &DMat::identity(2).scale(dt), &DMat::identity(1).scale(dt)).unwrap();
         assert!((k[(0, 0)] - 1.0).abs() < 2e-3, "{k:?}");
         assert!((k[(0, 1)] - 3f64.sqrt()).abs() < 2e-3, "{k:?}");
+    }
+
+    #[test]
+    fn a_stiff_mode_over_a_long_step_is_exact() {
+        // ẋ = −λx + u with λ dt = 10: e^{−10} and (1 − e^{−10}) / λ, where a plain series cancels badly
+        let (lambda, dt) = (500.0, 0.02);
+        let a = DMat { rows: 1, cols: 1, data: vec![-lambda] };
+        let b = DMat { rows: 1, cols: 1, data: vec![1.0] };
+        let (ad, bd) = c2d(&a, &b, dt);
+        let e = (-lambda * dt).exp();
+        assert!((ad[(0, 0)] - e).abs() < 1e-12, "{ad:?}");
+        assert!((bd[(0, 0)] - (1.0 - e) / lambda).abs() < 1e-12, "{bd:?}");
     }
 
     #[test]

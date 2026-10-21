@@ -350,7 +350,12 @@ export class Editor {
           `attach at the tip of body ${parent + 1}`,
         ),
       ),
-      button('+ on ground', () => this.addChild(-1, 'revolute'), 'btn small ghost'),
+      button(
+        '+ on ground',
+        () => this.addChild(-1, 'revolute'),
+        'btn small',
+        'a new bar hinged to the ground',
+      ),
     );
     return card(
       'Structure',

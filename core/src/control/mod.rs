@@ -314,8 +314,8 @@ pub static SPECS: [Spec; 11] = [
         name: "LQR",
         family: "optimal",
         params: &[
-            param("qx", "Q_{x}", 10.0, 0.1, 1000.0).log().redesign(),
-            param("qv", r"Q_{\dot x}", 1.0, 0.01, 100.0).log().redesign(),
+            param("qx", "Q_{x}", 100.0, 1.0, 10000.0).log().redesign(),
+            param("qv", r"Q_{\dot x}", 10.0, 0.1, 1000.0).log().redesign(),
             param("r", "R", 1.0, 0.001, 100.0).log().redesign(),
         ],
         telemetry: &[("k", N * 2 * N), ("cost", 1)],
@@ -327,8 +327,8 @@ pub static SPECS: [Spec; 11] = [
         params: &[
             param("horizon", "N", 25.0, 5.0, 60.0).redesign(),
             param("step", r"\Delta t", 0.02, 0.005, 0.1).unit("s").redesign(),
-            param("qx", "Q_{x}", 10.0, 0.1, 1000.0).log().redesign(),
-            param("qv", r"Q_{\dot x}", 1.0, 0.01, 100.0).log().redesign(),
+            param("qx", "Q_{x}", 100.0, 1.0, 10000.0).log().redesign(),
+            param("qv", r"Q_{\dot x}", 10.0, 0.1, 1000.0).log().redesign(),
             param("r", "R", 1.0, 0.001, 100.0).log().redesign(),
             param("iters", r"i_{\max}", 80.0, 5.0, 400.0).log(),
         ],

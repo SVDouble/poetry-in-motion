@@ -933,3 +933,42 @@ fn a_motor_cannot_drive_past_its_no_load_speed() {
         "the limited motor still spins up: {limited:?}"
     );
 }
+
+#[test]
+fn regulators_settle_coupled_arms_from_afar_and_after_kicks() {
+    // inertia-shaped weights (a coupled input weight R), the set-point walking from the starting pose and
+    // MPC's prediction agreeing with its terminal cost: LQR and MPC both bring the arms home
+    let three = Desc {
+        bodies: [(1.0, 0.8, -1.2), (0.8, 0.7, 0.5), (0.5, 0.5, 0.4)]
+            .iter()
+            .enumerate()
+            .map(|(i, &(m, l, q0))| {
+                let mut b = presets::link(i.checked_sub(1), JointKind::Revolute, m, l);
+                b.q0 = q0;
+                b
+            })
+            .collect(),
+        g: 9.81,
+        tool: Some(2),
+        closures: Vec::new(),
+        elements: Vec::new(),
+    };
+    for (name, d) in [("two-link", presets::arm2()), ("three-link", three)] {
+        for kind in [Kind::Lqr, Kind::Mpc] {
+            let mut s = with(&d, kind);
+            s.step(12_000);
+            let o = s.publish();
+            let e =
+                (0..d.bodies.len()).map(|i| (o[off::Q + i] - o[off::Q_TARGET + i]).abs()).fold(0.0, f64::max);
+            assert!(e < 1e-3, "{name} {kind:?} from its starting pose: |q − q*| = {e:e}");
+            for i in 0..d.bodies.len() {
+                s.kick(i, 0.5);
+            }
+            s.step(8_000);
+            let o = s.publish();
+            let e =
+                (0..d.bodies.len()).map(|i| (o[off::Q + i] - o[off::Q_TARGET + i]).abs()).fold(0.0, f64::max);
+            assert!(e < 1e-3, "{name} {kind:?} after a kick: |q − q*| = {e:e}");
+        }
+    }
+}

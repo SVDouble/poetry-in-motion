@@ -63,4 +63,27 @@ describe('tool targets', () => {
     }
     expect(failed).toEqual([]);
   });
+
+  it('are held by the regulators from wherever a fully actuated mechanism starts', {
+    timeout: 120_000,
+  }, () => {
+    const failed: string[] = [];
+    for (const [name, make] of Object.entries(PRESETS)) {
+      const d = tc.build(encode(make()));
+      tc.core.step(10);
+      if (tc.snapshot().v('EQ_RESIDUAL', 2) !== 1) continue; // underactuated: only q* itself can be held
+      const reg = tc.controllers();
+      for (const key of ['lqr', 'mpc']) {
+        const spec = reg.specs.find((s) => s.key === key)!;
+        if (reg.applicable[spec.id] !== null) continue;
+        tc.send({ type: 'reset' });
+        tc.send({ type: 'controller', slot: 0, kind: spec.id });
+        tc.core.step(20000);
+        const err = tc.snapshot().slots[0]!.v('KIND', 2);
+        if (!(err < 1e-2)) failed.push(`${name} · ${key}: ends ${err.toExponential(1)} from q*`);
+      }
+      void d;
+    }
+    expect(failed).toEqual([]);
+  });
 });

@@ -10,16 +10,42 @@ use crate::model::Model;
 use crate::plan::Plan;
 use crate::qp;
 
-fn weights(r: usize, qx: f64, qv: f64, scale: f64) -> DMat {
-    DMat::from_fn(2 * r, 2 * r, |i, j| {
-        if i != j {
-            0.0
-        } else if i < r {
-            qx * scale
-        } else {
-            qv * scale
+/// State and input weights in the metric of the mechanism's own inertia: Q = diag(Q_x M, Q_ẋ M) with M the
+/// inertia in tangent coordinates, R = R Bₐᵀ M Bₐ with Bₐ the accelerations the inputs produce (for a fully
+/// actuated chain R M⁻¹). A weight then means the same response on a light pendulum and a heavy arm, as
+/// K = ω² M(q*) does for the joint-space gains; plain identities would leave a heavy arm feebly held.
+fn weights(plan: &Plan, l: &crate::plan::Lin, (qx, qv, rw): (f64, f64, f64), scale: f64) -> (DMat, DMat) {
+    let (r, n, nu) = (l.z.cols, l.z.rows, l.b.cols);
+    let m = &plan.m_star;
+    let mz = DMat::from_fn(r, r, |a, b| {
+        (0..n).map(|i| l.z[(i, a)] * (0..n).map(|j| m[i * n + j] * l.z[(j, b)]).sum::<f64>()).sum()
+    });
+    let q = DMat::from_fn(2 * r, 2 * r, |i, j| match (i < r, j < r) {
+        (true, true) => qx * scale * mz[(i, j)],
+        (false, false) => qv * scale * mz[(i - r, j - r)],
+        _ => 0.0,
+    });
+    let acc = |i: usize, a: usize| l.b[(r + i, a)];
+    let rm = DMat::from_fn(nu, nu, |a, b| {
+        let w: f64 = (0..r).map(|i| acc(i, a) * (0..r).map(|j| mz[(i, j)] * acc(j, b)).sum::<f64>()).sum();
+        // a whisker of the identity keeps it definite should an input reach no direction at all
+        rw * scale * (w + if a == b { 1e-9 } else { 0.0 })
+    });
+    (q, rm)
+}
+
+/// Scale a QP ½ vᵀHv + (Fx)ᵀv to unit diagonal: returns D = diag(H)^(−1/2) and leaves D H D and D F.
+fn jacobi(cols: usize, nx: usize, h: &mut [f64], f: &mut [f64]) -> Vec<f64> {
+    let scale: Vec<f64> = (0..cols).map(|a| 1.0 / h[a * cols + a].max(1e-300).sqrt()).collect();
+    for a in 0..cols {
+        for b in 0..cols {
+            h[a * cols + b] *= scale[a] * scale[b];
         }
-    })
+        for b in 0..nx {
+            f[a * nx + b] *= scale[a];
+        }
+    }
+    scale
 }
 
 /// u = u* − K x with K from the discrete Riccati equation at the simulation step.
@@ -34,14 +60,14 @@ impl Controller for Lqr {
         true
     }
 
-    fn design(&mut self, plan: &Plan, model: &mut Model, p: &[f64], dt: f64) {
+    fn design(&mut self, plan: &Plan, _model: &mut Model, p: &[f64], dt: f64) {
         self.k = plan
             .lin
             .as_ref()
             .and_then(|l| {
-                let r = l.z.cols;
                 let (ad, bd) = c2d(&l.a, &l.b, dt);
-                dlqr(&ad, &bd, &weights(r, p[0], p[1], dt), &DMat::identity(model.nu).scale(p[2] * dt))
+                let (q, rm) = weights(plan, l, (p[0], p[1], p[2]), dt);
+                dlqr(&ad, &bd, &q, &rm)
             })
             .filter(|k| k.max_abs().is_finite());
     }
@@ -85,7 +111,15 @@ pub struct Mpc {
     phi: Vec<f64>,
     gamma: Vec<f64>,
     lip: f64,
+    /// Jacobi scaling of the input sequence: the QP is solved for v with Δu = D v, D = diag(H)^(−1/2), so its
+    /// curvature is near one in every direction (inputs with very different costs — a heavy shoulder and a
+    /// light finger — would otherwise leave the gradient method crawling along the cheap ones).
+    scale: Vec<f64>,
+    /// The scaled input sequence v.
     du: Vec<f64>,
+    /// −H⁻¹F: the plan without bounds as a map of the state. Each solve starts from it, clipped to the bounds:
+    /// exact when no bound is active (MPC is then LQR), and a near start when some are.
+    free: Vec<f64>,
     scratch: Vec<f64>,
     since: usize,
     cost: f64,
@@ -114,8 +148,7 @@ impl Controller for Mpc {
         let step = p[1].max(dt);
         let steps = (p[0].round() as usize).clamp(1, (MAX_VARS / nu.max(1)).max(1));
         let (ad, bd) = c2d(&l.a, &l.b, step);
-        let q = weights(nx / 2, p[2], p[3], step);
-        let r = DMat::identity(nu).scale(p[4] * step);
+        let (q, r) = weights(plan, l, (p[2], p[3], p[4]), step);
         let terminal = dare(&ad, &bd, &q, &r).unwrap_or_else(|| q.clone());
 
         // prediction matrices: x_{k+1} = Φ_k x₀ + Σ_{j ≤ k} Γ_{k,j} u_j
@@ -168,7 +201,7 @@ impl Controller for Mpc {
             for b in 0..cols {
                 h[a * cols + b] =
                     (0..rows).map(|row| gamma[row * cols + a] * qg[row * cols + b]).sum::<f64>()
-                        + if a == b { r[(a % nu, a % nu)] } else { 0.0 };
+                        + if a / nu == b / nu { r[(a % nu, b % nu)] } else { 0.0 };
             }
             for b in 0..nx {
                 f[a * nx + b] = (0..rows).map(|row| gamma[row * cols + a] * qp[row * nx + b]).sum();
@@ -179,7 +212,18 @@ impl Controller for Mpc {
             self.steps = 0;
             return;
         }
+        let scale = jacobi(cols, nx, &mut h, &mut f);
+        let free = qp::unconstrained(cols, nx, &h, &f).unwrap_or_default();
         self.lip = qp::lipschitz(cols, &h);
+        // a redesign along the way (the set-point moved, a weight changed) keeps the current plan as the warm
+        // start and its timing: a cold start would need many more iterations than one step allows
+        let same = self.du.len() == cols && self.steps == steps;
+        let (du, since) = if same {
+            let du = (0..cols).map(|a| self.du[a] * self.scale[a] / scale[a]).collect();
+            (du, self.since)
+        } else {
+            (vec![0.0; cols], usize::MAX)
+        };
         *self = Self {
             nx,
             nu,
@@ -190,9 +234,11 @@ impl Controller for Mpc {
             phi,
             gamma,
             lip: self.lip,
-            du: vec![0.0; cols],
+            scale,
+            free,
+            du,
             scratch: vec![0.0; 3 * cols],
-            since: usize::MAX,
+            since,
             plan_u: vec![0.0; steps],
             predicted: vec![0.0; steps],
             ..Self::default()
@@ -210,10 +256,17 @@ impl Controller for Mpc {
             self.since = 0;
             let x0 = plan.tangent_state(model, c.q, c.qd);
             let g: Vec<f64> = (0..cols).map(|a| (0..nx).map(|b| self.f[a * nx + b] * x0[b]).sum()).collect();
-            let lo: Vec<f64> = (0..cols).map(|a| -c.umax - plan.u_ff[a % nu]).collect();
-            let hi: Vec<f64> = (0..cols).map(|a| c.umax - plan.u_ff[a % nu]).collect();
-            // warm start: shift last solution by one stage
-            self.du.copy_within(nu.., 0);
+            let lo: Vec<f64> = (0..cols).map(|a| (-c.umax - plan.u_ff[a % nu]) / self.scale[a]).collect();
+            let hi: Vec<f64> = (0..cols).map(|a| (c.umax - plan.u_ff[a % nu]) / self.scale[a]).collect();
+            if self.free.is_empty() {
+                // warm start: shift last solution by one stage
+                self.du.copy_within(nu.., 0);
+            } else {
+                for a in 0..cols {
+                    let v: f64 = (0..nx).map(|b| self.free[a * nx + b] * x0[b]).sum();
+                    self.du[a] = v.clamp(lo[a], hi[a]);
+                }
+            }
             let iters = c.params[5].round() as usize;
             self.iterations =
                 qp::solve_box(&self.h, &g, &lo, &hi, self.lip, &mut self.du, &mut self.scratch, iters);
@@ -226,17 +279,18 @@ impl Controller for Mpc {
                 (0..cols).map(|a| (0..cols).map(|b| self.h[a * cols + b] * self.du[b]).sum()).collect();
             self.cost = (0..cols).map(|a| 0.5 * self.du[a] * hu[a] + g[a] * self.du[a]).sum();
             let r = nx / 2;
+            let du: Vec<f64> = (0..cols).map(|a| self.scale[a] * self.du[a]).collect();
             for k in 0..self.steps {
-                self.plan_u[k] = plan.u_ff[0] + self.du[k * nu];
+                self.plan_u[k] = plan.u_ff[0] + du[k * nu];
                 let row = |i: usize| {
                     (0..nx).map(|j| self.phi[(k * nx + i) * nx + j] * x0[j]).sum::<f64>()
-                        + (0..cols).map(|j| self.gamma[(k * nx + i) * cols + j] * self.du[j]).sum::<f64>()
+                        + (0..cols).map(|j| self.gamma[(k * nx + i) * cols + j] * du[j]).sum::<f64>()
                 };
                 self.predicted[k] = (0..r).map(|i| row(i).powi(2)).sum::<f64>().sqrt();
             }
         }
         for a in 0..nu {
-            u[a] = plan.u_ff[a] + self.du[a];
+            u[a] = plan.u_ff[a] + self.scale[a] * self.du[a];
         }
         u
     }

@@ -53,6 +53,7 @@ export interface Settings {
   stopDepth: number;
   baumgarte: number;
   motorSpeed: number;
+  lead: number;
 }
 
 export const defaultSettings = (): Settings => ({
@@ -96,6 +97,7 @@ export const defaultSettings = (): Settings => ({
   stopDepth: 0.01,
   baumgarte: 20,
   motorSpeed: 100,
+  lead: 0.1,
 });
 
 export type Numeric = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
@@ -128,6 +130,7 @@ export const SETTING_FLAGS: [Numeric, Flag][] = [
   ['stopDepth', 'StopDepth'],
   ['baumgarte', 'Baumgarte'],
   ['motorSpeed', 'MotorSpeed'],
+  ['lead', 'Lead'],
 ];
 
 export interface TuningSpec {
@@ -211,6 +214,14 @@ export const TUNING: Record<'task' | 'world', TuningSpec[]> = {
       max: 0.5,
       unit: 'rad | m',
       hint: 'largest change of a coordinate per inverse-kinematics iteration',
+    },
+    {
+      key: 'lead',
+      label: String.raw`\Delta q_{\text{lead}}`,
+      min: 0.01,
+      max: 1,
+      unit: 'rad | m',
+      hint: 'LQR and MPC are made for small deviations: on the way to a target they are designed at a pose at most this far ahead of the state',
     },
     {
       key: 'ikDamping',

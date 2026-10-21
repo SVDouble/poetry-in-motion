@@ -230,11 +230,6 @@ select {
   color: var(--paper);
 }
 
-.btn.ghost {
-  background: transparent;
-  margin: 4px 0 16px;
-}
-
 .btn.primary {
   background: var(--ink);
   color: var(--paper);

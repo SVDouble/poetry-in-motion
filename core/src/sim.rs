@@ -134,12 +134,16 @@ impl Sim {
         self.q[..self.model.n].copy_from_slice(&self.model.q0);
         self.t = 0.0;
         self.steps = 0;
-        self.retargeted = f64::NEG_INFINITY;
         self.settle();
     }
 
     /// Re-project onto the constraint manifold and restart references and controller state.
     fn settle(&mut self) {
+        // a jump of the state: a regulator on its way somewhere starts afresh from here
+        self.retargeted = f64::NEG_INFINITY;
+        if self.plan.setpoint.take().is_some() {
+            self.plan_dirty = true;
+        }
         dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
         self.plan.sync(&mut self.model, &self.q);
         self.ctrl.reset();
@@ -201,9 +205,6 @@ impl Sim {
             Flag::UseTool => {
                 pl.use_tool = v != 0.0;
                 pl.ik_goal = pl.q_ref;
-                if pl.setpoint.take().is_some() {
-                    self.plan_dirty = true;
-                }
             }
             Flag::RefWn => pl.ref_wn = v.max(0.1),
             Flag::PushX => pl.push.get_or_insert([0.0; 2])[0] = v,
@@ -249,6 +250,7 @@ impl Sim {
                     Flag::StopDepth => tu.stop_depth = v,
                     Flag::Baumgarte => tu.baumgarte = v,
                     Flag::MotorSpeed => tu.motor_speed = v,
+                    Flag::Lead => tu.lead = v,
                     _ => {}
                 }
             }
@@ -331,22 +333,40 @@ impl Sim {
         qdd
     }
 
-    /// A controller that regulates around an equilibrium (LQR, MPC) follows a tool target by moving that
-    /// equilibrium along the smoothed joint reference towards the inverse kinematics, redesigning at most
-    /// every `RETARGET` seconds: small steps of the set-point, each one a pose it can hold.
+    /// A controller that regulates around an equilibrium (LQR, MPC) is made for small deviations from it. On
+    /// a fully actuated mechanism every pose is one it can hold, so on the way to its target (or to the
+    /// inverse kinematics of a tool target) it is designed at a pose at most `lead` ahead of the state — a
+    /// reference governor: it only ever corrects small deviations, and the mechanism walks to the target.
+    /// Redesigned at most every `RETARGET` seconds. (Underactuated, only q* itself can be held.)
     fn retarget(&mut self) {
         const RETARGET: f64 = 0.05;
         const MOVED: f64 = 1e-6;
-        if !(self.ctrl.regulates() && self.plan.follows_ik(&self.model))
-            || self.t - self.retargeted < RETARGET
-        {
+        if !(self.ctrl.regulates() && self.plan.ct_ok) || self.t - self.retargeted < RETARGET {
             return;
         }
         let n = self.model.n;
-        let at = self.plan.q_star;
-        let to = self.plan.q_ref;
-        let moved = (0..n).map(|i| Plan::error(&self.model, i, at[i], to[i]).abs()).fold(0.0, f64::max);
-        if moved > MOVED {
+        let pl = &self.plan;
+        let goal = if pl.follows_ik(&self.model) { pl.ik_goal } else { pl.q_star };
+        let dist = |a: &VecN, b: &VecN| {
+            (0..n).map(|i| Plan::error(&self.model, i, a[i], b[i]).abs()).fold(0.0, f64::max)
+        };
+        let lead = pl.tuning.lead;
+        match pl.setpoint {
+            // arrived: designed at the target itself, it stays there (a disturbance is the regulator's to
+            // correct) until the target moves
+            Some(at) if dist(&at, &goal) <= MOVED => return,
+            // designed at the target from the start (a reset): needed only if the state is far from it
+            None if dist(&self.q, &goal) <= lead => return,
+            _ => {}
+        }
+        let to: VecN = core::array::from_fn(|i| {
+            if i < n {
+                self.q[i] + Plan::error(&self.model, i, self.q[i], goal[i]).clamp(-lead, lead)
+            } else {
+                0.0
+            }
+        });
+        if dist(&pl.q_lin, &to) > MOVED {
             self.plan.setpoint = Some(to);
             self.plan_dirty = true;
             self.retargeted = self.t;

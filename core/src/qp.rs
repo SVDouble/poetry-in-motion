@@ -7,27 +7,47 @@
 //! solved by FISTA (accelerated projected gradient) with a warm start — exact enough for real-time MPC with
 //! input bounds, allocation-free per solve, and simple to read.
 
-/// Largest eigenvalue of a symmetric positive semi-definite matrix (power iteration; design time).
+/// A bound on the largest eigenvalue of a symmetric matrix (Gershgorin: the largest absolute row sum).
+///
+/// The gradient step 1/L must not be longer than the curvature allows, so an upper bound is what is needed:
+/// a power-iteration estimate converges from below and, with close top eigenvalues, stops short of it.
 #[must_use]
 pub fn lipschitz(n: usize, h: &[f64]) -> f64 {
-    let mut v = vec![1.0 / (n as f64).sqrt(); n];
-    let mut lambda = 0.0;
-    for _ in 0..200 {
-        let w: Vec<f64> = (0..n).map(|i| (0..n).map(|j| h[i * n + j] * v[j]).sum()).collect();
-        let norm = w.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm < 1e-300 {
-            return 1.0;
+    (0..n).map(|i| (0..n).map(|j| h[i * n + j].abs()).sum::<f64>()).fold(1e-12, f64::max)
+}
+
+/// The unconstrained minimiser of ½ vᵀHv + (F x)ᵀv as a map of x: −H⁻¹F (`n × m`, row-major), by Cholesky.
+/// `None` if H is not positive definite.
+#[must_use]
+pub fn unconstrained(n: usize, m: usize, h: &[f64], f: &[f64]) -> Option<Vec<f64>> {
+    let mut l = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            let s = h[i * n + j] - (0..j).map(|k| l[i * n + k] * l[j * n + k]).sum::<f64>();
+            if i == j {
+                if s <= 0.0 || !s.is_finite() {
+                    return None;
+                }
+                l[i * n + i] = s.sqrt();
+            } else {
+                l[i * n + j] = s / l[j * n + j];
+            }
         }
-        let next = norm;
-        for (vi, wi) in v.iter_mut().zip(&w) {
-            *vi = wi / norm;
-        }
-        if (next - lambda).abs() <= 1e-10 * next {
-            return next;
-        }
-        lambda = next;
     }
-    lambda.max(1e-12)
+    let mut out = vec![0.0; n * m];
+    let mut y = vec![0.0; n];
+    for c in 0..m {
+        for i in 0..n {
+            y[i] = (-f[i * m + c] - (0..i).map(|k| l[i * n + k] * y[k]).sum::<f64>()) / l[i * n + i];
+        }
+        for i in (0..n).rev() {
+            y[i] = (y[i] - (i + 1..n).map(|k| l[k * n + i] * y[k]).sum::<f64>()) / l[i * n + i];
+        }
+        for i in 0..n {
+            out[i * m + c] = y[i];
+        }
+    }
+    Some(out)
 }
 
 /// Solve the box QP in place (`x` holds the warm start on entry). `scratch` needs `3 n` entries.
