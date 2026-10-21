@@ -2085,3 +2085,50 @@ body:not([data-stage="build"]) .palette {
 .scope-chip .l .katex {
   font-size: 1.05em;
 }
+
+/* ---------- preset gallery ---------- */
+
+.preset-gallery h4 {
+  margin: 8px 0 3px;
+  font-size: 13.5px;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  width: 114px;
+  padding: 4px 4px 3px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.preset-card:hover {
+  border-color: var(--line-2);
+  background: var(--card);
+}
+
+.preset-card.on {
+  border-color: var(--ink);
+  box-shadow: var(--shadow);
+  background: var(--card);
+}
+
+.preset-card canvas {
+  display: block;
+}

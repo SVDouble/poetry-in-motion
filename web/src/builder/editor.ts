@@ -20,6 +20,9 @@ import {
   removeBody,
   reparent,
 } from '../model/description';
+import { initialFrames, poseBounds } from '../scene/kinematics';
+import { drawThumbnail } from '../scene/schematic';
+import { isDark } from '../scene/theme';
 import { actions, button, card, DEG, heading, note, portLabel, row, segmented, slider } from '../ui/widgets';
 import { elementControls } from './inspector';
 import type { PartKind } from './parts';
@@ -51,6 +54,39 @@ interface Field {
   scale?: number;
   hint?: string;
   rerender?: boolean;
+}
+
+/** Gallery shelves of the presets. */
+const PRESET_GROUP: Record<string, string> = {
+  'Two-link arm': 'Arms',
+  'Three-link arm': 'Arms',
+  'Seven-joint arm': 'Arms',
+  'Branching arm': 'Arms',
+  'Double pendulum': 'Pendulums',
+  'Wall pendulum': 'Pendulums',
+  Acrobot: 'Pendulums',
+  'Sprung pendulum': 'Pendulums',
+  'Cart-pole': 'Carts & gantries',
+  'Cart double pendulum': 'Carts & gantries',
+  'Gantry (PR)': 'Carts & gantries',
+  'Four-bar linkage': 'Linkages',
+  'Slider-crank': 'Linkages',
+  'Mass–spring–damper': 'Springs',
+};
+
+const THUMB: [number, number] = [104, 62];
+const thumbs = new Map<string, HTMLCanvasElement>();
+
+/** The preset drawn at its initial pose (cached per theme; a canvas can only sit in one place). */
+function thumbnail(name: string): HTMLCanvasElement {
+  const key = `${name}|${isDark()}`;
+  const cached = thumbs.get(key);
+  if (cached) return cached;
+  const mech = PRESETS[name]!();
+  const canvas = document.createElement('canvas');
+  drawThumbnail(canvas, mech, initialFrames(mech), poseBounds(mech), THUMB);
+  thumbs.set(key, canvas);
+  return canvas;
 }
 
 export class Editor {
@@ -177,14 +213,30 @@ export class Editor {
 
   private presetsCard(): HTMLElement {
     const grid = document.createElement('div');
-    grid.className = 'preset-grid';
+    grid.className = 'preset-gallery';
+    const groups = new Map<string, string[]>();
     for (const name of Object.keys(PRESETS)) {
-      const b = button(
-        name,
-        () => this.commit(PRESETS[name]!(), 0),
-        `chip${name === this.mech.name ? ' on' : ''}`,
-      );
-      grid.append(b);
+      const g = PRESET_GROUP[name] ?? 'Other';
+      groups.set(g, [...(groups.get(g) ?? []), name]);
+    }
+    for (const [group, names] of groups) {
+      const row = document.createElement('div');
+      row.className = 'preset-row';
+      for (const name of names) {
+        const b = button(
+          '',
+          () => this.commit(PRESETS[name]!(), 0),
+          `preset-card${name === this.mech.name ? ' on' : ''}`,
+        );
+        b.title = name;
+        const label = document.createElement('span');
+        label.textContent = name;
+        b.append(thumbnail(name), label);
+        row.append(b);
+      }
+      const h = document.createElement('h4');
+      h.textContent = group;
+      grid.append(h, row);
     }
     const g = slider({
       label: 'g',

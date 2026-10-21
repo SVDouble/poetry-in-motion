@@ -25,6 +25,8 @@ export interface Settings {
   ghosts: boolean;
   /** Joint coordinates, masses and gravity on the figure. */
   labels: boolean;
+  /** Dimension lines (bar lengths) on the figure. */
+  dims: boolean;
   /** Show the keyboard legend on the viewport. */
   keys: boolean;
 }
@@ -47,6 +49,7 @@ export const defaultSettings = (): Settings => ({
   trail: true,
   ghosts: true,
   labels: true,
+  dims: false,
   keys: false,
 });
 

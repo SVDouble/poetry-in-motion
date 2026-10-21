@@ -57,7 +57,7 @@ class Crawl:
 
     async def build(self, preset: str) -> None:
         self.where = f"{preset}/build"
-        await self.click(".preset-grid button", preset)
+        await self.click(".preset-card", preset)
         await self.wait(400)
         for label in ["+ revolute", "+ prismatic", "+ fixed"]:
             self.where = f"{preset}/build {label}"
@@ -302,7 +302,7 @@ async def main() -> int:
         crawl = Crawl(page)
         await page.goto(URL)
         await crawl.wait(2500)
-        for preset in await crawl.texts(".preset-grid button"):
+        for preset in await crawl.texts(".preset-card span"):
             await crawl.preset(preset)
         await browser.close()
     unique = list(dict.fromkeys(crawl.errors))

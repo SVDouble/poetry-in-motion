@@ -550,6 +550,8 @@ export interface SchematicFrame {
   annotate: boolean;
   /** The coordinate frames {s}, {1} … {n} and {t}. */
   frames: boolean;
+  /** Dimension lines: the length of every bar. */
+  dims?: boolean;
   /** The tool's path (of every slot shown). */
   trail: boolean;
 }
@@ -1018,6 +1020,35 @@ export class Figure {
       });
     }
 
+    // dimension lines: the length lᵢ of every bar, beside it on its counter-clockwise side
+    if (f.dims) {
+      this.mech.bodies.forEach((_, i) => {
+        const l = this.length(i, params);
+        if (l < 1e-3) return;
+        const [x, y, p] = snap.frame(i + 1);
+        const [c, sn] = [Math.cos(p), Math.sin(p)];
+        const [nx, ny] = [-sn, c];
+        const off = 20 * u;
+        const [ax, ay, bx, by] = [x + nx * off, y + ny * off, x + c * l + nx * off, y + sn * l + ny * off];
+        pen.begin();
+        for (const [ex, ey] of [
+          [x, y],
+          [x + c * l, y + sn * l],
+        ] as const) {
+          pen.move(ex + nx * 6 * u, ey + ny * 6 * u);
+          pen.line(ex + nx * (off + 5 * u), ey + ny * (off + 5 * u));
+        }
+        pen.draw({ stroke: C.muted, width: 0.7 });
+        pen.begin();
+        pen.move(ax, ay);
+        pen.line(bx, by);
+        pen.draw({ stroke: C.ink, width: 0.8 });
+        head(pen, bx, by, p, C.ink, 6);
+        head(pen, ax, ay, p + Math.PI, C.ink, 6);
+        this.label(pen, `l${i}`, (ax + bx) / 2 + nx * 10 * u, (ay + by) / 2 + ny * 10 * u, `l_{${i + 1}}`);
+      });
+    }
+
     // centres of mass (labelled after the coordinates, which win where labels would overlap)
     if (f.annotate) {
       this.mech.bodies.forEach((raw, i) => {
@@ -1128,6 +1159,59 @@ export class Figure {
 
 /** The figure on screen: a canvas for the ground (redrawn when the view changes), one for everything that
  * moves (redrawn when something changed), and KaTeX labels over them. */
+/** A small drawing of a mechanism at its initial pose (frames from forward kinematics), fitted into
+ * `canvas`: the preset gallery. No labels, no annotations, the current theme's inks. */
+export function drawThumbnail(
+  canvas: HTMLCanvasElement,
+  mech: Mechanism,
+  frames: Pose[],
+  bounds: Bounds,
+  [w, h]: [number, number],
+): void {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const k = Math.min(w / bounds.width, h / bounds.height);
+  const pen = new CanvasPen(ctx, null);
+  // symbols at 70 % of their size on screen
+  pen.map(k, w / 2 - bounds.cx * k, h / 2 + bounds.cy * k);
+  (pen as { u: number }).u = 0.7 / k;
+  const nb = mech.bodies.length;
+  const tip = (i: number): Pose => compose(frames[i]!, [normalise(mech.bodies[i]!).l, 0, 0]);
+  const snap = {
+    t: 0,
+    frame: (j: number): Pose =>
+      j === 0 ? [0, 0, 0] : j <= nb ? frames[j - 1]! : tip(Math.max(0, mech.tool)),
+    v: () => 0,
+  } as unknown as Snapshot;
+  const params = mech.bodies.flatMap((raw) => {
+    const b = normalise(raw);
+    return [b.m, b.l, b.r, b.I, b.beta];
+  });
+  const fig = new Figure(mech, { coords: [] } as unknown as Derivation, bounds);
+  const screen = C;
+  C = inks(ink);
+  fig.paintStatic(pen, false);
+  fig.paintDynamic(pen, {
+    snap,
+    params,
+    running: false,
+    push: null,
+    ghosts: [],
+    annotate: false,
+    frames: false,
+    trail: false,
+  });
+  C = screen;
+}
+
 export class SchematicView {
   readonly host = document.createElement('div');
   readonly fig: Figure;
@@ -1201,7 +1285,7 @@ export class SchematicView {
     // parameters (lengths, centres of mass) can change while paused
     let sum = 0;
     for (let i = 0; i < f.params.length; i++) sum += f.params[i]! * (i + 1);
-    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${f.frames},${sum}`;
+    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${f.frames},${f.dims},${sum}`;
     if (!this.dirty && fKey === this.frameKey) return;
     this.frameKey = fKey;
     this.dirty = false;

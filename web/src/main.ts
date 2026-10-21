@@ -507,13 +507,14 @@ class App {
     const redraw = () => {
       if (this.schematic) this.schematic.dirty = true;
     };
-    type Key = 'frames' | 'labels' | 'trail' | 'coriolis' | 'ghosts' | 'keys';
+    type Key = 'frames' | 'labels' | 'dims' | 'trail' | 'coriolis' | 'ghosts' | 'keys';
     const groups: [string, [Key, string, string, () => void][]][] = [
       [
         'Figure',
         [
           ['labels', 'Labels', 'joint coordinates, masses and gravity', redraw],
           ['frames', 'Frames', 'coordinate frames {s}, {1} … {n} and {t}', redraw],
+          ['dims', 'Dimensions', 'the length lᵢ of every bar', redraw],
           ...(sim
             ? ([
                 [
@@ -635,6 +636,7 @@ class App {
       ghosts: simulating && this.settings.ghosts ? this.ghostSlots : [],
       annotate: this.settings.labels,
       frames: this.settings.frames,
+      dims: this.settings.dims,
       trail: this.settings.trail,
     };
   }
@@ -674,6 +676,7 @@ class App {
     }
     this.schematic?.restyle();
     this.sim.restyle();
+    if (this.stageName === 'build') this.editor.load(this.mech);
   }
 
   private setRunning(on: boolean): void {
