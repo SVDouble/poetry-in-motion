@@ -26,12 +26,13 @@ import {
   paramVector,
   reparent,
 } from './model/description';
+import { poseBounds } from './scene/kinematics';
 import { RobotView } from './scene/robot';
 import { type SchematicFrame, SchematicView } from './scene/schematic';
 import { Stage } from './scene/stage';
 import { setDark } from './scene/theme';
 import { SimClient } from './sim/client';
-import { closePopover } from './ui/popover';
+import { closePopover, popover } from './ui/popover';
 import { button, portLabel } from './ui/widgets';
 
 type StageName = 'build' | 'derive' | 'simulate';
@@ -328,10 +329,12 @@ class App {
     this.schematic = new SchematicView(this.mech, res.derivation, this.robot.bounds());
     $('viewport').prepend(this.schematic.host);
     this.sim.load(res.derivation, res.controllers);
-    if (!this.dragging) {
-      const b = this.robot.bounds();
-      this.stage.setView(b.cx, b.cy, b.width, b.height);
+    // a different mechanism is framed afresh; edits keep the view unless the user has not touched it
+    if (this.mech.name !== this.framedName || this.mech.name === 'Custom') {
+      if (this.mech.name !== this.framedName) this.userView = false;
+      this.framedName = this.mech.name;
     }
+    if (!this.dragging && !this.userView) this.fitView();
     const sel = this.stageName === 'build' ? this.editor.selection : -1;
     this.schematic.select(sel);
     this.gizmos.select(sel);
@@ -438,6 +441,7 @@ class App {
     this.gizmos.visible = s === 'build';
     this.gizmos.connectFrom = null;
     if (s !== 'build') this.inspector.hide();
+    if (!this.userView) this.fitView();
     this.closePopover();
     closePopover();
     this.refreshStage();
@@ -493,63 +497,128 @@ class App {
     this.buildToggles();
   }
 
+  /** The view toolbar: a View menu (what the figure shows), zoom and fit, and an Export menu. */
   private buildToggles(): void {
     const host = $('toggles');
     host.replaceChildren();
     const t = this.settings;
+    const sim = this.stageName === 'simulate';
     const redraw = () => {
       if (this.schematic) this.schematic.dirty = true;
     };
-    const items: [
-      'frames' | 'labels' | 'trail' | 'coriolis' | 'ghosts' | 'keys',
-      string,
-      string,
-      () => void,
-    ][] = [
-      ['frames', 'Frames', 'Coordinate frames {s}, {1} … {n} and {t}', redraw],
-      ['labels', 'Labels', 'Joint coordinates, masses and gravity', redraw],
+    type Key = 'frames' | 'labels' | 'trail' | 'coriolis' | 'ghosts' | 'keys';
+    const groups: [string, [Key, string, string, () => void][]][] = [
       [
-        'trail',
-        'Trail',
-        "The tool's path",
-        () => {
-          this.schematic?.resetTrail();
-          redraw();
-        },
+        'Figure',
+        [
+          ['labels', 'Labels', 'joint coordinates, masses and gravity', redraw],
+          ['frames', 'Frames', 'coordinate frames {s}, {1} … {n} and {t}', redraw],
+          ...(sim
+            ? ([
+                [
+                  'trail',
+                  'Trail',
+                  "the tool's path",
+                  () => {
+                    this.schematic?.resetTrail();
+                    redraw();
+                  },
+                ],
+                ['ghosts', 'Shadows', 'the shadow controllers, in their colours', redraw],
+              ] as [Key, string, string, () => void][])
+            : []),
+        ],
       ],
-      ['ghosts', 'Shadows', 'The shadow controllers, drawn in their colours', redraw],
-      [
-        'coriolis',
-        'Coriolis',
-        'Switch off C(q, q̇)q̇ in the simulation (non-physical: watch the energy drift)',
-        () => this.client.flag('Coriolis', t.coriolis ? 1 : 0),
-      ],
-      ['keys', 'Keys', 'The keyboard legend', () => this.sim.renderKeys()],
+      ...(sim
+        ? ([
+            [
+              'Simulation',
+              [
+                [
+                  'coriolis',
+                  'Coriolis forces',
+                  'off is non-physical: watch the energy drift',
+                  () => this.client.flag('Coriolis', t.coriolis ? 1 : 0),
+                ],
+                ['keys', 'Keyboard legend', 'the keys that drive the joints', () => this.sim.renderKeys()],
+              ],
+            ],
+          ] as [string, [Key, string, string, () => void][]][])
+        : []),
     ];
-    for (const [key, label, title, apply] of items) {
-      if (key !== 'frames' && key !== 'labels' && this.stageName !== 'simulate') continue;
-      const b = button(
-        label,
-        () => {
-          t[key] = !t[key];
-          b.classList.toggle('on', t[key]);
-          apply();
-        },
-        'chip',
-        title,
-      );
-      b.classList.toggle('on', t[key]);
-      host.append(b);
-    }
-    host.append(
-      button('SVG', () => this.exportSchematic('svg'), 'chip action', 'Download the current picture as SVG'),
-      button(
-        'TikZ',
-        () => this.exportSchematic('tikz'),
-        'chip action',
-        'Copy the current picture as TikZ code',
-      ),
+    const viewMenu = () => {
+      const menu = document.createElement('div');
+      menu.className = 'check-menu';
+      for (const [title, items] of groups) {
+        const h = document.createElement('h5');
+        h.textContent = title;
+        menu.append(h);
+        for (const [key, label, hint, apply] of items) {
+          const b = button(
+            '',
+            () => {
+              t[key] = !t[key];
+              b.classList.toggle('on', t[key]);
+              apply();
+            },
+            `menu-check${t[key] ? ' on' : ''}`,
+          );
+          b.innerHTML = `<span class="tick"></span><span>${label}<small>${hint}</small></span>`;
+          menu.append(b);
+        }
+      }
+      return menu;
+    };
+    const view = button(
+      'View ▾',
+      () => popover(view, viewMenu(), 'right'),
+      'chip action',
+      'what the figure shows',
     );
+    const zoom = (f: number) => () => {
+      const m = this.stage.mapping();
+      this.stage.zoomAt(f, m.w / 2, m.h / 2);
+      this.userView = true;
+    };
+    const exportMenu = () => {
+      const menu = document.createElement('div');
+      menu.className = 'check-menu';
+      menu.append(
+        button('SVG file — the picture as it is now', () => this.exportSchematic('svg'), 'menu-item'),
+        button('TikZ code — copied, ready for LaTeX', () => this.exportSchematic('tikz'), 'menu-item'),
+      );
+      return menu;
+    };
+    const exp = button(
+      'Export ▾',
+      () => popover(exp, exportMenu(), 'right'),
+      'chip action',
+      'save the figure',
+    );
+    host.append(
+      view,
+      button('−', zoom(1 / 1.25), 'chip action zoom', 'zoom out (wheel)'),
+      button(
+        'Fit',
+        () => this.fitView(),
+        'chip action zoom',
+        'frame the mechanism (right- or middle-drag pans)',
+      ),
+      button('+', zoom(1.25), 'chip action zoom', 'zoom in (wheel)'),
+      exp,
+    );
+  }
+
+  /** The user zoomed or panned: keep their view until they ask to fit again. */
+  private userView = false;
+  private framedName = '';
+
+  /** Frame the mechanism: its pose while building and deriving, everywhere it can reach while simulating. */
+  private fitView(): void {
+    if (!this.robot) return;
+    const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.mech);
+    this.stage.setView(b.cx, b.cy, b.width, b.height);
+    this.userView = false;
   }
 
   private ghostSlots: SchematicFrame['ghosts'] | null = null;
@@ -637,7 +706,46 @@ class App {
     });
 
     const viewport = $('viewport');
+    // the wheel zooms about the pointer; the right or middle button pans
+    viewport.addEventListener(
+      'wheel',
+      (e) => {
+        if (e.target instanceof Element && e.target.closest('.overlay')) return;
+        e.preventDefault();
+        const r = viewport.getBoundingClientRect();
+        this.stage.zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+        this.userView = true;
+      },
+      { passive: false },
+    );
+    viewport.addEventListener('contextmenu', (e) => e.preventDefault());
+    let panFrom: [number, number] | null = null;
+    viewport.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (e.button !== 1 && e.button !== 2) return;
+        e.stopPropagation();
+        e.preventDefault();
+        panFrom = [e.clientX, e.clientY];
+        viewport.setPointerCapture(e.pointerId);
+        viewport.classList.add('panning');
+      },
+      true,
+    );
+    viewport.addEventListener('pointermove', (e) => {
+      if (!panFrom) return;
+      this.stage.panBy(e.clientX - panFrom[0], e.clientY - panFrom[1]);
+      panFrom = [e.clientX, e.clientY];
+      this.userView = true;
+    });
+    const endPan = () => {
+      panFrom = null;
+      viewport.classList.remove('panning');
+    };
+    viewport.addEventListener('pointerup', endPan);
+    viewport.addEventListener('pointercancel', endPan);
     const pointer = (kind: 'down' | 'move' | 'up') => (e: PointerEvent) => {
+      if (panFrom) return;
       if (e.target instanceof Element && e.target.closest('.overlay, .gizmos *')) return;
       if (kind === 'down') {
         this.closePopover();
@@ -738,12 +846,14 @@ class App {
       c.frames = 0;
       c.hud = now;
       const s = this.client.stats;
-      $('stats').innerHTML =
-        `<span><b>${fps.toFixed(0)}</b> fps</span>` +
-        `<span><b>${(s.stepsPerSecond / 1000).toFixed(2)}</b> kHz</span>` +
-        `<span><b>${s.stepUs.toFixed(2)}</b> µs/step</span>` +
-        `<span><b>t</b> ${this.snap.t.toFixed(1)} s</span>` +
-        (s.shared ? '<span class="muted">shared memory</span>' : '');
+      const khz = s.stepsPerSecond / 1000;
+      // the time for everyone; the machinery (frame rate, step rate and cost) on hover
+      const slow = this.running && this.stageName === 'simulate' && khz < 0.95;
+      const el = $('stats');
+      el.innerHTML =
+        `<span><i>t</i> = <b>${this.snap.t.toFixed(1)}</b> s</span>` +
+        (slow ? '<span class="slow">slower than real time</span>' : '');
+      el.title = `${fps.toFixed(0)} frames/s · physics ${khz.toFixed(2)} kHz (1 kHz is real time) · ${s.stepUs.toFixed(2)} µs per step${s.shared ? ' · shared memory' : ''}`;
     }
   }
 }

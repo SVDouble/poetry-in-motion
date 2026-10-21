@@ -212,10 +212,10 @@ class Crawl:
         await self.wait(200)
 
     async def chrome(self, preset: str) -> None:
-        for toggle in ["Frames", "Labels", "Trail", "Shadows", "Coriolis", "Keys"]:
-            self.where = f"{preset}/toggle {toggle}"
-            await self.click("#toggles button", toggle)
-            await self.click("#toggles button", toggle)
+        for toggle in ["Frames", "Labels", "Trail", "Shadows", "Coriolis forces", "Keyboard legend"]:
+            self.where = f"{preset}/view {toggle}"
+            await self.view_toggle(toggle)
+            await self.view_toggle(toggle)
         self.where = f"{preset}/model friction"
         await self.click(".side-head .segmented button", "Model")
         await self.click(".segmented button", "none")
@@ -245,11 +245,32 @@ class Crawl:
         if drawn != 2:
             self.fail(f"the figure has {drawn} canvases")
         for toggle in ["Frames", "Labels"]:
-            await self.click("#toggles button", toggle)
+            await self.view_toggle(toggle)
             await self.wait(150)
-            await self.click("#toggles button", toggle)
+            await self.view_toggle(toggle)
+        for label in ["+", "−", "Fit"]:
+            await self.click("#toggles button", label)
+        await self.page.mouse.move(400, 350)
+        await self.page.mouse.wheel(0, -300)
+        await self.click("#toggles button", "Fit")
+        await self.click("#toggles button", "Export ▾")
         async with self.page.expect_download():
-            await self.click("#toggles button", "SVG")
+            if not await self.js(
+                "(() => { const b = [...document.querySelectorAll('.menu-item')]"
+                ".find(e => e.textContent.startsWith('SVG')); b?.click(); return !!b; })()"
+            ):
+                self.fail("no SVG entry in the Export menu")
+
+    async def view_toggle(self, label: str) -> None:
+        """Flip one entry of the View menu (the menu closes again afterwards)."""
+        await self.click("#toggles button", "View ▾")
+        found = await self.js(
+            "(() => { const b = [...document.querySelectorAll('.menu-check')]"
+            f".find(e => e.textContent.startsWith({json.dumps(label)})); b?.click(); return !!b; }})()"
+        )
+        if not found:
+            self.fail(f"no {label!r} in the View menu")
+        await self.page.keyboard.press("Escape")
 
     async def preset(self, preset: str) -> None:
         await self.build(preset)

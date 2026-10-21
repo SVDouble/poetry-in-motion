@@ -609,6 +609,8 @@ export class Figure {
   private readonly paths = SLOT_COLORS.map(() => new Path());
   /** Where an export puts the gravity arrow (null: the corner of the reachable region). */
   private gAt: [number, number] | null = null;
+  /** On screen: the gravity arrow sits in a corner of the view, wherever the view is (null: unknown). */
+  screenG: [number, number] | null = null;
   /** Highlighted body and spring/damper (−1: none). */
   selected = -1;
   selectedElement = -1;
@@ -740,13 +742,14 @@ export class Figure {
     }
     if (annotate && this.mech.g > 0) {
       const [bx, by] = this.gravityAt();
-      arrow(pen, bx, by, bx, by - 0.3, C.ink, 1.3);
+      arrow(pen, bx, by, bx, by - 44 * u, C.ink, 1.3);
     }
   }
 
   /** Where the gravity arrow starts (its label is drawn with the moving layer, where labels live). */
   private gravityAt(): [number, number] {
     if (this.gAt) return this.gAt;
+    if (this.screenG) return this.screenG;
     return [this.bounds.cx + this.bounds.width / 2 - 0.3, this.bounds.cy - this.bounds.height / 2 + 0.6];
   }
 
@@ -929,7 +932,7 @@ export class Figure {
 
     if (f.annotate && this.mech.g > 0) {
       const [bx, by] = this.gravityAt();
-      this.label(pen, 'g', bx, by - 0.15, 'g', 12, 0);
+      this.label(pen, 'g', bx, by - 22 * u, 'g', 12, 0);
     }
 
     // joints: hinges, welds, loop pins
@@ -1181,6 +1184,8 @@ export class SchematicView {
         c.width = Math.round(m.w * dpr);
         c.height = Math.round(m.h * dpr);
       }
+      // gravity: an arrow in the bottom-right corner, clear of the overlays (in world coordinates)
+      this.fig.screenG = [(m.w - 34 - m.x0) / m.k, (m.y0 - (m.h - 84)) / m.k];
       this.prepare(this.backPen, m, dpr);
       this.fig.paintStatic(this.backPen, f.annotate);
       this.dirty = true;

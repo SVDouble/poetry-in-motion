@@ -41,6 +41,26 @@ export class Stage {
     return this.map;
   }
 
+  /** Zoom by `factor` (> 1: closer) keeping the world point under the screen point (sx, sy) in place. */
+  zoomAt(factor: number, sx: number, sy: number): void {
+    const [wx, wy] = [(sx - this.map.x0) / this.map.k, (this.map.y0 - sy) / this.map.k];
+    const f = Math.min(8, Math.max(1 / 8, factor));
+    const v = this.view;
+    const width = Math.min(200, Math.max(0.05, v.width / f));
+    const height = Math.min(200, Math.max(0.05, v.height / f));
+    // the point under the pointer stays: c' = w − (w − c) / f
+    const s = width / v.width;
+    this.view = { cx: wx - (wx - v.cx) * s, cy: wy - (wy - v.cy) * s, width, height };
+    this.resize();
+  }
+
+  /** Move the view by (dx, dy) screen pixels (the drawing follows the pointer). */
+  panBy(dx: number, dy: number): void {
+    const k = this.map.k;
+    this.view = { ...this.view, cx: this.view.cx - dx / k, cy: this.view.cy + dy / k };
+    this.resize();
+  }
+
   /** Pointer position → world coordinates. */
   toWorld(clientX: number, clientY: number): [number, number] {
     const r = this.container.getBoundingClientRect();
