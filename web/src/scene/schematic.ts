@@ -889,12 +889,13 @@ export class Figure {
     const label = (id: string, x: number, y: number, src: string) => this.label(pen, id, x, y, src);
     const com = (k: number) => this.geo.com(k, snap, params);
     const moving = (k: number) => this.mech.bodies[k]!.joint !== 'fixed' || (param(params, k, 'm') ?? 0) > 0;
-    // fixed scales, so that arrows compare across time: a round force (about the heaviest weight) and a
+    // fixed scales, so that arrows compare across time: a round force (on the order of the heaviest weight) and a
     // round speed (about the size of the mechanism per second) are each drawn L long, listed in a key
     const size = Math.max(this.bounds.width, this.bounds.height);
     const L = 0.12 * size;
     const weight = Math.max(1e-3, ...this.mech.bodies.map((_, k) => (param(params, k, 'm') ?? 0) * g));
-    const [fRef, vRef] = [roundDown(weight), roundDown(0.5 * size)];
+    // (the reference is at least half the heaviest weight: a weight is drawn about L, never past 2 L)
+    const [fRef, vRef] = [roundDown(2 * weight), roundDown(0.5 * size)];
     const [fScale, vScale] = [L / fRef, L / vRef];
     const focus = f.focus ?? null;
     const showVel = f.velocities || focus?.kind === 'velocities' || focus?.kind === 'com';
@@ -1590,7 +1591,7 @@ export class SchematicView {
       }
       // gravity: an arrow in the bottom-right corner, clear of the overlays (in world coordinates)
       this.fig.screenG = [(m.w - 34 - m.x0) / m.k, (m.y0 - (m.h - 84)) / m.k];
-      this.fig.screenKey = [(18 - m.x0) / m.k, (m.y0 - (m.h - 22)) / m.k];
+      this.fig.screenKey = [(18 - m.x0) / m.k, (m.y0 - (m.h - 70)) / m.k]; // above the timeline
       this.prepare(this.backPen, m, dpr);
       this.fig.paintStatic(this.backPen, f.annotate);
       this.dirty = true;
