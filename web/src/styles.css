@@ -1084,6 +1084,15 @@ body:not([data-stage="simulate"]) .stagecol {
     inset 0 0 0 5px var(--ink);
 }
 
+.joint-icon.spring {
+  border: 0;
+  border-radius: 0;
+  width: 15px;
+  height: 9px;
+  box-shadow: none;
+  background: linear-gradient(135deg, transparent 40%, var(--ink) 40% 55%, transparent 55%) 0 0 / 5px 9px;
+}
+
 .joint-icon.slot {
   border-radius: 1px;
   width: 15px;
@@ -1138,6 +1147,12 @@ body:not([data-stage="simulate"]) .stagecol {
   box-shadow: var(--shadow);
   padding: 4px 12px;
   font-size: 13.5px;
+}
+
+/* hints and confirmations: ink; build errors stay red */
+.overlay.bc[data-kind="flash"] {
+  border-color: var(--ink);
+  color: var(--text);
 }
 
 .overlay.bc[hidden] {
@@ -1674,4 +1689,197 @@ details.fold > summary {
   font-size: 14px;
   font-style: italic;
   padding: 6px 0;
+}
+
+/* ---------- steppers: ◀ value ▶ ---------- */
+
+.stepper-row {
+  grid-template-columns: 1fr auto;
+  padding: 3px 0;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-2);
+  background: var(--card);
+}
+
+.stepper-arrow {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 3px 7px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.stepper-arrow:hover {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.stepper-value {
+  width: 4.6em;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-right: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  padding: 1px 4px;
+}
+
+.stepper-value:focus {
+  outline: 1px solid var(--accent);
+}
+
+.stepper-unit {
+  width: 3.6em;
+  padding: 0 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+
+/* ---------- builder: parts palette, inspector, snapping ---------- */
+
+.palette {
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--ink);
+  background: var(--veil);
+  box-shadow: var(--shadow);
+}
+
+body:not([data-stage="build"]) .palette {
+  display: none;
+}
+
+.palette-title {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+}
+
+.palette-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  padding: 2px 4px;
+  cursor: grab;
+  font-size: 11.5px;
+  line-height: 1.1;
+  touch-action: none;
+  user-select: none;
+}
+
+.palette-item:hover {
+  border-color: var(--line-2);
+  background: var(--card);
+}
+
+.palette-item:active {
+  cursor: grabbing;
+}
+
+.viewport.placing,
+.viewport.placing * {
+  cursor: copy;
+}
+
+.gizmos .port.hot {
+  fill: var(--accent);
+  stroke: var(--accent);
+  stroke-dasharray: none;
+}
+
+.gizmos .rubber {
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+.gizmos .drop-dot {
+  fill: var(--accent);
+  pointer-events: none;
+}
+
+.gizmos .place-label {
+  fill: var(--accent);
+  font: italic 13px var(--font);
+  pointer-events: none;
+}
+
+.inspector {
+  top: 48px;
+  width: 300px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  border: 1px solid var(--ink);
+  border-top: 2px solid var(--ink);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  scrollbar-width: thin;
+}
+
+.inspector[hidden] {
+  display: none;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  font-variant: small-caps;
+  letter-spacing: 0.03em;
+}
+
+.inspector-body {
+  padding: 2px 10px 4px;
+}
+
+.inspector-body .param-name {
+  font-size: 14px;
+}
+
+.inspector-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.inspector-foot .btn.danger {
+  margin-top: 0;
+}
+
+.element-fields {
+  margin: 2px 0 8px 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-2);
 }

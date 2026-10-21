@@ -1160,6 +1160,11 @@ export class SchematicView {
     this.fig.selected = i;
   }
 
+  selectElement(k: number): void {
+    if (k !== this.fig.selectedElement) this.dirty = true;
+    this.fig.selectedElement = k;
+  }
+
   resetTrail(): void {
     this.fig.resetTrail();
     this.dirty = true;

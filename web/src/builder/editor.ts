@@ -21,6 +21,8 @@ import {
   reparent,
 } from '../model/description';
 import { actions, button, card, DEG, heading, note, portLabel, row, segmented, slider } from '../ui/widgets';
+import { elementControls } from './inspector';
+import type { PartKind } from './parts';
 
 export interface EditorEvents {
   change(m: Mechanism): void;
@@ -28,6 +30,12 @@ export interface EditorEvents {
   /** Start a loop closure from the given port (the viewport then asks for the other end). */
   connect(body: number, s: number, kind: 'pin' | 'slot'): void;
   flash(message: string): void;
+  /** A spring/damper was selected in the list (−1: none). */
+  selectElement(k: number): void;
+  /** Current length of spring/damper k. */
+  elementLength(k: number): number;
+  /** Pick up a part, as if from the palette. */
+  startPart(kind: PartKind): void;
 }
 
 /** A numeric body/joint property bound to a slider. `scale` converts stored values to displayed ones. */
@@ -48,6 +56,7 @@ interface Field {
 export class Editor {
   private mech!: Mechanism;
   private selected = 0;
+  private selectedElement = -1;
   private dragFrom = -1;
 
   constructor(
@@ -65,9 +74,23 @@ export class Editor {
     return this.selected;
   }
 
+  get elementSelection(): number {
+    return this.selectedElement;
+  }
+
+  selectElement(k: number): void {
+    const next = k >= 0 && k < this.mech.elements.length ? k : -1;
+    if (next !== this.selectedElement) {
+      this.selectedElement = next;
+      this.render();
+    }
+    this.events.selectElement(next);
+  }
+
   load(mech: Mechanism, selected = this.selected): void {
     this.mech = cloneMechanism(mech);
     this.selected = Math.max(0, Math.min(selected, mech.bodies.length - 1));
+    if (this.selectedElement >= mech.elements.length) this.selectedElement = -1;
     this.render();
   }
 
@@ -84,6 +107,7 @@ export class Editor {
   commit(m: Mechanism, selected = this.selected): void {
     this.mech = m;
     this.selected = Math.max(0, Math.min(selected, m.bodies.length - 1));
+    if (this.selectedElement >= m.elements.length) this.selectedElement = -1;
     this.render();
     this.events.change(cloneMechanism(m));
     this.events.select(this.selected);
@@ -146,6 +170,7 @@ export class Editor {
       this.presetsCard(),
       this.treeCard(),
       this.loopsCard(),
+      this.springsCard(),
       this.bodyCard(this.selected),
     );
   }
@@ -346,6 +371,64 @@ export class Editor {
       actions(
         start('pin', `+ pin tip of body ${this.selected + 1} to…`),
         start('slot', `+ slide tip of body ${this.selected + 1} in a slot…`),
+      ),
+    );
+    return c;
+  }
+
+  private springsCard(): HTMLElement {
+    const c = card('Springs & dampers');
+    if (this.mech.elements.length === 0) {
+      c.append(
+        note(
+          'Join two points — on bodies or the ground — with a spring, a damper or both: drag one from the parts palette in the view, drop one end, then click the other.',
+        ),
+      );
+    }
+    this.mech.elements.forEach((e, k) => {
+      const item = document.createElement('div');
+      item.className = `tree-item${k === this.selectedElement ? ' on' : ''}`;
+      const kind = e.k > 0 && e.d > 0 ? 'spring–damper' : e.k > 0 ? 'spring' : 'damper';
+      const a =
+        e.a < 0 ? `ground (${e.gx.toFixed(2)}, ${e.gy.toFixed(2)})` : `body ${e.a + 1} @ ${portLabel(e.sa)}`;
+      item.innerHTML = `<span class="joint-icon spring"></span><span class="tree-label">${kind} ${k + 1} <span class="muted">${a} ↔ body ${e.b + 1} @ ${portLabel(e.sb)}</span></span>`;
+      item.addEventListener('click', () => this.selectElement(k === this.selectedElement ? -1 : k));
+      const rm = button(
+        '×',
+        () => {
+          const m = cloneMechanism(this.mech);
+          m.elements.splice(k, 1);
+          this.selectedElement = -1;
+          this.commit({ ...m, name: 'Custom' });
+        },
+        'icon-btn',
+        'remove',
+      );
+      rm.addEventListener('click', (ev) => ev.stopPropagation());
+      item.append(rm);
+      c.append(item);
+      if (k === this.selectedElement) {
+        const ctx = {
+          mech: this.mech,
+          commit: (m: Mechanism, structural = false) => {
+            this.mech = m;
+            if (structural) this.render();
+            this.events.change(cloneMechanism(m));
+          },
+          refuse: (msg: string) => this.refuse(msg),
+          length: (j: number) => this.events.elementLength(j),
+        };
+        const box = document.createElement('div');
+        box.className = 'element-fields';
+        box.append(...elementControls(ctx, k));
+        c.append(box);
+      }
+    });
+    c.append(
+      actions(
+        button('+ spring', () => this.events.startPart('spring')),
+        button('+ damper', () => this.events.startPart('damper')),
+        button('+ spring–damper', () => this.events.startPart('springDamper')),
       ),
     );
     return c;

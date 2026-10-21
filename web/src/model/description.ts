@@ -77,7 +77,7 @@ export interface Mechanism {
 }
 
 export const MAX_BODIES = 8;
-export const MAX_DOF = 6;
+export const MAX_DOF = 7;
 export const MAX_CLOSURES = 4;
 export const DESC_VERSION = 4;
 export const MAX_ELEMENTS = 8;

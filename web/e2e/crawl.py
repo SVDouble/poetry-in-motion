@@ -71,6 +71,40 @@ class Crawl:
             await self.wait(150)
         await self.wait(300)
 
+    async def palette(self, preset: str) -> None:
+        """Drag a spring from the palette onto a port, click the ground for its other end, step a value in
+        the inspector, then drop a bar on the ground and close the inspector."""
+        self.where = f"{preset}/palette"
+        mouse = self.page.mouse
+        box = await self.page.locator("#viewport").bounding_box()
+        if not box:
+            return
+        for label, second in [("Spring", True), ("Bar", False)]:
+            item = await self.page.locator(".palette-item", has_text=label).first.bounding_box()
+            if not item:
+                self.fail(f"no {label} in the palette")
+                return
+            await mouse.move(item["x"] + item["width"] / 2, item["y"] + item["height"] / 2)
+            await mouse.down()
+            await mouse.move(box["x"] + 500, box["y"] + 260, steps=4)
+            ports = await self.js("[...document.querySelectorAll('.gizmos circle.port.target')].length")
+            if not ports:
+                self.fail("no ports light up while placing")
+            await mouse.up()
+            if second:
+                await mouse.move(box["x"] + 560, box["y"] + 160, steps=3)
+                await mouse.down()
+                await mouse.up()
+            await self.wait(400)
+        if not await self.js("!!document.querySelector('.inspector:not([hidden])')"):
+            self.fail("the inspector did not open on the placed part")
+        await self.click(".inspector .stepper-arrow", last=True)
+        await self.wait(200)
+        await self.page.keyboard.press("Escape")
+        await self.wait(200)
+        if await self.js("!!document.querySelector('.inspector:not([hidden])')"):
+            self.fail("Escape did not close the inspector")
+
     async def hierarchy(self, preset: str) -> None:
         self.where = f"{preset}/goals hierarchy"
         await self.click(".side-head .segmented button", "Goals")
@@ -219,6 +253,7 @@ class Crawl:
 
     async def preset(self, preset: str) -> None:
         await self.build(preset)
+        await self.palette(preset)
         self.where = f"{preset}/derive"
         await self.click("[data-stage=derive]")
         await self.wait(600)

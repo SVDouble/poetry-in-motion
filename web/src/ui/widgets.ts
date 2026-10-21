@@ -145,3 +145,92 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   e.append(...children);
   return e;
 }
+
+export interface StepperOpts {
+  label: string;
+  tex?: boolean;
+  value: number;
+  step: number;
+  min: number;
+  max: number;
+  unit?: string;
+  /** Shown value = stored value × scale (e.g. degrees). */
+  scale?: number;
+  digits?: number;
+  hint?: string;
+  onChange: (v: number) => void;
+}
+
+/**
+ * A number with ◀ ▶ arrows: click to step, hold to repeat (accelerating), Shift for a tenth of the step,
+ * the wheel to scroll through values, or type a value.
+ */
+export function stepper(o: StepperOpts): HTMLElement {
+  const scale = o.scale ?? 1;
+  const digits = o.digits ?? Math.max(0, Math.ceil(-Math.log10(o.step * scale)) + 1);
+  let value = o.value;
+  const wrap = el('div', 'param stepper-row');
+  if (o.hint) wrap.title = o.hint;
+  const name = el('span', 'param-name');
+  if (o.tex) tex(name, o.label);
+  else name.textContent = o.label;
+  const box = el('span', 'stepper');
+  const input = el('input', 'stepper-value');
+  input.type = 'text';
+  input.inputMode = 'decimal';
+  const unit = el('span', 'stepper-unit', o.unit ?? '');
+  const show = () => {
+    input.value = (value * scale).toFixed(digits);
+  };
+  const set = (v: number) => {
+    const next = Math.min(o.max, Math.max(o.min, Number(v.toFixed(10))));
+    if (next === value) return;
+    value = next;
+    show();
+    o.onChange(value);
+  };
+  const nudge = (dir: number, fine: boolean) => set(value + dir * o.step * (fine ? 0.1 : 1));
+  const arrow = (label: string, dir: number) => {
+    const b = el('button', 'stepper-arrow', label);
+    b.type = 'button';
+    let timer = 0;
+    const stop = () => window.clearTimeout(timer);
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      nudge(dir, e.shiftKey);
+      let delay = 380;
+      const again = () => {
+        if (!b.isConnected) return; // re-rendered meanwhile: stop repeating
+        nudge(dir, e.shiftKey);
+        delay = Math.max(40, delay * 0.8);
+        timer = window.setTimeout(again, delay);
+      };
+      timer = window.setTimeout(again, delay);
+    });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel'] as const) b.addEventListener(ev, stop);
+    return b;
+  };
+  input.addEventListener('change', () => {
+    const v = Number(input.value.replace(',', '.'));
+    if (Number.isFinite(v)) set(v / scale);
+    else show();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      nudge(e.key === 'ArrowUp' ? 1 : -1, e.shiftKey);
+    }
+  });
+  box.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      nudge(e.deltaY < 0 ? 1 : -1, e.shiftKey);
+    },
+    { passive: false },
+  );
+  show();
+  box.append(arrow('◀', -1), input, unit, arrow('▶', 1));
+  wrap.append(name, box);
+  return wrap;
+}

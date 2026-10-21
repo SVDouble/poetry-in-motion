@@ -7,6 +7,9 @@ import { defaultSettings, type Settings } from './app/settings';
 import { SimulateStage } from './app/simulate';
 import { Editor } from './builder/editor';
 import { Gizmos } from './builder/gizmos';
+import { type EditContext, Inspector, removeSelection, type Selection } from './builder/inspector';
+import { Palette } from './builder/palette';
+import { type Anchor, place, placeLoop } from './builder/parts';
 import { ControlStore } from './control/store';
 import { derivationSections } from './eq/derivation';
 import { EquationPanel } from './eq/panel';
@@ -21,6 +24,7 @@ import {
   migrate,
   PRESETS,
   paramVector,
+  reparent,
 } from './model/description';
 import { RobotView } from './scene/robot';
 import { type SchematicFrame, SchematicView } from './scene/schematic';
@@ -109,6 +113,12 @@ class App {
       },
       connect: (body, s, kind) => this.startConnect(body, s, kind),
       flash: (msg) => this.flash(msg),
+      selectElement: (k) => {
+        this.schematic?.selectElement(k);
+        if (k >= 0) this.gizmos.select(-1);
+      },
+      elementLength: (k) => this.elementLength(k),
+      startPart: (kind) => this.gizmos.beginPlace(kind),
     });
     this.gizmos = new Gizmos($('viewport'), stage, {
       port: (body, s, at) => this.openPortMenu(body, s, at),
@@ -124,7 +134,135 @@ class App {
         this.dragging = false;
         this.editor.load(this.mech);
       },
+      snapTip: (body, to) => this.snapTip(body, to),
+      snapJoint: (body, to) => this.snapJoint(body, to),
+      place: (kind, a, b) => {
+        const r = place(this.mech, kind, a, b);
+        if (typeof r === 'string') {
+          this.flash(r);
+          return;
+        }
+        this.adopt(r.mech, r.select.kind === 'body' ? r.select.index : this.editor.selection);
+        if (r.select.kind === 'element') this.editor.selectElement(r.select.index);
+        const at = this.stage.toScreen(b?.x ?? a.x, b?.y ?? a.y);
+        this.inspector.show({ kind: r.select.kind, index: r.select.index }, at);
+      },
+      placing: (state) => {
+        if (state === 'first')
+          this.flash(
+            'Drop it on a lit port to attach it there, or on empty space for the ground. Esc cancels.',
+          );
+        else if (state === 'second')
+          this.flash('Now the other end: a lit port, or empty space for the ground.');
+      },
     });
+    this.palette = new Palette({ start: (kind) => this.gizmos.beginPlace(kind) });
+    $('viewport').append(this.palette.el);
+    this.inspector = new Inspector($('viewport'), {
+      context: () => this.editContext(),
+      remove: (sel) => this.removeSelected(sel),
+      tool: (i, on) => {
+        const m = cloneMechanism(this.mech);
+        m.tool = on ? i : m.tool === i ? -1 : m.tool;
+        this.adopt(m);
+        this.inspector.render();
+      },
+      close: () => this.closeInspector(),
+    });
+  }
+
+  private readonly palette: Palette;
+  private readonly inspector: Inspector;
+
+  /** Take a new document from the view (palette, inspector, snapping): history, panel, rebuild. */
+  private adopt(m: Mechanism, selected = this.editor.selection): void {
+    this.editor.commit(m, selected);
+  }
+
+  private editContext(): EditContext {
+    return {
+      mech: this.mech,
+      commit: (m, structural = false) => {
+        this.adopt(m);
+        if (structural) this.inspector.render();
+      },
+      refuse: (msg) => this.flash(msg),
+      length: (k) => this.elementLength(k),
+    };
+  }
+
+  /** Distance between the ends of spring/damper k at the current pose. */
+  private elementLength(k: number): number {
+    const e = this.mech.elements[k];
+    if (!e || !this.robot) return 0;
+    const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.robot.port(e.a, e.sa, this.snap, this.params);
+    const [bx, by] = this.robot.port(e.b, e.sb, this.snap, this.params);
+    return Math.hypot(bx - ax, by - ay);
+  }
+
+  /** The spring/damper whose line passes within a few pixels of (x, y), or −1. */
+  private pickElement(x: number, y: number): number {
+    const reach = 7 * this.stage.metresPerPixel;
+    let best = -1;
+    let bestD = reach;
+    this.mech.elements.forEach((e, k) => {
+      if (!this.robot) return;
+      const [ax, ay] = e.a < 0 ? [e.gx, e.gy] : this.robot.port(e.a, e.sa, this.snap, this.params);
+      const [bx, by] = this.robot.port(e.b, e.sb, this.snap, this.params);
+      const [vx, vy] = [bx - ax, by - ay];
+      const len2 = vx * vx + vy * vy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / len2)) : 0;
+      const d = Math.hypot(x - (ax + t * vx), y - (ay + t * vy));
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    });
+    return best;
+  }
+
+  private closeInspector(): void {
+    this.inspector.hide();
+    this.editor.selectElement(-1);
+  }
+
+  private removeSelected(sel: Selection): void {
+    const r = removeSelection(this.mech, sel);
+    if (typeof r === 'string') {
+      this.flash(r);
+      return;
+    }
+    this.inspector.hide();
+    if (sel.kind === 'element') this.editor.selectElement(-1);
+    this.adopt(r, sel.kind === 'body' ? Math.max(0, sel.index - 1) : this.editor.selection);
+  }
+
+  /** The tip of `body` was dropped on a port: put it exactly there and pin it. */
+  private snapTip(body: number, to: Anchor): void {
+    const moved = dragTip(this.dragContext(), body, [to.x, to.y], true, false) ?? this.mech;
+    const r = placeLoop(moved, 'pin', { body, s: 1, x: to.x, y: to.y }, to);
+    if (typeof r === 'string') {
+      this.flash(r);
+      return;
+    }
+    this.adopt(r.mech, body);
+    this.flash(
+      `Pinned the tip of body ${body + 1} to ${to.body < 0 ? 'the ground' : `body ${to.body + 1}`}: a closed loop.`,
+    );
+  }
+
+  /** The joint of `body` was dropped on a port of another body: hang it there. */
+  private snapJoint(body: number, to: Anchor): void {
+    if (to.body < 0) return;
+    const r = reparent(this.mech, body, to.body);
+    if (!r) {
+      this.flash('a body cannot hang from its own descendant — close a loop instead');
+      return;
+    }
+    const m = cloneMechanism(r.mech);
+    m.bodies[r.index] = { ...m.bodies[r.index]!, mountS: to.s };
+    this.adopt(m, r.index);
+    this.flash(`Body ${body + 1} now hangs from body ${to.body + 1}.`);
   }
 
   private get snap() {
@@ -158,6 +296,7 @@ class App {
     if (!m) return;
     this.mech = m;
     this.editor.load(m);
+    this.inspector.render();
     void this.rebuild();
   }
 
@@ -299,6 +438,7 @@ class App {
     this.gizmos.select(sel);
     this.gizmos.visible = s === 'build';
     this.gizmos.connectFrom = null;
+    if (s !== 'build') this.inspector.hide();
     this.closePopover();
     closePopover();
     this.refreshStage();
@@ -347,7 +487,7 @@ class App {
     }
     $('hint').textContent =
       this.stageName === 'build'
-        ? 'Click a body to select it. A hinge with a second ring is driven, a plain one passive; loop pins are drawn on the tip they close.'
+        ? 'Drag parts from the palette onto a lit port, or onto empty space for the ground. Click a part to edit it; drag its ○ onto a port to close a loop, its ◆ onto a port to hang it there. A hinge with a second ring is driven.'
         : this.stageName === 'derive'
           ? 'Every formula on the right was derived symbolically for exactly this structure.'
           : '';
@@ -526,8 +666,20 @@ class App {
     if (!d || !this.robot) return;
     if (this.stageName === 'build') {
       if (kind !== 'down') return;
+      // springs and dampers first: they are thin and often lie over bodies
+      const at = this.stage.toScreen(x, y);
+      const k = this.pickElement(x, y);
+      if (k >= 0) {
+        this.editor.selectElement(k);
+        this.inspector.show({ kind: 'element', index: k }, at);
+        return;
+      }
       const i = this.robot.pick(x, y, this.snap, this.params);
-      if (i >= 0) this.editor.select(i);
+      if (i >= 0) {
+        this.editor.selectElement(-1);
+        this.editor.select(i);
+        this.inspector.show({ kind: 'body', index: i }, at);
+      } else this.closeInspector();
       return;
     }
     if (this.stageName === 'simulate') this.sim.pointer(x, y, kind, pressed, shift, alt);
@@ -551,11 +703,17 @@ class App {
       this.undo(k === 'y' || e.shiftKey);
     } else if (k === 'escape') {
       this.gizmos.connectFrom = null;
+      this.gizmos.cancel();
+      this.closeInspector();
       this.closePopover();
       $('status').hidden = true;
       return;
     } else if (k === 'delete' || k === 'backspace') {
-      this.editor.remove(this.editor.selection);
+      const sel = this.inspector.selection;
+      if (sel) this.removeSelected(sel);
+      else if (this.editor.elementSelection >= 0)
+        this.removeSelected({ kind: 'element', index: this.editor.elementSelection });
+      else this.editor.remove(this.editor.selection);
     } else {
       return;
     }
