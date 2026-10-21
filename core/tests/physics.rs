@@ -806,3 +806,56 @@ fn lqr_refuses_an_equilibrium_that_no_input_can_hold() {
     s.set_controller(0, Some(Kind::Mpc));
     assert_eq!(s.primary().kind, Kind::Passive, "nor MPC");
 }
+
+/// A four-joint arm with a palm (two welded halves) and two light fingers beyond the tool point.
+fn gripper() -> Desc {
+    let joint = |parent: Option<usize>, kind: JointKind, m: f64, l: f64, mount: f64, q0: f64| {
+        let mut b = presets::link(parent, kind, m, l);
+        (b.mount_angle, b.q0, b.q_target) = (mount, q0, q0);
+        b
+    };
+    let mut fingers = [
+        joint(Some(4), JointKind::Revolute, 0.08, 0.22, -FRAC_PI_2, -0.25),
+        joint(Some(5), JointKind::Revolute, 0.08, 0.22, FRAC_PI_2, 0.25),
+    ];
+    for f in &mut fingers {
+        f.values[4] = 0.002;
+    }
+    let bodies = vec![
+        joint(None, JointKind::Revolute, 1.2, 0.6, 0.0, 0.9),
+        joint(Some(0), JointKind::Revolute, 0.9, 0.55, 0.0, -0.6),
+        joint(Some(1), JointKind::Revolute, 0.6, 0.45, 0.0, -0.7),
+        joint(Some(2), JointKind::Revolute, 0.3, 0.2, 0.0, 0.1),
+        joint(Some(3), JointKind::Fixed, 0.05, 0.14, FRAC_PI_2, 0.0),
+        joint(Some(3), JointKind::Fixed, 0.05, 0.14, -FRAC_PI_2, 0.0),
+        fingers[0].clone(),
+        fingers[1].clone(),
+    ];
+    Desc { bodies, g: 9.81, tool: Some(3), closures: vec![], elements: vec![] }
+}
+
+#[test]
+fn joints_beyond_the_tool_keep_their_posture_while_the_arm_reaches_out() {
+    // the arm stretches towards a target it cannot reach and cannot follow its own posture; what it cannot
+    // follow must not leak into the fingers through the inertia coupling (they used to spin round)
+    for kind in [Kind::Vmc, Kind::Impedance, Kind::Admittance] {
+        let mut s = with(&gripper(), kind);
+        for j in 0..6 {
+            let q = s.primary().q[j];
+            s.set_state(j, q + 0.1, 0.0);
+        }
+        s.step(1);
+        let o = s.publish().to_vec();
+        aim(&mut s, 2.0 * o[off::TOOL_P], 2.0 * o[off::TOOL_P + 1]);
+        s.step(8_000);
+        let (q, qd) = (&s.primary().q, &s.primary().qd);
+        assert!(
+            (q[4] + 0.25).abs() < 0.02 && (q[5] - 0.25).abs() < 0.02 && qd[4].abs() + qd[5].abs() < 1e-2,
+            "{kind:?}: fingers at {:.3}, {:.3} moving at {:.3}, {:.3}",
+            q[4],
+            q[5],
+            qd[4],
+            qd[5]
+        );
+    }
+}

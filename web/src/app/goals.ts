@@ -4,6 +4,7 @@
  * the world pushes back, and the symbolic coefficients of the model.
  */
 import { cachedTaskSpace } from '../control/nullspace';
+import { toolChainDof } from '../control/page';
 import type { EquationPanel, SectionSpec } from '../eq/panel';
 import { texMat } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
@@ -165,7 +166,8 @@ export function goalsTab(g: GoalsContext): HTMLElement {
 /** The goals below the tool, in priority order. */
 function hierarchyCard(g: GoalsContext): HTMLElement {
   const { d, mech, client, settings, snap } = g;
-  const dof = d.n - d.phi.length;
+  // joints that move the tool (a gripper's fingers do not)
+  const dof = d.phi.length ? d.n - d.phi.length : toolChainDof(d);
   const open = d.closures.length === 0;
   const box = card('Task hierarchy');
   if (!d.tool) {
@@ -308,7 +310,7 @@ function goalSections(d: Derivation, snap: Snapshot, mech: Mechanism): SectionSp
   const n = d.n;
   const ts = cachedTaskSpace(snap);
   const tool = d.tool;
-  const redundant = tool !== null && n - d.phi.length > 2;
+  const redundant = tool !== null && !d.phi.length && toolChainDof(d) > 2;
   const out: SectionSpec[] = [
     {
       id: 'g-task',
@@ -412,7 +414,7 @@ function goalSections(d: Derivation, snap: Snapshot, mech: Mechanism): SectionSp
         ['2', 'tool orientation', 1, snap.v('GOALS') > 0],
         ['3', 'elbow', 2, snap.v('GOALS', 2) > 0],
       ] as const;
-      const dof = n - d.phi.length;
+      const dof = d.phi.length ? n - d.phi.length : toolChainDof(d);
       let left = dof;
       const rows = levels.map(([k, name, dim, on]) => {
         const used = on ? Math.min(dim, Math.max(0, left)) : 0;

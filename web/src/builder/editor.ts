@@ -62,6 +62,8 @@ const PRESET_GROUP: Record<string, string> = {
   'Three-link arm': 'Arms',
   'Seven-joint arm': 'Arms',
   'Branching arm': 'Arms',
+  'Gripper arm': 'Arms',
+  '3-RPR platform': 'Linkages',
   'Double pendulum': 'Pendulums',
   'Wall pendulum': 'Pendulums',
   Acrobot: 'Pendulums',

@@ -159,12 +159,16 @@ const CHECKS: Record<string, Check> = {
     },
   },
   'Posture in the null space': {
-    ids: () => ['tele:vmc:leak:0', 'taskerr', 'q:0'],
+    ids: () => ['tele:vmc:leak:0', 'taskerr', ...Array.from({ length: 7 }, (_, i) => `q:${i}`)],
     verify: (tr) => {
       const h = tr.mark('hold');
-      const q = tr.s('q:0');
       const k0 = tr.t.findIndex((t) => t >= h);
-      const moved = Math.abs(q[q.length - 1]! - q[k0]!);
+      // the joint that moves most: with the tool held the null space may leave the shoulder nearly still
+      const moved = Math.max(
+        ...Array.from({ length: 7 }, (_, i) => tr.s(`q:${i}`))
+          .map((q) => Math.abs(q[q.length - 1]! - q[k0]!))
+          .filter(Number.isFinite),
+      );
       return all(
         fail(
           tr.max('tele:vmc:leak:0', h + 0.05) < 1e-5,

@@ -454,6 +454,11 @@ fn stacked_accel(
     for i in 0..n {
         qdd[i] += fix[i];
     }
+    // joints beyond the tool are no part of any task: they take their preference as it is (no task sees
+    // them, and the oblique projection would feed them what the chain cannot follow)
+    for i in (0..n).filter(|&i| model.beyond_tool[i]) {
+        qdd[i] = pref[i];
+    }
     let moved = |j: &[f64], rows: usize, from: &VecN| {
         (0..rows)
             .map(|r| (0..n).map(|c| j[r * n + c] * (qdd[c] - from[c])).sum::<f64>().powi(2))
@@ -495,6 +500,11 @@ fn preference(plan: &Plan, model: &mut Model, c: &Ctx<'_>, gain: f64) -> VecN {
     let mut a = [0.0; MAXN];
     if !cholesky_solve(model.n, &c.terms.m, &tau0, &mut a) {
         return [0.0; MAXN];
+    }
+    // joints beyond the tool follow their own posture (see `Plan::secondary`)
+    let own = plan.secondary_accel(model, c.q, c.qd);
+    for i in (0..model.n).filter(|&i| model.beyond_tool[i]) {
+        a[i] = own[i];
     }
     a.map(|v| v * gain)
 }

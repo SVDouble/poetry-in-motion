@@ -482,10 +482,26 @@ impl Plan {
     }
 
     /// Secondary-goal torque τ₀ (posture and manipulability), to be projected into the task null space.
+    ///
+    /// The posture acceleration is shaped by M(q*) along the tool's chain; joints beyond the tool (a
+    /// gripper's fingers) get their own share only. Through the coupling of M a chain that cannot follow its
+    /// posture (an arm stretched towards an unreachable target) would otherwise push light distal bodies
+    /// round and round: the coupling is about (arm length / finger length) times their own inertia.
     pub fn secondary(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> VecN {
         let n = model.n;
+        let a = self.secondary_accel(model, q, qd);
+        let chain: VecN = core::array::from_fn(|i| if i < n && !model.beyond_tool[i] { a[i] } else { 0.0 });
+        let mut tau = mat_vec(n, &self.m_star, &chain);
+        for i in (0..n).filter(|&i| model.beyond_tool[i]) {
+            tau[i] = self.m_star[i * n + i] * a[i];
+        }
+        tau
+    }
+
+    /// The posture spring–damper at ω and the climb along ∇w, as joint accelerations.
+    pub fn secondary_accel(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> VecN {
+        let n = model.n;
         let w = self.goals.posture;
-        // a posture spring–damper at ω and a climb along ∇w, both shaped by M(q*)
         let mut a: VecN = core::array::from_fn(|i| {
             if i < n { w * w * Self::error(model, i, q[i], self.q_star[i]) - 2.0 * w * qd[i] } else { 0.0 }
         });
@@ -495,7 +511,7 @@ impl Plan {
                 a[i] += self.goals.manipulability * grad[i];
             }
         }
-        mat_vec(n, &self.m_star, &a)
+        a
     }
 }
 

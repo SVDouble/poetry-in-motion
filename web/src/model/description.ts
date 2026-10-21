@@ -389,6 +389,91 @@ export const PRESETS: Record<string, () => Mechanism> = {
       link(0, 'revolute', { m: 0.5, l: 0.9, mountS: 0, mountAngle: -HALF_PI, q0: 0.4 }),
     ],
   }),
+  'Gripper arm': () => ({
+    name: 'Gripper arm',
+    g: 9.81,
+    // the tool sits at the wrist's tip: the middle of the palm, between the fingers
+    tool: 3,
+    closures: [],
+    elements: [],
+    bodies: [
+      // four joints carry the hand (two to spare for posture); its target posture differs a little from the
+      // start, so a posture goal has something to do
+      link(-1, 'revolute', { l: 0.6, m: 1.2, q0: 0.9, qTarget: 0.6 }),
+      link(0, 'revolute', { l: 0.55, m: 0.9, q0: -0.6, qTarget: -0.3 }),
+      link(1, 'revolute', { l: 0.45, m: 0.6, q0: -0.7, qTarget: -0.5 }),
+      link(2, 'revolute', { l: 0.2, m: 0.3, q0: 0.1, qTarget: 0, beta: 0.01 }),
+      // the palm: two welded halves across the wrist
+      link(3, 'fixed', { l: 0.14, m: 0.05, mountAngle: HALF_PI }),
+      link(3, 'fixed', { l: 0.14, m: 0.05, mountAngle: -HALF_PI }),
+      // light fingers pointing forward from the palm's ends, closing a little (light friction too, or it
+      // would dominate their tiny inertia)
+      link(4, 'revolute', { l: 0.22, m: 0.08, mountAngle: -HALF_PI, q0: -0.25, qTarget: -0.25, beta: 0.002 }),
+      link(5, 'revolute', { l: 0.22, m: 0.08, mountAngle: HALF_PI, q0: 0.25, qTarget: 0.25, beta: 0.002 }),
+    ],
+  }),
+  '3-RPR platform': () => {
+    // a planar parallel robot: three legs on passive floor hinges, each with a driven telescopic actuator,
+    // carry a platform — 7 coordinates, 2 pins (4 constraints): 3 DOF, 3 actuators
+    const floor: [number, number][] = [
+      [-1.4, 0],
+      [1.4, 0],
+      [0, 0],
+    ];
+    const top: [number, number][] = [
+      [-0.6, 1.2],
+      [0.6, 1.2],
+      [0, 1.2],
+    ];
+    const sleeve = 0.6;
+    const legs = floor.map(([px, py], k) => {
+      const [ax, ay] = top[k]!;
+      return { px, py, angle: Math.atan2(ay - py, ax - px), length: Math.hypot(ax - px, ay - py) };
+    });
+    const cylinder = (k: number) =>
+      link(-1, 'revolute', {
+        mountX: legs[k]!.px,
+        mountY: legs[k]!.py,
+        mountAngle: legs[k]!.angle,
+        actuated: false,
+        l: sleeve,
+        m: 0.4,
+        beta: 0.02,
+      });
+    const piston = (parent: number, k: number) =>
+      link(parent, 'prismatic', {
+        mountS: 0,
+        l: sleeve,
+        m: 0.4,
+        limit: 1.2,
+        q0: legs[k]!.length - sleeve,
+        qTarget: legs[k]!.length - sleeve,
+      });
+    return {
+      name: '3-RPR platform',
+      g: 9.81,
+      // the tool is the middle leg's tip: the centre of the platform
+      tool: 6,
+      closures: [pin(2, 1, 4, 1), pin(2, 0.5, 6, 1)],
+      elements: [],
+      bodies: [
+        cylinder(0),
+        piston(0, 0),
+        link(1, 'revolute', {
+          mountS: 1,
+          mountAngle: -legs[0]!.angle,
+          actuated: false,
+          l: 1.2,
+          m: 2,
+          beta: 0.02,
+        }),
+        cylinder(1),
+        piston(3, 1),
+        cylinder(2),
+        piston(5, 2),
+      ],
+    };
+  },
   'Mass–spring–damper': () => ({
     name: 'Mass–spring–damper',
     g: 9.81,

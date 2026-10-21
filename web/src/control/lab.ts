@@ -3,7 +3,7 @@
  * An experiment makes the page's controller primary, applies its setup (shadows, parameters, limits,
  * kicks, pushes), switches the plots to what matters and says what to notice.
  */
-import { type Experiment, type Lab, type PageContext, range } from './page';
+import { type Experiment, type Lab, type PageContext, range, toolChainDof } from './page';
 
 const slot = (key: string, what: string) => `slot:${key}:${what}`;
 const tele = (key: string, name: string, i = 0) => `tele:${key}:${name}:${i}`;
@@ -14,7 +14,7 @@ function common(c: PageContext) {
   const e = range(c.n, (i) => `e:${i}`);
   const u = range(c.nu, (a) => `u:${a}`);
   const tool = c.d.tool !== null;
-  const redundant = tool && c.dof > 2 && !c.loops;
+  const redundant = tool && toolChainDof(c.d) > 2 && !c.loops;
   const full = c.nu >= c.dof && c.nu > 0;
   const under = c.nu > 0 && c.nu < c.dof;
   // a pendulum on an actuated rail: where the LQR/MPC comparisons were verified
@@ -42,7 +42,8 @@ function hierarchy(c: PageContext, key: string): Experiment[] {
         'The arm stretches towards the target and stays there, at rest. A spring towards a point it can never reach would pull ever harder against the stretched pose, where $J$ loses the radial direction ($w \\to 0$, $\\Lambda$ unbounded) — so the reference stops at the nearest reachable point, found by inverse kinematics (Levenberg–Marquardt, which ends there instead of flipping the elbow), a hair inside the boundary. What is left near the singularity is handled by adaptive damped least squares (exact while the task is well conditioned, bounded as it loses a direction) and by damping the motion the task lets go of. The tool error stays: no controller can reach further than the arm.',
     },
   ];
-  if (c.dof >= 5) {
+  const chain = toolChainDof(c.d);
+  if (chain >= 5) {
     out.push({
       title: 'A stack of tasks',
       goal: 'Hold the tool, turn it by 0.3 rad and move the elbow: three goals, one arm.',
@@ -52,7 +53,7 @@ function hierarchy(c: PageContext, key: string): Experiment[] {
         'Priority 1 (the tool) never moves; orientation and elbow converge in what it leaves free, and posture takes the rest. Each level is resolved through $P_{k-1}$, the dynamically consistent null space of the levels above: their leakage stays at round-off. With 7 joints: 2 for the tool, 1 for its orientation, 2 for the elbow — 2 left for posture.',
     });
   }
-  if (c.dof === 3) {
+  if (chain === 3) {
     out.push({
       title: 'Priority under conflict',
       goal: 'Tool position and orientation use all three joints: the elbow goal has no room.',

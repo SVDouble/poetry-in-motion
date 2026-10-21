@@ -25,22 +25,22 @@ export const PLUM = 0x9a2f7a;
 
 /** Chalk on a blackboard: the same inks, lightened for a dark background. */
 const DARK = new Map<number, number>([
-  [palette.ink, 0xe6e3da],
-  [palette.paper, 0x15171b],
-  [palette.muted, 0x8d8a82],
-  [palette.frame, 0x9fb2d0],
-  [palette.inertial, 0xab9ff2],
-  [palette.coriolis, 0xe3a25f],
-  [palette.gravity, 0x6fcf9f],
-  [palette.input, 0xf08a7e],
-  [palette.accent, 0x7fb3ef],
-  [palette.warn, 0xf0a552],
-  [0xb07a12, 0xe0b44e],
-  [0x1f8a68, 0x5fd0aa],
-  [0xb83a63, 0xf08aac],
-  [0x5d48c4, 0xb4a6ff],
-  [OLIVE, 0xb7c86a],
-  [PLUM, 0xe08ccc],
+  [palette.ink, 0xf4f2ec],
+  [palette.paper, 0x050506],
+  [palette.muted, 0x9b988f],
+  [palette.frame, 0xa9bfe0],
+  [palette.inertial, 0xb9adff],
+  [palette.coriolis, 0xffb46b],
+  [palette.gravity, 0x6fe0a8],
+  [palette.input, 0xff8f82],
+  [palette.accent, 0x8cc0ff],
+  [palette.warn, 0xffb35c],
+  [0xb07a12, 0xf0c45a],
+  [0x1f8a68, 0x66e0b8],
+  [0xb83a63, 0xff8fb4],
+  [0x5d48c4, 0xc0b3ff],
+  [OLIVE, 0xc6d873],
+  [PLUM, 0xf099d8],
 ]);
 
 let darkTheme = false;

@@ -33,6 +33,9 @@ pub struct Model {
     pub prismatic: Vec<bool>,
     pub nu: usize,
     pub revolute: Vec<bool>,
+    /// Per coordinate: the joint lies beyond the tool (its column of the tool Jacobian is identically zero,
+    /// like a gripper's fingers), so no task of the tool can use or be disturbed by it.
+    pub beyond_tool: Vec<bool>,
     /// Indices of the actuated joints; `B` selects them (`τ = B u`).
     pub actuated: Vec<usize>,
     pub unactuated: Vec<usize>,
@@ -182,6 +185,9 @@ impl Model {
             prismatic: d.coord_body.iter().map(|&i| d.desc.bodies[i].kind == JointKind::Prismatic).collect(),
             nu,
             revolute: d.revolute.clone(),
+            beyond_tool: (0..n)
+                .map(|j| d.tool.as_ref().is_some_and(|t| t.jp[j].is_zero() && t.jp[n + j].is_zero()))
+                .collect(),
             actuated: d.actuated.clone(),
             unactuated: (0..n).filter(|i| !d.actuated.contains(i)).collect(),
             b: d.b.clone(),

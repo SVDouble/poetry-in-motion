@@ -83,6 +83,19 @@ export interface Lab {
 
 export const range = (k: number, f: (i: number) => string) => Array.from({ length: k }, (_, i) => f(i));
 
+/** Joints that move the tool point (columns of its Jacobian that are not identically zero): joints beyond
+ * the tool — a gripper's fingers — add no redundancy for the tool's tasks. */
+export function toolChainDof(d: Derivation): number {
+  return toolChain(d).filter(Boolean).length;
+}
+
+/** Per coordinate: does the joint move the tool point? (All of them when there is no tool.) */
+export function toolChain(d: Derivation): boolean[] {
+  const jp = d.tool?.Jp;
+  if (!jp?.length) return d.coords.map(() => true);
+  return d.coords.map((_, j) => jp.some((row) => row[j] !== '0'));
+}
+
 export function pageContext(d: Derivation, snap: Snapshot, spec: ControllerSpec, p: (i: number) => number) {
   const n = d.n;
   const ctx: PageContext = {

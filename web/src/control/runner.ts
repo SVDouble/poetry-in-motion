@@ -8,6 +8,7 @@ import type { Derivation } from '../model/derivation';
 import type { Flag, Snapshot } from '../sim/layout';
 import type { ToWorker } from '../sim/protocol';
 import type { Action, Experiment } from './page';
+import { toolChain } from './page';
 import type { ControlStore } from './store';
 
 export interface Port {
@@ -138,11 +139,13 @@ async function act(port: Port, a: Action): Promise<void> {
       // seven — bending every joint fully would fold a long arm onto itself)
       if (!d.closures.length) {
         const s0 = port.snap();
-        const first = d.coords.findIndex((c) => c.kind === 'revolute');
-        const bend = d.coords.filter((c, i) => c.kind === 'revolute' && i > first).length;
+        // only the joints that move the tool (a gripper's fingers do not)
+        const chain = toolChain(d);
+        const bends = (c: (typeof d.coords)[number], i: number) => c.kind === 'revolute' && chain[i];
+        const first = d.coords.findIndex(bends);
+        const bend = d.coords.filter((c, i) => bends(c, i) && i > first).length;
         d.coords.forEach((c, i) => {
-          if (c.kind === 'revolute' && i > first)
-            port.send({ type: 'state', i, q: s0.v('Q', i) + 0.6 / bend, qd: 0 });
+          if (bends(c, i) && i > first) port.send({ type: 'state', i, q: s0.v('Q', i) + 0.6 / bend, qd: 0 });
         });
       }
       await port.sleep(120); // the next snapshot shows the new pose

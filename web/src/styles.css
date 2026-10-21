@@ -33,27 +33,27 @@
 /* chalk on a blackboard: the same drawing, light on dark */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --paper: #15171b;
-  --paper-2: #1a1c21;
-  --card: #1d2026;
-  --hover: #262a31;
-  --ink: #e6e3da;
-  --text: #e6e3da;
-  --muted: #b3b0a7;
-  --faint: #7f7c75;
-  --line: #2f3239;
-  --line-2: #50535b;
-  --accent: #7fb3ef;
-  --inertial: #ab9ff2;
-  --coriolis: #e3a25f;
-  --gravity: #6fcf9f;
-  --input: #f08a7e;
-  --warn: #f0a552;
-  --shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
-  --tint: rgba(127, 179, 239, 0.08);
-  --tint-ok: rgba(111, 207, 159, 0.1);
-  --veil: rgba(29, 32, 38, 0.94);
-  --ink-hover: #c9c6bd;
+  --paper: #050506;
+  --paper-2: #0b0c0e;
+  --card: #101114;
+  --hover: #1c1e23;
+  --ink: #f4f2ec;
+  --text: #f4f2ec;
+  --muted: #c6c3ba;
+  --faint: #918e86;
+  --line: #24262b;
+  --line-2: #4c4f57;
+  --accent: #8cc0ff;
+  --inertial: #b9adff;
+  --coriolis: #ffb46b;
+  --gravity: #6fe0a8;
+  --input: #ff8f82;
+  --warn: #ffb35c;
+  --shadow: 2px 2px 0 rgba(255, 255, 255, 0.08);
+  --tint: rgba(140, 192, 255, 0.1);
+  --tint-ok: rgba(111, 224, 168, 0.1);
+  --veil: rgba(16, 17, 20, 0.94);
+  --ink-hover: #d8d5ce;
 }
 
 * {
