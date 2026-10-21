@@ -33,6 +33,7 @@ describe('textbook figure', () => {
         push: mech.tool >= 0 ? [0.5, 0.5] : null,
         ghosts: [],
         annotate: true,
+        frames: true,
         trail: true,
       };
       const m = { k: 120, x0: 400, y0: 300, w: 800, h: 600 };

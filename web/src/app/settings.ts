@@ -23,8 +23,8 @@ export interface Settings {
   frames: boolean;
   trail: boolean;
   ghosts: boolean;
-  /** Draw the mechanism as a flat textbook schematic instead of the 3D scene. */
-  schematic: boolean;
+  /** Joint coordinates, masses and gravity on the figure. */
+  labels: boolean;
   /** Show the keyboard legend on the viewport. */
   keys: boolean;
 }
@@ -43,10 +43,10 @@ export const defaultSettings = (): Settings => ({
   elbowY: 0,
   useTool: false,
   coriolis: true,
-  frames: true,
+  frames: false,
   trail: true,
   ghosts: true,
-  schematic: false,
+  labels: true,
   keys: false,
 });
 

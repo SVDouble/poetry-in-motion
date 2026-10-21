@@ -3,12 +3,10 @@
  * truth on the UI side: widgets bound to a parameter stay in sync wherever they are shown, and views that
  * depend on the slot assignment re-render on `onSlots`.
  */
-import { palette } from '../scene/theme';
 import type { SimClient } from '../sim/client';
 import type { ControllerSpec, Controllers } from '../sim/controllers';
 
-/** Slot colours: the primary, then the shadows. */
-export const SLOT_COLORS = [palette.accent, 0xffc861, 0x5be3b5, 0xff7aa2, 0xb9a8ff] as const;
+export { SLOT_COLORS } from '../scene/theme';
 
 export const OFF = -1;
 

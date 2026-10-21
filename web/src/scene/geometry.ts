@@ -1,4 +1,4 @@
-/** Plain geometry shared by the 3D scene and the schematic (no three.js). */
+/** Plain geometry of mechanisms, shared by the figure, the builder and the tests. */
 import { type Mechanism, normalise } from '../model/description';
 
 export const BLOCK = { w: 0.36, h: 0.18, d: 0.22 };

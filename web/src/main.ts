@@ -78,7 +78,7 @@ class App {
     this.params = paramVector(this.mech);
     this.sim = new SimulateStage({
       client,
-      stage,
+      resetTrails: () => this.schematic?.resetTrail(),
       panel: this.panel,
       store: new ControlStore(client, client.layout.slots),
       settings: this.settings,
@@ -92,7 +92,6 @@ class App {
     this.editor = new Editor(document.createElement('div'), {
       change: (m) => this.edited(m),
       select: (i) => {
-        this.robot?.select(i);
         this.schematic?.select(i);
         this.gizmos.select(i);
         this.closePopover();
@@ -175,22 +174,16 @@ class App {
     this.lastBuildMs = res.ms;
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
-    this.stage.clear();
-    this.robot = new RobotView(this.stage, this.mech);
+    this.robot = new RobotView(this.mech);
     this.schematic?.host.remove();
     this.schematic = new SchematicView(this.mech, res.derivation, this.robot.bounds());
     $('viewport').prepend(this.schematic.host);
-    this.applySchematic();
     this.sim.load(res.derivation, res.controllers);
-    this.stage.castShadows();
-    this.robot.showFrames = this.settings.frames;
-    this.robot.showTrail = this.settings.trail;
     if (!this.dragging) {
       const b = this.robot.bounds();
       this.stage.setView(b.cx, b.cy, b.width, b.height);
     }
     const sel = this.stageName === 'build' ? this.editor.selection : -1;
-    this.robot.select(sel);
     this.schematic.select(sel);
     this.gizmos.select(sel);
     // the loop closures are solved numerically from q(0): report when they cannot close
@@ -291,7 +284,6 @@ class App {
       this.reset();
     }
     const sel = s === 'build' ? this.editor.selection : -1;
-    this.robot?.select(sel);
     this.schematic?.select(sel);
     this.gizmos.select(sel);
     this.gizmos.visible = s === 'build';
@@ -344,7 +336,7 @@ class App {
     }
     $('hint').textContent =
       this.stageName === 'build'
-        ? 'Click a body to select it. Steel hinges are actuated, amber ones passive; blue pins close loops.'
+        ? 'Click a body to select it. A hinge with a second ring is driven, a plain one passive; loop pins are drawn on the tip they close.'
         : this.stageName === 'derive'
           ? 'Every formula on the right was derived symbolically for exactly this structure.'
           : '';
@@ -355,39 +347,37 @@ class App {
     const host = $('toggles');
     host.replaceChildren();
     const t = this.settings;
-    const items: ['schematic' | 'frames' | 'trail' | 'coriolis' | 'ghosts' | 'keys', string, () => void][] = [
-      [
-        'schematic',
-        'Textbook',
-        () => {
-          this.applySchematic();
-          this.buildToggles();
-        },
-      ],
-      [
-        'frames',
-        t.schematic ? 'Labels' : 'Frames',
-        () => {
-          if (this.robot) this.robot.showFrames = t.frames;
-        },
-      ],
+    const redraw = () => {
+      if (this.schematic) this.schematic.dirty = true;
+    };
+    const items: [
+      'frames' | 'labels' | 'trail' | 'coriolis' | 'ghosts' | 'keys',
+      string,
+      string,
+      () => void,
+    ][] = [
+      ['frames', 'Frames', 'Coordinate frames {s}, {1} … {n} and {t}', redraw],
+      ['labels', 'Labels', 'Joint coordinates, masses and gravity', redraw],
       [
         'trail',
         'Trail',
+        "The tool's path",
         () => {
           this.schematic?.resetTrail();
-          if (!this.robot) return;
-          this.robot.showTrail = t.trail;
-          this.robot.resetTrail();
+          redraw();
         },
       ],
-      ['ghosts', 'Shadows', () => undefined],
-      ['coriolis', 'Coriolis', () => this.client.flag('Coriolis', t.coriolis ? 1 : 0)],
-      ['keys', 'Keys', () => this.sim.renderKeys()],
+      ['ghosts', 'Shadows', 'The shadow controllers, drawn in their colours', redraw],
+      [
+        'coriolis',
+        'Coriolis',
+        'Switch off C(q, q̇)q̇ in the simulation (non-physical: watch the energy drift)',
+        () => this.client.flag('Coriolis', t.coriolis ? 1 : 0),
+      ],
+      ['keys', 'Keys', 'The keyboard legend', () => this.sim.renderKeys()],
     ];
-    for (const [key, label, apply] of items) {
-      if (key !== 'schematic' && key !== 'frames' && key !== 'trail' && this.stageName !== 'simulate')
-        continue;
+    for (const [key, label, title, apply] of items) {
+      if (key !== 'frames' && key !== 'labels' && this.stageName !== 'simulate') continue;
       const b = button(
         label,
         () => {
@@ -396,41 +386,20 @@ class App {
           apply();
         },
         'chip',
+        title,
       );
       b.classList.toggle('on', t[key]);
-      if (key === 'coriolis')
-        b.title = 'Switch off C(q, q̇)q̇ in the simulation (non-physical: watch the energy drift)';
-      if (key === 'schematic')
-        b.title = 'Draw the mechanism as a flat textbook figure (exports to SVG and TikZ)';
       host.append(b);
     }
-    if (t.schematic) {
-      host.append(
-        button(
-          'SVG',
-          () => this.exportSchematic('svg'),
-          'chip action',
-          'Download the current picture as SVG',
-        ),
-        button(
-          'TikZ',
-          () => this.exportSchematic('tikz'),
-          'chip action',
-          'Copy the current picture as TikZ code',
-        ),
-      );
-    }
-  }
-
-  /** Switch between the 3D scene and the textbook schematic. */
-  private applySchematic(): void {
-    const on = this.settings.schematic;
-    this.stage.flat = on;
-    $('viewport').classList.toggle('paper', on);
-    if (this.schematic) {
-      this.schematic.host.hidden = !on;
-      this.schematic.dirty = true;
-    }
+    host.append(
+      button('SVG', () => this.exportSchematic('svg'), 'chip action', 'Download the current picture as SVG'),
+      button(
+        'TikZ',
+        () => this.exportSchematic('tikz'),
+        'chip action',
+        'Copy the current picture as TikZ code',
+      ),
+    );
   }
 
   private ghostSlots: SchematicFrame['ghosts'] | null = null;
@@ -444,7 +413,8 @@ class App {
       running: simulating,
       push: this.sim.pushPoint,
       ghosts: simulating && this.settings.ghosts ? this.ghostSlots : [],
-      annotate: this.settings.frames,
+      annotate: this.settings.labels,
+      frames: this.settings.frames,
       trail: this.settings.trail,
     };
   }
@@ -478,9 +448,7 @@ class App {
 
   private reset(): void {
     this.client.send({ type: 'reset' });
-    this.robot?.resetTrail();
     this.schematic?.resetTrail();
-    this.sim.resetTrails();
   }
 
   private chrome(): void {
@@ -567,14 +535,9 @@ class App {
   private frame(now: number): void {
     const c = this.clock;
     this.client.pull();
-    const simulating = this.stageName === 'simulate';
-    const flat = this.settings.schematic && this.schematic !== null;
-    // the 3D scene is idle while the schematic is shown
-    if (!flat) this.robot?.update(this.snap, this.params, simulating);
     const refresh = now - c.eq >= 1000 / EQ_HZ;
     this.sim.frame(now, refresh);
-    if (flat) this.schematic!.draw(this.stage.mapping(), this.schematicFrame());
-    else this.stage.render();
+    this.schematic?.draw(this.stage.mapping(), this.schematicFrame());
     if (this.stageName === 'build' && this.robot)
       this.gizmos.update(this.mech, this.robot, this.snap, this.params);
     c.frames++;
@@ -592,14 +555,14 @@ class App {
         `<span><b>${(s.stepsPerSecond / 1000).toFixed(2)}</b> kHz</span>` +
         `<span><b>${s.stepUs.toFixed(2)}</b> µs/step</span>` +
         `<span><b>t</b> ${this.snap.t.toFixed(1)} s</span>` +
-        `<span class="muted">${this.stage.backend}${s.shared ? ' · shared memory' : ''}</span>`;
+        (s.shared ? '<span class="muted">shared memory</span>' : '');
     }
   }
 }
 
 async function main(): Promise<void> {
   const stage = new Stage($('viewport'));
-  const [client] = await Promise.all([SimClient.start(), stage.init()]);
+  const client = await SimClient.start();
   await new App(client, stage).start();
 }
 

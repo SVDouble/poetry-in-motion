@@ -14,12 +14,5 @@ export default defineConfig({
   build: {
     target: 'es2023',
     assetsInlineLimit: 0,
-    // three.js is large and changes rarely: give it its own long-cached chunk
-    chunkSizeWarningLimit: 1200,
-    rolldownOptions: {
-      output: {
-        codeSplitting: { groups: [{ name: 'three', test: /node_modules[\\/]three/ }] },
-      },
-    },
   },
 });

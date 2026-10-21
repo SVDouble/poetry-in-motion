@@ -14,6 +14,8 @@ import type { Derivation } from '../model/derivation';
 import { actuatorIndex, coordIndex, type Mechanism, normalise } from '../model/description';
 import type { SlotView, Snapshot } from '../sim/layout';
 import { BLOCK, type Bounds, compose, type Pose } from './geometry';
+import type { Mapping } from './stage';
+import { css, SLOT_COLORS } from './theme';
 
 /** Stroke and fill of one path. Widths and dashes are in symbol units (CSS pixels on screen). */
 interface Ink {
@@ -44,7 +46,10 @@ const MUTED = '#8a8f99';
 const ACCENT = '#1d5fae';
 const INPUT = '#c0392b';
 const WARN = '#d9822b';
-const GHOSTS = ['#c08a1a', '#1f9e74', '#c2416b', '#6b55d6'];
+/** Shadow controllers, in their slot inks. */
+const GHOSTS = SLOT_COLORS.slice(1).map(css);
+/** Coordinate frames. */
+const FRAME = '#45556f';
 
 const LINK_W = 3.8;
 const THIN = 1.1;
@@ -404,7 +409,9 @@ function circle(pen: Pen, x: number, y: number, r: number, ink: Ink): void {
   pen.draw(ink);
 }
 
-function hinge(pen: Pen, x: number, y: number, ink = INK): void {
+/** A hinge: an open circle; a driven one (a motor in the joint) gets a second, concentric ring. */
+function hinge(pen: Pen, x: number, y: number, ink = INK, driven = false): void {
+  if (driven) circle(pen, x, y, (JOINT_R + 3.2) * pen.u, { stroke: ink, fill: PAPER, width: 1 });
   circle(pen, x, y, JOINT_R * pen.u, { stroke: ink, fill: PAPER, width: 1.5 });
 }
 
@@ -491,28 +498,65 @@ export interface SchematicFrame {
   ghosts: readonly SlotView[];
   /** Joint coordinates, masses and the gravity symbol. */
   annotate: boolean;
-  /** The tool's path. */
+  /** The coordinate frames {s}, {1} … {n} and {t}. */
+  frames: boolean;
+  /** The tool's path (of every slot shown). */
   trail: boolean;
 }
 
-/** Screen mapping X = x0 + k x, Y = y0 − k y and the viewport size (CSS pixels). */
-export interface Mapping {
-  k: number;
-  x0: number;
-  y0: number;
-  w: number;
-  h: number;
+const TRAIL = 240;
+
+/** A ring buffer of recent tool positions. */
+class Path {
+  readonly xy = new Float64Array(2 * TRAIL);
+  len = 0;
+  head = 0;
+
+  reset(): void {
+    this.len = 0;
+    this.head = 0;
+  }
+
+  /** Points closer than 1 mm to the last one are skipped. */
+  push(x: number, y: number): void {
+    if (this.len > 0) {
+      const last = (this.head - 1 + TRAIL) % TRAIL;
+      const dx = x - this.xy[2 * last]!;
+      const dy = y - this.xy[2 * last + 1]!;
+      if (dx * dx + dy * dy < 1e-6) return;
+    }
+    this.xy[2 * this.head] = x;
+    this.xy[2 * this.head + 1] = y;
+    this.head = (this.head + 1) % TRAIL;
+    this.len = Math.min(TRAIL, this.len + 1);
+  }
+
+  draw(pen: Pen, ink: string, dash: readonly number[]): void {
+    if (this.len < 2) return;
+    pen.begin();
+    const first = (this.head - this.len + TRAIL) % TRAIL;
+    for (let k = 0; k < this.len; k++) {
+      const j = (first + k) % TRAIL;
+      if (k === 0) pen.move(this.xy[2 * j]!, this.xy[2 * j + 1]!);
+      else pen.line(this.xy[2 * j]!, this.xy[2 * j + 1]!);
+    }
+    pen.draw({ stroke: ink, width: 1, dash });
+  }
 }
 
-const TRAIL = 240;
+/** A coordinate frame: x and y axes as arrows from (x, y), turned by p. */
+function triad(pen: Pen, x: number, y: number, p: number, size = 26): void {
+  const s = size * pen.u;
+  arrow(pen, x, y, x + Math.cos(p) * s, y + Math.sin(p) * s, FRAME, 1);
+  arrow(pen, x, y, x - Math.sin(p) * s * 0.8, y + Math.cos(p) * s * 0.8, FRAME, 1);
+}
 
 /** The picture itself, independent of the screen: painting, the tool's path, and the exports. */
 export class Figure {
   private readonly coord: number[];
   private readonly actuator: number[];
-  private readonly trail = new Float64Array(2 * TRAIL);
-  private trailLen = 0;
-  private trailHead = 0;
+  /** Tool paths: the primary, then the shadow slots. */
+  private readonly paths = SLOT_COLORS.map(() => new Path());
   /** Where an export puts the gravity arrow (null: the corner of the reachable region). */
   private gAt: [number, number] | null = null;
   /** Highlighted body (−1: none). */
@@ -530,8 +574,7 @@ export class Figure {
   }
 
   resetTrail(): void {
-    this.trailLen = 0;
-    this.trailHead = 0;
+    for (const p of this.paths) p.reset();
   }
 
   private length(i: number, params: number[]): number {
@@ -550,18 +593,9 @@ export class Figure {
     return [x + Math.cos(p) * l, y + Math.sin(p) * l];
   }
 
-  /** Record the tool position (points closer than 1 mm to the last one are skipped). */
-  track(x: number, y: number): void {
-    if (this.trailLen > 0) {
-      const last = (this.trailHead - 1 + TRAIL) % TRAIL;
-      const dx = x - this.trail[2 * last]!;
-      const dy = y - this.trail[2 * last + 1]!;
-      if (dx * dx + dy * dy < 1e-6) return;
-    }
-    this.trail[2 * this.trailHead] = x;
-    this.trail[2 * this.trailHead + 1] = y;
-    this.trailHead = (this.trailHead + 1) % TRAIL;
-    this.trailLen = Math.min(TRAIL, this.trailLen + 1);
+  /** Record the tool position of slot k (0: the primary). */
+  track(x: number, y: number, k = 0): void {
+    this.paths[k]?.push(x, y);
   }
 
   /** The current picture as a standalone SVG (screen pixels). */
@@ -705,19 +739,16 @@ export class Figure {
     const u = pen.u;
     const nb = this.mech.bodies.length;
 
-    // tool path and shadow controllers underneath everything
-    if (this.trailLen > 1 && f.running && f.trail) {
-      pen.begin();
-      const first = (this.trailHead - this.trailLen + TRAIL) % TRAIL;
-      for (let k = 0; k < this.trailLen; k++) {
-        const j = (first + k) % TRAIL;
-        if (k === 0) pen.move(this.trail[2 * j]!, this.trail[2 * j + 1]!);
-        else pen.line(this.trail[2 * j]!, this.trail[2 * j + 1]!);
-      }
-      pen.draw({ stroke: MUTED, width: 1, dash: [2, 3] });
+    // tool paths and shadow controllers underneath everything
+    if (f.running && f.trail && this.mech.tool >= 0) {
+      this.paths[0]!.draw(pen, MUTED, [2, 3]);
+      f.ghosts.forEach((slot, k) => {
+        if (slot.on) this.paths[k + 1]?.draw(pen, GHOSTS[k % GHOSTS.length]!, [1, 3]);
+      });
     }
     f.ghosts.forEach((slot, k) => {
       if (!slot.on) return;
+      const ink = GHOSTS[k % GHOSTS.length]!;
       pen.begin();
       for (let i = 0; i < nb; i++) {
         const [x, y, p] = slot.frame(i + 1);
@@ -725,7 +756,9 @@ export class Figure {
         pen.move(x, y);
         pen.line(x + Math.cos(p) * l, y + Math.sin(p) * l);
       }
-      pen.draw({ stroke: GHOSTS[k % GHOSTS.length]!, width: 2.2, alpha: 0.55 });
+      pen.draw({ stroke: ink, width: 2.2, alpha: 0.55 });
+      if (this.mech.tool >= 0)
+        circle(pen, slot.v('TOOL'), slot.v('TOOL', 1), 3 * u, { fill: ink, alpha: 0.8 });
     });
 
     // prismatic guides on moving bodies, and slots that move with a body
@@ -806,7 +839,7 @@ export class Figure {
     this.mech.bodies.forEach((b, i) => {
       const [x, y, p] = snap.frame(i + 1);
       const ink = i === this.selected ? ACCENT : INK;
-      if (b.joint === 'revolute') hinge(pen, x, y, ink);
+      if (b.joint === 'revolute') hinge(pen, x, y, ink, b.actuated);
       else if (b.joint === 'fixed') {
         const r = 4 * u;
         const [c, s] = [Math.cos(p + Math.PI / 4), Math.sin(p + Math.PI / 4)];
@@ -952,6 +985,44 @@ export class Figure {
       arrow(pen, tx, ty, tx + Math.cos(a) * 32 * u, ty + Math.sin(a) * 32 * u, ACCENT, 1);
     }
     if (f.push) spring(pen, tx, ty, f.push[0], f.push[1], INPUT);
+
+    // joint targets on actuated rails (where the joint controllers are taking them)
+    if (f.running && snap.v('KIND') !== 0) {
+      this.mech.bodies.forEach((b, i) => {
+        const j = this.coord[i]!;
+        if (b.joint !== 'prismatic' || !b.actuated || j < 0) return;
+        const [jx, jy, jp] = this.jointPose(i, snap, params);
+        const a = jp + b.axisAngle;
+        const q = snap.v('Q_TARGET', j);
+        const [px, py] = [jx + Math.cos(a) * q, jy + Math.sin(a) * q];
+        const [nx, ny] = [-Math.sin(a), Math.cos(a)];
+        const below = b.shape === 'block' ? BLOCK.h / 2 + 0.06 : 0;
+        const [bx, by] = [px - nx * below, py - ny * below];
+        const s = 6 * u;
+        pen.begin();
+        pen.move(bx, by);
+        pen.line(bx - nx * s * 1.6 + Math.cos(a) * s, by - ny * s * 1.6 + Math.sin(a) * s);
+        pen.line(bx - nx * s * 1.6 - Math.cos(a) * s, by - ny * s * 1.6 - Math.sin(a) * s);
+        pen.close();
+        pen.draw({ stroke: ACCENT, fill: PAPER, width: 1.2 });
+      });
+    }
+
+    // coordinate frames: {s} at the origin, {i} on every body, {t} at the tool
+    if (f.frames) {
+      triad(pen, 0, 0, 0, 32);
+      this.label(pen, 'fs', 0, 0, String.raw`\{s\}`, -14, 12);
+      for (let i = 0; i < nb; i++) {
+        const [x, y, p] = snap.frame(i + 1);
+        triad(pen, x, y, p);
+        this.label(pen, `f${i}`, x, y, String.raw`\{${i + 1}\}`, -12, -12);
+      }
+      if (this.mech.tool >= 0) {
+        const [, , tp] = snap.frame(nb + 1);
+        triad(pen, tx, ty, tp, 20);
+        this.label(pen, 'ft', tx, ty, String.raw`\{t\}`, 12, 12);
+      }
+    }
   }
 }
 
@@ -1004,11 +1075,16 @@ export class SchematicView {
     }
     const s = f.snap;
     const [tx, ty] = s.frame(this.fig.mech.bodies.length + 1);
-    if (f.running && this.fig.mech.tool >= 0) this.fig.track(tx, ty);
+    if (f.running && this.fig.mech.tool >= 0) {
+      this.fig.track(tx, ty);
+      f.ghosts.forEach((slot, k) => {
+        if (slot.on) this.fig.track(slot.v('TOOL'), slot.v('TOOL', 1), k + 1);
+      });
+    }
     // parameters (lengths, centres of mass) can change while paused
     let sum = 0;
     for (let i = 0; i < f.params.length; i++) sum += f.params[i]! * (i + 1);
-    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${sum}`;
+    const fKey = `${s.t},${tx},${ty},${s.v('TARGET')},${s.v('TARGET', 1)},${s.v('USE_TOOL')},${f.push},${f.ghosts.length},${f.running},${f.trail},${f.frames},${sum}`;
     if (!this.dirty && fKey === this.frameKey) return;
     this.frameKey = fKey;
     this.dirty = false;

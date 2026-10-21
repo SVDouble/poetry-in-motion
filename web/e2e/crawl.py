@@ -8,8 +8,7 @@ Drives every stage, preset, side tab, controller page and role, shadow, experime
 and builder edit; fails on any page or console error and on functional mismatches (dock, notices, plots,
 comparison table, NaN on screen).
 
-Run with `make e2e` (starts a dev server). `CHROMIUM` selects the browser executable; WebGL 2 is forced
-because headless WebGPU is not available everywhere.
+Run with `make e2e` (starts a dev server). `CHROMIUM` selects the browser executable.
 """
 
 import asyncio
@@ -19,7 +18,7 @@ import sys
 
 from playwright.async_api import Page, async_playwright
 
-URL = os.environ.get("APP_URL", "http://localhost:5173/") + "?webgl"
+URL = os.environ.get("APP_URL", "http://localhost:5173/")
 
 
 class Crawl:
@@ -179,7 +178,7 @@ class Crawl:
         await self.wait(200)
 
     async def chrome(self, preset: str) -> None:
-        for toggle in ["Frames", "Trail", "Shadows", "Coriolis", "Keys"]:
+        for toggle in ["Frames", "Labels", "Trail", "Shadows", "Coriolis", "Keys"]:
             self.where = f"{preset}/toggle {toggle}"
             await self.click("#toggles button", toggle)
             await self.click("#toggles button", toggle)
@@ -206,29 +205,17 @@ class Crawl:
         await self.page.keyboard.up("Shift")
         await self.wait(500)
 
-    async def textbook(self, preset: str) -> None:
-        self.where = f"{preset}/textbook"
-        await self.click("#toggles button", "Textbook")
-        await self.wait(300)
-        drawn = await self.js("document.querySelectorAll('.schematic:not([hidden]) canvas').length")
+    async def figure(self, preset: str) -> None:
+        self.where = f"{preset}/figure"
+        drawn = await self.js("document.querySelectorAll('.schematic canvas').length")
         if drawn != 2:
-            self.fail(f"textbook view shows {drawn} canvases")
-        mouse = self.page.mouse
-        await mouse.move(400, 300)
-        await mouse.down()
-        await mouse.move(430, 320)
-        await mouse.up()
-        await self.page.keyboard.down("Shift")
-        await mouse.move(400, 300)
-        await mouse.down()
-        await mouse.move(450, 330)
-        await self.wait(200)
-        await mouse.up()
-        await self.page.keyboard.up("Shift")
+            self.fail(f"the figure has {drawn} canvases")
+        for toggle in ["Frames", "Labels"]:
+            await self.click("#toggles button", toggle)
+            await self.wait(150)
+            await self.click("#toggles button", toggle)
         async with self.page.expect_download():
             await self.click("#toggles button", "SVG")
-        await self.click("#toggles button", "Textbook")
-        await self.wait(200)
 
     async def preset(self, preset: str) -> None:
         await self.build(preset)
@@ -245,7 +232,7 @@ class Crawl:
         await self.experiments(preset, names)
         await self.scope(preset)
         await self.chrome(preset)
-        await self.textbook(preset)
+        await self.figure(preset)
         stats = (await self.text("#stats") or "").strip()
         print(f"{preset}: ok · {stats[:60]}")
         await self.click("[data-stage=build]")

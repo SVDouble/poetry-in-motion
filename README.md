@@ -32,10 +32,7 @@
    acts in the dynamically consistent null space of the levels above (`P_k = P_{k−1} − Ĵ#_k Ĵ_k`, damped least
    squares for the command, exact projectors), so a lower goal can never disturb a higher one; the
    seven-joint arm preset has room for all of them. Shift-drag pushes the tool with a spring, Alt-drag places
-   the elbow target. The **Textbook** toggle draws the mechanism as a flat black-on-white figure in the symbols
-   of mechanics texts (bars, hinge circles, pin supports on hatched ground, carts on rails, the centre-of-mass
-   symbol, joint angles as arcs from dash-dotted reference lines, the push as a zigzag spring) and exports the
-   current pose as SVG or TikZ. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
+   the elbow target. Everything works on closed loops too: inverse dynamics solves `B u − Aᵀλ = f`, and
    LQR/MPC live in tangent coordinates of the constraint manifold.
 
 ```
@@ -45,6 +42,12 @@ M(q) q̈ + C(q, q̇) q̇ + N(q, q̇) = τ        (Murray, Li & Sastry, eq. 4.24)
 Nothing is special-cased: the cart-pole and the arm are presets of the builder, and every controller works from
 M, C, N, V, B and the tool Jacobian of whatever was built. Closed loops are handled as holonomic constraints
 φ(q) = 0, derived symbolically like everything else (MLS ch. 6): `M q̈ + C q̇ + N + Aᵀλ = τ`, `A = ∂φ/∂q`.
+
+The whole app is drawn like a mechanics textbook: ink on paper in Computer Modern, and the mechanism as a
+figure in the symbols of such texts — bars, hinge circles (a second ring for a driven joint), pin supports on
+hatched ground, carts on rails, the centre-of-mass symbol, joint angles as arcs from dash-dotted reference
+lines, coordinate frames {s}, {i}, {t}, torques as arcs, the push as a zigzag spring. The current pose exports
+as SVG or as TikZ code that compiles as is.
 
 ## Architecture
 
@@ -67,8 +70,8 @@ web/   TypeScript + Vite
        ├─ control/  controller pages (theory) and labs (watch lists, experiments); the slot store
        ├─ scope/    signal catalogue (one id per plottable quantity), recorder, plots and presets
        ├─ builder/ eq/ scene/ sim/   editor, derivation and live equations (KaTeX patched in place),
-       │            three.js (WebGPU with WebGL 2 fallback) and the textbook schematic (2D canvas, SVG and
-       │            TikZ from the same drawing code), the physics Web Worker (SharedArrayBuffer)
+       │            the figure (one drawing routine for a 2D canvas, SVG and TikZ; the ground is drawn once,
+       │            the rest only when it moved), the physics Web Worker (SharedArrayBuffer)
 sym/   Python + SymPy: an independent derivation of the reference systems, generated into Rust kernels that
        the tests use as an oracle for the in-browser CAS
 ```
@@ -136,8 +139,6 @@ The output is static files. `SharedArrayBuffer` needs cross-origin isolation, so
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. `web/public/_headers`
 does this on Cloudflare Pages and Netlify. Without these headers the app still works: it falls back to
 `postMessage` snapshots.
-
-`?webgl` in the URL forces the WebGL 2 backend.
 
 ## Controls
 

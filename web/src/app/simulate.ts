@@ -7,15 +7,13 @@ import { LABS } from '../control/lab';
 import { type Experiment, pageContext } from '../control/page';
 import { shortName } from '../control/pages';
 import { kickable, type Port, runExperiment } from '../control/runner';
-import { type ControlStore, SLOT_COLORS } from '../control/store';
+import type { ControlStore } from '../control/store';
 import { liveSections } from '../eq/live';
 import type { EquationPanel } from '../eq/panel';
 import { tex } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import { coordIndex, type Mechanism, normalise } from '../model/description';
-import { GhostView } from '../scene/ghost';
 import type { RobotView } from '../scene/robot';
-import type { Stage } from '../scene/stage';
 import { presets } from '../scope/presets';
 import { type PlotDef, Scope } from '../scope/scope';
 import { Signals } from '../scope/signals';
@@ -38,7 +36,8 @@ const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
 /** What the app shell provides. */
 export interface Shell {
   client: SimClient;
-  stage: Stage;
+  /** Forget the tool paths (the shadows changed or the simulation restarted). */
+  resetTrails(): void;
   panel: EquationPanel;
   store: ControlStore;
   settings: Settings;
@@ -52,7 +51,6 @@ export interface Shell {
 
 export class SimulateStage {
   private d: Derivation | null = null;
-  private ghosts: GhostView[] = [];
   private signals: Signals | null = null;
   private tab: ControlTab | null = null;
   private readonly scope = new Scope($('plots'));
@@ -74,9 +72,8 @@ export class SimulateStage {
 
   /** A new mechanism was built (the robot view already exists). */
   load(d: Derivation, controllers: Controllers): void {
-    const { store, stage } = this.s;
+    const { store } = this.s;
     this.d = d;
-    this.ghosts = SLOT_COLORS.slice(1).map((c) => new GhostView(stage, this.s.mech(), c));
     this.signals = new Signals(d, this.snap, store);
     this.tab = new ControlTab({
       store,
@@ -123,7 +120,6 @@ export class SimulateStage {
     this.release();
     $('dock').replaceChildren();
     $('keys').replaceChildren();
-    for (const g of this.ghosts) g.visible = false;
   }
 
   private mountSide(): void {
@@ -208,7 +204,7 @@ export class SimulateStage {
     if (!this.active) return;
     this.renderDock();
     this.mountScope();
-    for (const g of this.ghosts) g.resetTrail();
+    this.s.resetTrails();
     if (this.side === 'control') this.tab?.render();
   }
 
@@ -261,8 +257,7 @@ export class SimulateStage {
 
   reset(): void {
     this.s.client.send({ type: 'reset' });
-    this.s.robot()?.resetTrail();
-    for (const g of this.ghosts) g.resetTrail();
+    this.s.resetTrails();
   }
 
   private release(): void {
@@ -373,15 +368,6 @@ export class SimulateStage {
   // ---------------------------------------------------------------- frame
 
   frame(now: number, refresh: boolean): void {
-    const robot = this.s.robot();
-    robot?.push(this.active ? this.pushAt : null, this.snap);
-    const show = this.active && this.s.settings.ghosts;
-    if (show) {
-      const length = (i: number) => robot?.length(i, this.s.params()) ?? 0;
-      this.ghosts.forEach((g, k) => {
-        g.update(this.snap.slots[k + 1]!, length, this.s.running());
-      });
-    } else for (const g of this.ghosts) g.visible = false;
     if (!this.active) return;
     if (now - this.lastPlot >= 1000 / PLOT_HZ) {
       this.scope.sample(this.snap.t);
@@ -389,10 +375,6 @@ export class SimulateStage {
       this.lastPlot = now;
     }
     if (refresh && this.side === 'control') this.tab?.update();
-  }
-
-  resetTrails(): void {
-    for (const g of this.ghosts) g.resetTrail();
   }
 }
 

@@ -43,9 +43,9 @@ const COLORS = [
   palette.coriolis,
   palette.gravity,
   palette.inertial,
-  0xe8eefc,
-  0x9fd36b,
-  0xd38bff,
+  palette.ink,
+  0x6b7a1f,
+  0x9a2f7a,
 ];
 
 /** Time series of every watched signal, in one shared time base. */
@@ -113,10 +113,10 @@ class PlotView {
     const canvas = el('div', 'scope-canvas');
     this.el.append(chips, canvas);
     const axis: uPlot.Axis = {
-      stroke: 'rgba(200,210,235,0.55)',
-      grid: { stroke: 'rgba(170,182,211,0.08)', width: 1 },
+      stroke: '#5b606b',
+      grid: { stroke: '#e4e0d5', width: 1 },
       ticks: { show: false },
-      font: '10.5px Inter, system-ui, sans-serif',
+      font: '11px KaTeX_Main, "Latin Modern Roman", serif',
       size: 26,
     };
     this.plot = new uPlot(

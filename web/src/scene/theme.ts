@@ -1,16 +1,16 @@
-/** Colours shared by the 3D scene, the plots and the equations (mirrors the CSS custom properties). */
+/** Inks shared by the schematic, the plots and the equations (mirrors the CSS custom properties). */
 export const palette = {
-  inertial: 0x8b7cff,
-  coriolis: 0xffb547,
-  gravity: 0x3ad6a6,
-  input: 0xff6b8b,
-  axisX: 0xff5f6d,
-  axisY: 0x4cd97b,
-  steel: 0xc9d1e0,
-  graphite: 0x2a3142,
-  accent: 0x6cc4ff,
-  reference: 0x6cc4ff,
-  warn: 0xff8a4c,
+  ink: 0x16181d,
+  inertial: 0x4b3a9e,
+  coriolis: 0xb5651d,
+  gravity: 0x1f7a52,
+  input: 0xb8322a,
+  accent: 0x1d5fae,
+  reference: 0x1d5fae,
+  warn: 0xc26a12,
 } as const;
+
+/** One ink per simulation slot: the primary, then the shadows. */
+export const SLOT_COLORS = [palette.accent, 0xb07a12, 0x1f8a68, 0xb83a63, 0x5d48c4] as const;
 
 export const css = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;

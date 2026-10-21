@@ -36,7 +36,7 @@ export function paramSlider(store: ControlStore, spec: ControllerSpec, i: number
 
 export const swatch = (slot: number) => {
   const dot = el('span', 'swatch');
-  dot.style.background = css(SLOT_COLORS[slot] ?? 0xffffff);
+  dot.style.background = css(SLOT_COLORS[slot] ?? 0x16181d);
   return dot;
 };
 
