@@ -114,7 +114,9 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
       cite: 'MLS Lemma 4.2',
       build(b) {
         b.math(String.raw`M(q) = ${texMat(d.M)}`);
-        b.math(String.raw`M(q) = ${b.live.mat(n, n, (i, j) => snap.m('M', i, j), undefined, `lv ${C_M}`)}`);
+        b.math(String.raw`M(q) = ${b.live.mat(n, n, (i, j) => snap.m('M', i, j), undefined, `lv ${C_M}`)}`, {
+          focus: 'all',
+        });
         b.math(
           String.raw`\det M = ${b.live.num(() => snap.v('DET_M'))},\quad
           \lambda(M) = \{${Array.from({ length: n }, (_, i) => b.live.num(() => snap.v('EIG_M', i))).join(',\\ ')}\}`,
@@ -129,6 +131,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
         b.math(String.raw`C(q,\dot q) = ${texMat(d.C)}`);
         b.math(
           String.raw`C(q,\dot q) = ${b.live.mat(n, n, (i, j) => snap.m('C', i, j), undefined, `lv ${C_C}`)}`,
+          { focus: 'velocities' },
         );
         b.math(
           String.raw`\max_{ij}\left|(\dot M - 2C) + (\dot M - 2C)^{T}\right| = ${b.live.num(() => snap.v('SKEW'))}`,
@@ -142,6 +145,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
       build(b) {
         b.math(
           String.raw`N(q,\dot q) = ${col(d.N)} = ${b.live.vec(n, (i) => snap.v('N', i), undefined, `lv ${C_N}`)}`,
+          { focus: 'gravity' },
         );
       },
     },
@@ -157,6 +161,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
               const [x, y, p] = snap.frame(k + 1);
               return hom(x, y, p, i, j);
             })}`,
+            { focus: `frame:${k}` },
           );
         });
       },
@@ -175,7 +180,7 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
         );
         b.math(
           String.raw`\lambda = ${b.live.vec(m, (i) => snap.v('LAMBDA', i))},\qquad A^{T}\lambda = ${b.live.vec(n, (i) => snap.v('AT_LAMBDA', i))}`,
-          { caption: 'constraint forces keeping the loop closed (pin reactions)' },
+          { caption: 'constraint forces keeping the loop closed (pin reactions)', focus: 'loop:0' },
         );
       },
     });
@@ -189,7 +194,9 @@ export function liveSections({ d, snap }: LiveContext): SectionSpec[] {
       cite: 'MLS §3.4',
       open: false,
       build(b) {
-        b.math(String.raw`p_{st} = ${col(tool.p)} = ${b.live.vec(2, (i) => snap.v('TOOL_P', i))}`);
+        b.math(String.raw`p_{st} = ${col(tool.p)} = ${b.live.vec(2, (i) => snap.v('TOOL_P', i))}`, {
+          focus: 'tool',
+        });
         b.math(
           String.raw`\frac{\partial p_{st}}{\partial q} = ${b.live.mat(2, n, (i, j) => snap.m('JP', i, j))},\quad
           J^{s}_{st} = ${b.live.mat(3, n, (i, j) => snap.m('JS', i, j))}`,
