@@ -37,6 +37,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo run -q -p motion-core --example contracts -- --check
       - run: cargo test --workspace
+      - name: Check declared minimum Rust version (native and WASM)
+        run: |
+          msrv=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+          rustup toolchain install "$msrv" --profile minimal --target wasm32-unknown-unknown
+          cargo +"$msrv" check --workspace --all-targets
+          cargo +"$msrv" check --workspace --lib --target wasm32-unknown-unknown
       - run: cargo build --release --target wasm32-unknown-unknown -p motion-core
       - uses: actions/upload-artifact@v5
         with:
