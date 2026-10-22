@@ -13,6 +13,7 @@ use crate::world::World;
 
 thread_local! {
     static WORLD: RefCell<World> = RefCell::new(World::new(Model::from_desc(&presets::cartpole())));
+    static PREPARED: RefCell<Option<Model>> = const { RefCell::new(None) };
     static DESC: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static CONTROLLERS: RefCell<String> = const { RefCell::new(String::new()) };
@@ -21,6 +22,17 @@ thread_local! {
 
 fn with<R>(f: impl FnOnce(&mut World) -> R) -> R {
     WORLD.with_borrow_mut(f)
+}
+
+fn mutation(accepted: bool) -> i32 {
+    ERROR.with_borrow_mut(|e| {
+        if accepted {
+            e.clear();
+        } else {
+            *e = "invalid simulation input: check index, finite values, and physical domain".into();
+        }
+    });
+    if accepted { 0 } else { -1 }
 }
 
 /// Declare `extern "C"` exports without repeating the attribute and ABI on every one-liner.
@@ -62,20 +74,34 @@ exports! {
     /// Derive and compile the described mechanism and restart every slot on it. Returns 0 on success;
     /// otherwise the previous mechanism is kept and `error_ptr`/`error_len` explain why.
     fn build(len: u32) -> i32 {
-        match DESC.with_borrow(|d| Model::build(&d[..(len as usize).min(d.len())])) {
+        if prepare(len) == 0 { commit_build() } else { -1 }
+    }
+
+    /// Derive a candidate without changing the running world. Commit only an accepted document revision.
+    fn prepare(len: u32) -> i32 {
+        let result = DESC.with_borrow(|d| {
+            if len as usize != d.len() { return Err("description length does not match buffer".into()); }
+            Model::build(d)
+        });
+        match result {
             Ok(model) => {
-                with(|w| {
-                    w.rebuild(model);
-                    w.publish();
-                });
+                PREPARED.with_borrow_mut(|p| *p = Some(model));
                 ERROR.with_borrow_mut(String::clear);
                 0
             }
-            Err(e) => {
-                ERROR.with_borrow_mut(|s| *s = e);
-                -1
+            Err(error) => {
+                PREPARED.with_borrow_mut(|p| *p = None);
+                ERROR.with_borrow_mut(|e| *e = error); -1
             }
         }
+    }
+
+    fn discard_build() { PREPARED.with_borrow_mut(|p| *p = None); }
+
+    fn commit_build() -> i32 {
+        let Some(model) = PREPARED.with_borrow_mut(Option::take) else { return mutation(false) };
+        with(|w| { w.rebuild(model); w.publish(); });
+        mutation(true)
     }
 
     /// Refresh the controllers JSON (specs, applicability on this mechanism, parameters); returns its length.
@@ -104,31 +130,28 @@ exports! {
     /// Run `n` steps on a throw-away copy of the primary (for timing; state is untouched).
     fn bench(n: u32) { with(|w| w.bench(n)) }
 
-    fn set_dt(dt: f64) { with(|w| w.set_dt(dt)) }
+    fn set_dt(dt: f64) -> i32 { mutation(with(|w| w.set_dt(dt))) }
+    fn param_value(i: u32) -> f64 { with(|w| w.primary().p.get(i as usize).copied().unwrap_or(f64::NAN)) }
     fn param_count() -> u32 { with(|w| w.primary().p.len() as u32) }
-    fn set_param(i: u32, v: f64) { with(|w| w.set_param(i as usize, v)) }
+    fn set_param(i: u32, v: f64) -> i32 { mutation(with(|w| w.set_param(i as usize, v))) }
     /// Run controller `kind` in `slot` (0 primary, 1… shadows); an unknown kind turns a shadow off.
     fn set_controller(slot: u32, kind: u32) { with(|w| w.set_controller(slot as usize, Kind::from_u32(kind))) }
     /// Parameter `i` of controller `kind` (shared by all slots running it).
-    fn set_ctrl_param(kind: u32, i: u32, v: f64) {
-        if let Some(k) = Kind::from_u32(kind) {
-            with(|w| w.set_ctrl_param(k, i as usize, v));
-        }
+    fn set_ctrl_param(kind: u32, i: u32, v: f64) -> i32 {
+        mutation(Kind::from_u32(kind).is_some_and(|k| with(|w| w.set_ctrl_param(k, i as usize, v))))
     }
     /// Restart the shadows from the primary's state.
     fn sync_shadows() { with(World::sync_shadows) }
     /// Joint-space target q*ᵢ.
-    fn set_target(i: u32, v: f64) { with(|w| w.set_target(i as usize, v)) }
-    fn set_state(i: u32, q: f64, qd: f64) { with(|w| w.set_state(i as usize, q, qd)) }
+    fn set_target(i: u32, v: f64) -> i32 { mutation(with(|w| w.set_target(i as usize, v))) }
+    fn set_state(i: u32, q: f64, qd: f64) -> i32 { mutation(with(|w| w.set_state(i as usize, q, qd))) }
     /// Impulsive disturbance: add `dqd` to q̇ᵢ (in every slot).
-    fn kick(i: u32, dqd: f64) { with(|w| w.kick(i as usize, dqd)) }
+    fn kick(i: u32, dqd: f64) -> i32 { mutation(with(|w| w.kick(i as usize, dqd))) }
     /// Manual actuator input uᵢ (added to the controller output).
-    fn set_input(i: u32, v: f64) { with(|w| w.set_input(i as usize, v)) }
+    fn set_input(i: u32, v: f64) -> i32 { mutation(with(|w| w.set_input(i as usize, v))) }
 
-    fn set_flag(id: u32, v: f64) {
-        if let Some(f) = Flag::from_u32(id) {
-            with(|w| w.set_flag(f, v));
-        }
+    fn set_flag(id: u32, v: f64) -> i32 {
+        mutation(Flag::from_u32(id).is_some_and(|f| with(|w| w.set_flag(f, v))))
     }
 
     fn out_ptr() -> *const f64 { with(|w| w.out().as_ptr()) }

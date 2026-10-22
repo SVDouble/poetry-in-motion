@@ -118,87 +118,154 @@ impl Desc {
     /// Describes the first inconsistency (version, sizes, parents that are not earlier bodies).
     pub fn parse(flat: &[f64]) -> Result<Self, String> {
         let hdr = flat.get(..HEADER).ok_or("description too short")?;
+        if !flat.iter().all(|v| v.is_finite()) {
+            return Err("description values must be finite".into());
+        }
         if (hdr[0] - DESC_VERSION).abs() > 0.0 {
             return Err(format!("unsupported description version {}", hdr[0]));
         }
-        let n = hdr[1] as usize;
-        if n == 0 || n > MAXB {
-            return Err(format!("between 1 and {MAXB} bodies are supported (got {n})"));
+        let integer = |v: f64, lo: i32, hi: usize, name: &str| -> Result<usize, String> {
+            if v.fract() != 0.0 || v < f64::from(lo) || v > hi as f64 {
+                return Err(format!("invalid {name}: {v}"));
+            }
+            Ok(v as usize)
+        };
+        let n = integer(hdr[1], 1, MAXB, "number of bodies")?;
+        let nc = integer(hdr[4], 0, MAXC, "number of closures")?;
+        let ne = integer(hdr[5], 0, MAXE, "number of elements")?;
+        if flat.len() != HEADER + n * PER_BODY + nc * PER_CLOSURE + ne * PER_ELEMENT {
+            return Err("description truncated or has extra fields".into());
         }
-        if flat.len() < HEADER + n * PER_BODY {
-            return Err("description truncated".into());
-        }
+        let body_ref = |v: f64| -> Result<Option<usize>, String> {
+            if (v + 1.0).abs() <= 0.0 { Ok(None) } else { Ok(Some(integer(v, 0, n - 1, "body index")?)) }
+        };
         let mut bodies = Vec::with_capacity(n);
         for i in 0..n {
             let b = &flat[HEADER + i * PER_BODY..HEADER + (i + 1) * PER_BODY];
-            let parent = if b[0] < 0.0 { None } else { Some(b[0] as usize) };
-            if parent.is_some_and(|p| p >= i) {
-                return Err(format!("body {} must hang from an earlier body", i + 1));
-            }
-            let kind = match b[1].round() as i64 {
+            let kind = match integer(b[1], 0, 2, "joint kind")? {
+                0 => JointKind::Revolute,
                 1 => JointKind::Prismatic,
-                2 => JointKind::Fixed,
-                _ => JointKind::Revolute,
+                _ => JointKind::Fixed,
             };
+            let actuated = integer(b[7], 0, 1, "actuator flag")? != 0;
+            integer(b[17], 0, 0, "reserved body field")?;
             bodies.push(BodyDesc {
-                parent,
+                parent: body_ref(b[0])?,
                 kind,
                 mount_s: b[2],
                 mount_xy: [b[3], b[4]],
                 mount_angle: b[5],
                 axis_angle: b[6],
-                actuated: b[7] != 0.0 && kind != JointKind::Fixed,
+                actuated: actuated && kind != JointKind::Fixed,
                 values: [b[8], b[9], b[10], b[11], b[12]],
                 q0: b[13],
                 q_target: b[14],
                 limit: b[15],
-                shape: b[16] as u8,
+                shape: integer(b[16], 0, 1, "body shape")? as u8,
             });
         }
-        let tool = if hdr[3] < 0.0 { None } else { Some((hdr[3] as usize).min(n - 1)) };
-        let nc = hdr[4] as usize;
-        if nc > MAXC {
-            return Err(format!("at most {MAXC} loop closures are supported"));
-        }
         let base = HEADER + n * PER_BODY;
-        let flat_c = flat.get(base..base + nc * PER_CLOSURE).ok_or("description truncated (closures)")?;
         let mut closures = Vec::with_capacity(nc);
-        for c in flat_c.chunks(PER_CLOSURE) {
-            let kind =
-                if c[0].round() as i64 == 1 { ClosureKind::Slot { angle: c[7] } } else { ClosureKind::Pin };
-            let a = if c[1] < 0.0 { None } else { Some(c[1] as usize) };
-            let b = c[3] as usize;
-            if a.is_some_and(|a| a >= n) || b >= n || a == Some(b) {
-                return Err("a loop closure must join two different existing bodies".into());
-            }
-            closures.push(Closure { kind, a, s_a: c[2], b, s_b: c[4], ground: [c[5], c[6]] });
-        }
-        let ne = hdr[5] as usize;
-        if ne > MAXE {
-            return Err(format!("at most {MAXE} springs and dampers are supported"));
+        for c in flat[base..base + nc * PER_CLOSURE].as_chunks::<PER_CLOSURE>().0 {
+            let kind = if integer(c[0], 0, 1, "closure kind")? == 1 {
+                ClosureKind::Slot { angle: c[7] }
+            } else {
+                ClosureKind::Pin
+            };
+            closures.push(Closure {
+                kind,
+                a: body_ref(c[1])?,
+                s_a: c[2],
+                b: integer(c[3], 0, n - 1, "closure body")?,
+                s_b: c[4],
+                ground: [c[5], c[6]],
+            });
         }
         let base = base + nc * PER_CLOSURE;
-        let flat_e = flat.get(base..base + ne * PER_ELEMENT).ok_or("description truncated (springs)")?;
         let mut elements = Vec::with_capacity(ne);
-        for e in flat_e.chunks(PER_ELEMENT) {
-            let a = if e[0] < 0.0 { None } else { Some(e[0] as usize) };
-            let b = e[2] as usize;
-            if a.is_some_and(|a| a >= n) || b >= n || a == Some(b) {
-                return Err(
-                    "a spring or damper must join two different bodies, or a body and the ground".into()
-                );
-            }
-            let (k, l0, d) = (e[6].max(0.0), e[7].max(0.0), e[8].max(0.0));
-            elements.push(Element { a, s_a: e[1], b, s_b: e[3], ground: [e[4], e[5]], k, l0, d });
+        for e in flat[base..].as_chunks::<PER_ELEMENT>().0 {
+            elements.push(Element {
+                a: body_ref(e[0])?,
+                s_a: e[1],
+                b: integer(e[2], 0, n - 1, "element body")?,
+                s_b: e[3],
+                ground: [e[4], e[5]],
+                k: e[6],
+                l0: e[7],
+                d: e[8],
+            });
         }
-        let d = Self { bodies, g: hdr[2], tool, closures, elements };
-        match d.n() {
-            0 => Err("the mechanism has no moving joint: everything is fixed".into()),
-            k if k > crate::MAXN => {
-                Err(format!("at most {} moving joints are supported (got {k})", crate::MAXN))
-            }
-            _ => Ok(d),
+        let d = Self { bodies, g: hdr[2], tool: body_ref(hdr[3])?, closures, elements };
+        d.validate()?;
+        Ok(d)
+    }
+
+    /// Validate native descriptions as well as decoded documents, before graph traversal or derivation.
+    /// Zero masses/inertias are allowed; numeric model construction checks effective inertia separately.
+    /// # Errors
+    /// Invalid graph, capacity, non-finite values, or negative physical coefficients.
+    pub fn validate(&self) -> Result<(), String> {
+        let nb = self.nb();
+        if nb == 0 || nb > MAXB || self.n() == 0 || self.n() > crate::MAXN {
+            return Err(format!(
+                "between 1 and {MAXB} bodies and 1 and {} moving joints are supported",
+                crate::MAXN
+            ));
         }
+        if !self.g.is_finite()
+            || self.tool.is_some_and(|i| i >= nb)
+            || self.closures.len() > MAXC
+            || self.elements.len() > MAXE
+        {
+            return Err("invalid gravity, tool, or mechanism capacity".into());
+        }
+        for (i, b) in self.bodies.iter().enumerate() {
+            let mut values = b.values.to_vec();
+            values.extend([
+                b.mount_s,
+                b.mount_xy[0],
+                b.mount_xy[1],
+                b.mount_angle,
+                b.axis_angle,
+                b.q0,
+                b.q_target,
+                b.limit,
+            ]);
+            if !values.iter().all(|v| v.is_finite())
+                || b.parent.is_some_and(|p| p >= i)
+                || b.shape > 1
+                || b.limit < 0.0
+                || !(0.0..=1.0).contains(&b.mount_s)
+                || [0, 1, 3, 4].iter().any(|&j| b.values[j] < 0.0)
+            {
+                return Err(format!(
+                    "invalid body {}: check parent, finite values, and nonnegative mass/length/inertia/friction/range",
+                    i + 1
+                ));
+            }
+        }
+        let endpoints = |a: Option<usize>, b: usize, sa: f64, sb: f64, ground: [f64; 2]| {
+            b < nb
+                && a.is_none_or(|a| a < nb && a != b)
+                && (0.0..=1.0).contains(&sa)
+                && (0.0..=1.0).contains(&sb)
+                && ground.iter().all(|v| v.is_finite())
+        };
+        for c in &self.closures {
+            if !endpoints(c.a, c.b, c.s_a, c.s_b, c.ground)
+                || matches!(c.kind, ClosureKind::Slot { angle } if !angle.is_finite())
+            {
+                return Err("invalid loop closure endpoints or angle".into());
+            }
+        }
+        for e in &self.elements {
+            if !endpoints(e.a, e.b, e.s_a, e.s_b, e.ground)
+                || ![e.k, e.l0, e.d].iter().all(|v| v.is_finite() && *v >= 0.0)
+            {
+                return Err("invalid spring/damper endpoints or coefficients".into());
+            }
+        }
+        Ok(())
     }
 
     /// Number of generalised coordinates (moving joints).

@@ -49,12 +49,22 @@ impl World {
         self.shadows.iter_mut().flatten().for_each(f);
     }
 
+    fn update(&mut self, mut f: impl FnMut(&mut Sim) -> bool) -> bool {
+        if !f(&mut self.primary) {
+            return false;
+        }
+        for s in self.shadows.iter_mut().flatten() {
+            f(s);
+        }
+        true
+    }
+
     /// Replace the mechanism, keeping the controllers of every slot and the global settings.
     pub fn rebuild(&mut self, model: Model) {
         let old = &self.primary;
-        let (umax, coriolis, dt, kind) = (old.umax, old.coriolis, old.dt, old.kind);
+        let (settings, kind) = (old.settings(), old.kind);
         self.primary = Sim::new(model, Kind::Passive);
-        (self.primary.umax, self.primary.coriolis, self.primary.dt) = (umax, coriolis, dt);
+        self.primary.apply_settings(settings);
         self.set_controller(0, Some(kind));
         let shadows = std::mem::take(&mut self.shadows);
         self.shadows = (1..SLOTS).map(|_| None).collect();
@@ -79,10 +89,10 @@ impl World {
         }
     }
 
-    pub fn set_ctrl_param(&mut self, kind: Kind, i: usize, v: f64) {
-        let Some(p) = kind.spec().params.get(i) else { return };
+    pub fn set_ctrl_param(&mut self, kind: Kind, i: usize, v: f64) -> bool {
+        let Some(p) = kind.spec().params.get(i) else { return false };
         if !v.is_finite() {
-            return;
+            return false;
         }
         self.params[kind as usize][i] = v.clamp(p.min, p.max);
         if p.redesign {
@@ -92,6 +102,7 @@ impl World {
                 }
             });
         }
+        true
     }
 
     #[must_use]
@@ -101,6 +112,7 @@ impl World {
 
     /// Bring every shadow back to the primary's state (and restart their controllers).
     pub fn sync_shadows(&mut self) {
+        self.primary.refresh_plan();
         for sh in self.shadows.iter_mut().flatten() {
             *sh = self.primary.fork(sh.kind);
         }
@@ -109,32 +121,47 @@ impl World {
     pub fn reset(&mut self) {
         self.each(Sim::reset);
     }
-    pub fn set_dt(&mut self, dt: f64) {
-        self.each(|s| s.dt = dt.clamp(1e-5, 1e-2));
+    pub fn set_dt(&mut self, dt: f64) -> bool {
+        self.update(|s| s.set_dt(dt))
     }
-    pub fn set_param(&mut self, i: usize, v: f64) {
-        self.each(|s| s.set_param(i, v));
+    pub fn set_param(&mut self, i: usize, v: f64) -> bool {
+        if !self.primary.can_set_param(i, v)
+            || self.shadows.iter_mut().flatten().any(|s| !s.can_set_param(i, v))
+        {
+            return false;
+        }
+        self.update(|s| s.set_param(i, v))
     }
-    pub fn set_target(&mut self, i: usize, v: f64) {
-        self.each(|s| s.set_target(i, v));
+    pub fn set_target(&mut self, i: usize, v: f64) -> bool {
+        self.update(|s| s.set_target(i, v))
     }
-    pub fn set_flag(&mut self, f: Flag, v: f64) {
-        self.each(|s| s.set_flag(f, v));
+    pub fn set_flag(&mut self, f: Flag, v: f64) -> bool {
+        self.update(|s| s.set_flag(f, v))
     }
-    pub fn kick(&mut self, i: usize, dqd: f64) {
-        self.each(|s| s.kick(i, dqd));
+    pub fn kick(&mut self, i: usize, dqd: f64) -> bool {
+        if !self.primary.can_kick(i, dqd) || self.shadows.iter_mut().flatten().any(|s| !s.can_kick(i, dqd)) {
+            return false;
+        }
+        self.update(|s| s.kick(i, dqd))
     }
-    pub fn set_input(&mut self, i: usize, v: f64) {
+    pub fn set_input(&mut self, i: usize, v: f64) -> bool {
+        if i >= self.primary.model.nu || !v.is_finite() {
+            return false;
+        }
         self.each(|s| {
             if let Some(u) = s.u_manual.get_mut(i) {
                 *u = v;
             }
         });
+        true
     }
     /// Set a joint state in the primary and restart the shadows from it.
-    pub fn set_state(&mut self, i: usize, q: f64, qd: f64) {
-        self.primary.set_state(i, q, qd);
+    pub fn set_state(&mut self, i: usize, q: f64, qd: f64) -> bool {
+        if !self.primary.set_state(i, q, qd) {
+            return false;
+        }
         self.sync_shadows();
+        true
     }
 
     pub fn step(&mut self, n: u32) {

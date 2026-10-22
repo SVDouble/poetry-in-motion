@@ -209,12 +209,16 @@ fn every_controller_runs_on_every_mechanism_it_supports() {
             }
             for step in 0..30 {
                 match r.below(10) {
-                    0 => w.kick(r.below(n), r.range(-2.0, 2.0)),
+                    0 => {
+                        w.kick(r.below(n), r.range(-2.0, 2.0));
+                    }
                     1 => {
                         w.set_flag(Flag::PushX, r.range(-2.0, 2.0));
                         w.set_flag(Flag::PushY, r.range(-2.0, 2.0));
                     }
-                    2 => w.set_flag(Flag::PushOn, 0.0),
+                    2 => {
+                        w.set_flag(Flag::PushOn, 0.0);
+                    }
                     3 => {
                         let spec = kind.spec();
                         if !spec.params.is_empty() {
@@ -223,9 +227,15 @@ fn every_controller_runs_on_every_mechanism_it_supports() {
                             w.set_ctrl_param(kind, i, r.range(p.min, p.max));
                         }
                     }
-                    4 => w.set_flag(Flag::Umax, r.range(1.0, 200.0)),
-                    5 => w.set_flag(Flag::Posture, r.range(0.0, 20.0)),
-                    6 => w.set_param(r.below(5 * d.bodies.len()), r.range(0.1, 1.5)),
+                    4 => {
+                        w.set_flag(Flag::Umax, r.range(1.0, 200.0));
+                    }
+                    5 => {
+                        w.set_flag(Flag::Posture, r.range(0.0, 20.0));
+                    }
+                    6 => {
+                        w.set_param(r.below(5 * d.bodies.len()), r.range(0.1, 1.5));
+                    }
                     7 => {
                         // secondary goals, reachable or not
                         w.set_flag(Flag::Orient, if r.chance(0.7) { r.range(1.0, 12.0) } else { 0.0 });

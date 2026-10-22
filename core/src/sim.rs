@@ -7,7 +7,7 @@ use crate::dynamics::{self, MatN, Terms, VecM, VecN, mat_vec, sym_eigenvalues};
 use crate::layout::{Flag, MAXF, off, slot};
 use crate::mech::MAXM;
 use crate::model::Model;
-use crate::plan::{Plan, Tool, manipulability};
+use crate::plan::{Plan, Tool, Tuning, manipulability};
 
 /// Default actuator limit (N·m | N) and fixed step (s).
 pub const UMAX: f64 = 120.0;
@@ -68,6 +68,18 @@ pub struct Sim {
     pub budget: Budget,
 }
 
+/// Configuration that survives mechanism replacement. Targets and body indices belong to a mechanism.
+#[derive(Clone, Copy, Debug)]
+pub struct Settings {
+    coriolis: bool,
+    umax: f64,
+    dt: f64,
+    ref_wn: f64,
+    push_k: f64,
+    weights: [f64; 4],
+    tuning: Tuning,
+}
+
 impl Sim {
     #[must_use]
     pub fn new(model: Model, kind: Kind) -> Self {
@@ -102,10 +114,43 @@ impl Sim {
         sim
     }
 
+    #[must_use]
+    pub fn settings(&self) -> Settings {
+        let p = &self.plan;
+        Settings {
+            coriolis: self.coriolis,
+            umax: self.umax,
+            dt: self.dt,
+            ref_wn: p.ref_wn,
+            push_k: p.push_k,
+            weights: [p.goals.posture, p.goals.manipulability, p.goals.orient, p.goals.elbow],
+            tuning: p.tuning,
+        }
+    }
+
+    pub fn apply_settings(&mut self, s: Settings) {
+        (self.coriolis, self.umax, self.dt) = (s.coriolis, s.umax, s.dt);
+        let p = &mut self.plan;
+        (p.ref_wn, p.push_k, p.tuning) = (s.ref_wn, s.push_k, s.tuning);
+        [p.goals.posture, p.goals.manipulability, p.goals.orient, p.goals.elbow] = s.weights;
+        self.plan_dirty = true;
+        self.ctrl_dirty = true;
+    }
+
+    pub fn set_dt(&mut self, dt: f64) -> bool {
+        if !dt.is_finite() || dt <= 0.0 {
+            return false;
+        }
+        self.dt = dt.clamp(1e-5, 1e-2);
+        self.ctrl_dirty = true;
+        true
+    }
+
     /// An independent copy with the same model, settings and state, running controller `kind`.
     #[must_use]
     pub fn fork(&self, kind: Kind) -> Self {
         let mut s = Self::new(self.model.clone(), kind);
+        s.apply_settings(self.settings());
         s.p.clone_from(&self.p);
         s.model.set_params(&s.p);
         (s.q, s.qd, s.t, s.steps) = (self.q, self.qd, self.t, self.steps);
@@ -115,6 +160,11 @@ impl Sim {
             (plan.q_target, plan.tool_target, plan.use_tool);
         (s.plan.ref_wn, s.plan.push, s.plan.push_k, s.plan.goals) =
             (plan.ref_wn, plan.push, plan.push_k, plan.goals);
+        // The requested target also has an assembly mode. Seed the new design from the primary's
+        // equilibrium, not from its possibly distant current pose, then restart references at that pose.
+        s.plan.q_star = plan.q_star;
+        s.plan.sync(&mut s.model, &plan.q_star);
+        s.refresh_plan();
         s.settle();
         s
     }
@@ -159,38 +209,88 @@ impl Sim {
         self.budget = Budget { e0: t + v, ..Budget::default() };
     }
 
-    pub fn set_state(&mut self, i: usize, q: f64, qd: f64) {
-        if i < self.n() {
-            (self.q[i], self.qd[i]) = (q, qd);
-            self.settle();
+    fn projected_state(&mut self, mut q: VecN, mut qd: VecN) -> Option<(VecN, VecN)> {
+        if !q.iter().chain(&qd).all(|v| v.is_finite()) {
+            return None;
         }
+        dynamics::project(&mut self.model, &mut q, &mut qd);
+        if !q.iter().chain(&qd).all(|v| v.is_finite())
+            || !self.model.regular(&q)
+            || !self.model.energies(&q, &qd).iter().all(|v| v.is_finite())
+        {
+            return None;
+        }
+        Some((q, qd))
     }
 
-    pub fn kick(&mut self, i: usize, dqd: f64) {
-        if i < self.n() {
-            let before = self.energy();
-            self.qd[i] += dqd;
-            dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
-            let after = self.energy();
-            // an impulse: its work is the jump in energy
-            self.budget.work[1] += after[0] + after[1] - before[0] - before[1];
+    pub fn set_state(&mut self, i: usize, q: f64, qd: f64) -> bool {
+        if i >= self.n() {
+            return false;
         }
+        let (mut qs, mut vs) = (self.q, self.qd);
+        (qs[i], vs[i]) = (q, qd);
+        let Some((qs, vs)) = self.projected_state(qs, vs) else { return false };
+        (self.q, self.qd) = (qs, vs);
+        self.settle();
+        true
     }
 
-    pub fn set_param(&mut self, i: usize, v: f64) {
-        if i < self.p.len() && v.is_finite() {
-            self.p[i] = v;
-            self.model.set_params(&self.p);
-            self.plan_dirty = true;
-            self.restart_budget(); // a new mechanism has a different energy
+    pub fn can_kick(&mut self, i: usize, dqd: f64) -> bool {
+        if i >= self.n() {
+            return false;
         }
+        let mut qd = self.qd;
+        qd[i] += dqd;
+        self.projected_state(self.q, qd).is_some()
     }
 
-    pub fn set_target(&mut self, i: usize, v: f64) {
+    pub fn kick(&mut self, i: usize, dqd: f64) -> bool {
+        if i >= self.n() {
+            return false;
+        }
+        let mut qd = self.qd;
+        qd[i] += dqd;
+        let Some((q, qd)) = self.projected_state(self.q, qd) else { return false };
+        let before = self.energy();
+        (self.q, self.qd) = (q, qd);
+        let after = self.energy();
+        self.budget.work[1] += after[0] + after[1] - before[0] - before[1];
+        true
+    }
+
+    /// Preflight without changing physical state or the energy budget. Used before a world-wide edit.
+    pub fn can_set_param(&mut self, i: usize, v: f64) -> bool {
+        if !self.model.valid_param(i, v) {
+            return false;
+        }
+        let old = self.p[i];
+        self.p[i] = v;
+        self.model.set_params(&self.p);
+        let valid = self.model.regular(&self.q)
+            && self.model.energies(&self.q, &self.qd).iter().all(|v| v.is_finite());
+        self.p[i] = old;
+        self.model.set_params(&self.p);
+        valid
+    }
+
+    pub fn set_param(&mut self, i: usize, v: f64) -> bool {
+        if !self.can_set_param(i, v) {
+            return false;
+        }
+        self.p[i] = v;
+        self.model.set_params(&self.p);
+        self.plan_dirty = true;
+        self.restart_budget();
+        true
+    }
+
+    pub fn set_target(&mut self, i: usize, v: f64) -> bool {
         if i < self.n() && v.is_finite() {
             self.plan.q_target[i] = v;
             self.plan_dirty = true;
+            return true;
         }
+        false
     }
 
     /// The controller's design depends on parameters that changed.
@@ -198,7 +298,26 @@ impl Sim {
         self.ctrl_dirty = true;
     }
 
-    pub fn set_flag(&mut self, flag: Flag, v: f64) {
+    pub fn set_flag(&mut self, flag: Flag, v: f64) -> bool {
+        if !v.is_finite() {
+            return false;
+        }
+        if matches!(flag, Flag::Coriolis | Flag::UseTool | Flag::PushOn)
+            && v.abs() > f64::EPSILON
+            && (v - 1.0).abs() > f64::EPSILON
+        {
+            return false;
+        }
+        if matches!(
+            flag,
+            Flag::Umax | Flag::PushK | Flag::Posture | Flag::Manipulability | Flag::Orient | Flag::Elbow
+        ) && v < 0.0
+        {
+            return false;
+        }
+        if matches!(flag, Flag::RefWn) && v <= 0.0 {
+            return false;
+        }
         let pl = &mut self.plan;
         match flag {
             Flag::Coriolis => self.coriolis = v != 0.0,
@@ -226,14 +345,15 @@ impl Sim {
             Flag::ElbowX => pl.goals.elbow_target[0] = v,
             Flag::ElbowY => pl.goals.elbow_target[1] = v,
             Flag::ElbowBody => {
-                if v >= 0.0 && (v as usize) < self.model.desc.nb() {
-                    pl.goals.elbow_body = v as usize;
+                if v < 0.0 || v.fract() != 0.0 || v >= self.model.desc.nb() as f64 {
+                    return false;
                 }
+                pl.goals.elbow_body = v as usize;
             }
             _ => {
                 // tuning: only finite, positive values
                 if !(v.is_finite() && v > 0.0) {
-                    return;
+                    return false;
                 }
                 let tu = &mut pl.tuning;
                 match flag {
@@ -251,13 +371,19 @@ impl Sim {
                     Flag::StopK => tu.stop_k = v,
                     Flag::StopC => tu.stop_c = v,
                     Flag::StopDepth => tu.stop_depth = v,
-                    Flag::Baumgarte => tu.baumgarte = v,
+                    Flag::Baumgarte => {
+                        if (tu.baumgarte - v).abs() > 0.0 {
+                            self.plan_dirty = true;
+                        }
+                        tu.baumgarte = v;
+                    }
                     Flag::MotorSpeed => tu.motor_speed = v,
                     Flag::Lead => tu.lead = v,
                     _ => {}
                 }
             }
         }
+        true
     }
 
     /// Environment forces: end stops of limited prismatic joints, a Hunt–Crossley contact `F = δ (K + D δ̇)`

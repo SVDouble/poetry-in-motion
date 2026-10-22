@@ -224,6 +224,7 @@ pub struct Plan {
     /// External force on the tool this step (world frame).
     pub f_ext: [f64; 2],
     synced: bool,
+    designed_target: Option<VecN>,
 }
 
 impl Plan {
@@ -273,6 +274,7 @@ impl Plan {
             xdd_ref: [0.0; 2],
             f_ext: [0.0; 2],
             synced: false,
+            designed_target: None,
         }
     }
 
@@ -304,12 +306,12 @@ impl Plan {
     /// assembly mode); a passive joint of an open chain cannot be held anywhere, so it settles where its
     /// potential torque vanishes (with loops the constraint forces share the load and the projection
     /// already balances it).
-    fn equilibrium(&self, model: &mut Model, target: VecN) -> VecN {
+    fn equilibrium(&self, model: &mut Model, target: VecN, reference: &VecN) -> VecN {
         let zero = [0.0; MAXN];
         let mut seed = target;
         if model.closed() && self.synced {
             for &i in &model.unactuated {
-                seed[i] = self.q_ref[i];
+                seed[i] = reference[i];
             }
         }
         let (mut qs, mut v0) = (seed, zero);
@@ -328,12 +330,19 @@ impl Plan {
     pub fn design(&mut self, model: &mut Model, p: &[f64]) {
         let n = model.n;
         let zero = [0.0; MAXN];
-        self.q_star = self.equilibrium(model, self.q_target);
+        // Retuning or changing physical parameters must not choose a different linkage assembly for
+        // the same requested target. A genuinely new target is seeded from the current reference.
+        let unchanged = self
+            .designed_target
+            .is_some_and(|t| (0..n).all(|i| t[i].to_bits() == self.q_target[i].to_bits()));
+        let seed = if unchanged { self.q_star } else { self.q_ref };
+        self.q_star = self.equilibrium(model, self.q_target, &seed);
+        self.designed_target = Some(self.q_target);
         if let Some(t) = Tool::eval(model, &self.q_star, &zero) {
             self.x_star = t.p;
         }
         self.v_star = model.energies(&self.q_star, &zero)[1];
-        let qs = self.setpoint.map_or(self.q_star, |s| self.equilibrium(model, s));
+        let qs = self.setpoint.map_or(self.q_star, |s| self.equilibrium(model, s, &self.q_ref));
         self.q_lin = qs;
         let t = model.terms(&qs, &zero);
         let k = dynamics::constraints(model, &qs, &zero);

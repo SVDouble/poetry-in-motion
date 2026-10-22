@@ -117,13 +117,43 @@ impl Model {
     /// # Errors
     /// If the description is invalid.
     pub fn build(flat: &[f64]) -> Result<Self, String> {
-        Ok(Self::from_desc(&Desc::parse(flat)?))
+        Self::try_from_desc(&Desc::parse(flat)?)
     }
 
+    /// Construct a model from a trusted native description.
+    /// # Panics
+    /// If the description is invalid or its initial effective inertia is singular.
     #[must_use]
     pub fn from_desc(desc: &Desc) -> Self {
-        let d = derive(desc);
-        Self::compile(&d)
+        Self::try_from_desc(desc).expect("invalid native mechanism description")
+    }
+
+    /// # Errors
+    /// Invalid description or nonpositive/non-finite initial effective inertia.
+    pub fn try_from_desc(desc: &Desc) -> Result<Self, String> {
+        desc.validate()?;
+        let mut model = Self::compile(&derive(desc));
+        let q = model.q0.clone();
+        if !model.regular(&q) {
+            return Err("mechanism must have finite positive effective inertia".into());
+        }
+        Ok(model)
+    }
+
+    /// Physical parameter domains, independent of the UI's presentation ranges.
+    #[must_use]
+    pub fn valid_param(&self, i: usize, v: f64) -> bool {
+        i < self.defaults.len()
+            && v.is_finite()
+            && (i == self.defaults.len() - 1 || i % crate::mech::PARAMS_PER_BODY == 2 || v >= 0.0)
+    }
+
+    pub fn regular(&mut self, q: &[f64]) -> bool {
+        let n = self.n;
+        let terms = self.terms(q, &[0.0; MAXN]);
+        terms.m[..n * n].iter().chain(&terms.c[..n * n]).chain(&terms.n[..n]).all(|v| v.is_finite())
+            && self.energies(q, &[0.0; MAXN]).iter().all(|v| v.is_finite())
+            && crate::dynamics::sym_eigenvalues(n, &terms.m)[..n].iter().all(|v| v.is_finite() && *v > 0.0)
     }
 
     /// # Panics
