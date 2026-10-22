@@ -7,30 +7,23 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { coordIndex, encode, normalise, PRESETS, paramVector } from '../model/description';
 import { TestCore } from '../sim/testing';
-import { poseBounds } from './kinematics';
-import { Figure } from './schematic';
+import { Loads } from './loads';
 
 let tc: TestCore;
 beforeAll(async () => {
   tc = await TestCore.load();
 });
 
-interface Loads {
-  pointForces(...a: unknown[]): unknown[];
-  heldMoment(...a: unknown[]): number;
-  reaction(...a: unknown[]): [number, number];
-}
-
 describe('free-body diagram', () => {
   it('balances every joint with the drive and friction the core applies', () => {
     for (const name of ['Two-link arm', 'Double pendulum', 'Branching arm', 'Sprung pendulum', 'Cart-pole']) {
       const mech = PRESETS[name]!();
-      const d = tc.build(encode(mech));
+      tc.build(encode(mech));
       tc.send({ type: 'kick', i: 0, v: 1.5 });
       tc.core.step(250);
       const snap = tc.snapshot();
       const params = paramVector(mech);
-      const fig = new Figure(mech, d, poseBounds(mech)) as unknown as Loads;
+      const fig = new Loads(mech);
       const forces = fig.pointForces(snap, params);
       const coord = coordIndex(mech);
       let a = 0;
