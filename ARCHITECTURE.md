@@ -83,15 +83,17 @@ bounded; the recovery check remains active for it.
 Worker step-cost timing clones the ongoing primary, including controller memory, before the timer.
 It measures isolated integration. Opt-in worker profiling (`make e2e-profile`) measures actual ticks and
 separates integration, publication, snapshot transport, checkpoint retention and periodic benchmark work
-for both transports. It excludes UI rendering. See [BENCHMARKS.md](BENCHMARKS.md) for measurements and limits.
+for both transports. Only one profiling request runs at a time, and phase clocks are read only during
+that request. It excludes UI rendering. See [BENCHMARKS.md](BENCHMARKS.md) for measurements and limits.
 Physics, publication, rendering, equations, plots and history retain distinct time bases; profiling is
 required before changing their cadences.
 
 ## Presentation and history
 
-`DocumentSession` coordinates accepted documents and builds. `model/fields` centralizes physical domains,
-units, authored uniform-rod dependencies and explicit control ranges. Authored physical/default/initial-state
-edits return a `PreparedModel` containing the independent candidate and its compilation-reuse decision.
+`DocumentSession` owns the revision counter and coordinates accepted documents and builds.
+`model/fields` centralizes physical domains, units, authored uniform-rod dependencies and explicit control
+ranges. Authored physical/default/initial-state edits return a `PreparedModel` containing the independent
+candidate and its compilation-reuse decision.
 They use the installed symbolic structure when compatible. They replace defaults,
 parameter metadata, initial conditions, targets and limits; refold coefficients; and validate initial inertia.
 The same revision-checked commit/reset path applies, so undo, reset and uniform-rod semantics are preserved.
@@ -117,6 +119,7 @@ They exclude immutable compiled code, derivation text and allocator bookkeeping.
 total browser or WASM memory. IDs survive clears;
 reset/rebuild invalidate old IDs. Expired restores preserve the live world. UI history lazily retains the
 transferred double-precision observations, parameters and push position; it follows worker eviction.
+The UI holds a bounded array of frame references; expiry and branching use ordinary array operations.
 This is in-session branching from saved state; portable command-log replay is a separate feature.
 
 Goals exposes up to 16 additional ordered point/orientation tasks on ground, body or tool frames.

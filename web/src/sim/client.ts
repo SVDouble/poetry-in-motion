@@ -53,7 +53,7 @@ export class SimClient {
       this.pending.has(id) ||
       this.observations.has(id) ||
       this.restores.has(id) ||
-      this.profiles.has(id)
+      this.profiling?.id === id
     );
     return id;
   }
@@ -68,7 +68,7 @@ export class SimClient {
   private readonly checkpoints = new Set<(frame: CheckpointFrame) => void>();
   private readonly taskListeners = new Set<() => void>();
   private readonly restores = new Map<number, (state: RuntimeState | null) => void>();
-  private readonly profiles = new Map<number, (report: TickProfile | null) => void>();
+  private profiling: { id: number; done: (report: TickProfile | null) => void } | null = null;
 
   onCheckpoint(fn: (frame: CheckpointFrame) => void): () => void {
     this.checkpoints.add(fn);
@@ -92,17 +92,11 @@ export class SimClient {
     });
   }
   profile(ticks = 250): Promise<TickProfile | null> {
-    if (
-      this.failure ||
-      this.profiles.size ||
-      !Number.isInteger(ticks) ||
-      ticks < 1 ||
-      ticks > MAX_PROFILE_TICKS
-    )
+    if (this.failure || this.profiling || !Number.isInteger(ticks) || ticks < 1 || ticks > MAX_PROFILE_TICKS)
       return Promise.resolve(null);
     const id = this.id();
     return new Promise((resolve) => {
-      this.profiles.set(id, resolve);
+      this.profiling = { id, done: resolve };
       this.send({ type: 'profile', id, ticks });
     });
   }
@@ -130,8 +124,10 @@ export class SimClient {
             if (changed) for (const fn of this.taskListeners) fn();
           }
         } else if (msg.type === 'profiled') {
-          this.profiles.get(msg.id)?.(msg.report);
-          this.profiles.delete(msg.id);
+          if (this.profiling?.id === msg.id) {
+            this.profiling.done(msg.report);
+            this.profiling = null;
+          }
         } else if (msg.type === 'restoreFailed') {
           this.restores.get(msg.id)?.(null);
           this.restores.delete(msg.id);
@@ -170,8 +166,6 @@ export class SimClient {
                 derivation: JSON.parse(msg.derivation) as Derivation,
                 controllers: parseControllers(msg.controllers),
                 ms: msg.buildMs,
-                reused: msg.reused,
-                targets: msg.targets,
               }
             : { ok: false, error: msg.error };
           this.pending.delete(msg.id);
@@ -240,8 +234,8 @@ export class SimClient {
     this.observations.clear();
     for (const done of this.restores.values()) done(null);
     this.restores.clear();
-    for (const done of this.profiles.values()) done(null);
-    this.profiles.clear();
+    this.profiling?.done(null);
+    this.profiling = null;
     this.report(message);
   }
 

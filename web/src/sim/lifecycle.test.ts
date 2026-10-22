@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { Revisions } from '../app/revision';
-import { cloneMechanism, PRESETS } from '../model/description';
+import { DocumentSession } from '../app/document';
+import { PRESETS } from '../model/description';
 import { type Built, SimClient } from './client';
 import type { Flag, Layout } from './layout';
 import {
@@ -84,16 +84,12 @@ describe('physics client transitions', () => {
   it('rejects a prepared result invalidated during the debounce window', async () => {
     const worker = new FakeWorker();
     const client = new SimClient(worker as unknown as Worker, layout, null);
-    const revisions = new Revisions(cloneMechanism);
-    const document = PRESETS['Two-link arm']!();
-    const ticket = revisions.capture(document);
-    const pending = client.build([], ticket.current);
+    const session = new DocumentSession(PRESETS['Two-link arm']!(), client);
+    const pending = session.rebuild();
     const id = (worker.sent.at(-1) as Extract<ToWorker, { type: 'build' }>).id;
-    revisions.change(); // edit B, before B's build timer fires
-    document.bodies.pop();
+    session.edit(PRESETS['Cart-pole']!()); // edit B, before B's build timer fires
     worker.receive({ type: 'prepared', id });
-    expect((await pending).ok).toBe(false);
-    expect(ticket.document.bodies).toHaveLength(2);
+    expect(await pending).toEqual({ kind: 'stale' });
     expect(worker.sent.at(-1)?.type).toBe('discardBuild');
     expect(worker.sent.some((m) => m.type === 'commitBuild')).toBe(false);
     expect(client.generation).toBe(0);
@@ -249,5 +245,24 @@ describe('physics client transitions', () => {
     expect(await waiting).toEqual(runtime);
     expect(client.targets).toEqual([0.3, 0.6]);
     expect(client.snap.data[0]).toBe(3);
+  });
+  it('ignores late profiling replies after a completed request and allows the next request', async () => {
+    const worker = new FakeWorker();
+    const client = new SimClient(worker as unknown as Worker, layout, null);
+    const first = client.profile(20);
+    const old = (worker.sent.at(-1) as Extract<ToWorker, { type: 'profile' }>).id;
+    expect(await client.profile(20)).toBeNull();
+    worker.receive({ type: 'profiled', id: old, report: null });
+    expect(await first).toBeNull();
+    const next = client.profile(20);
+    const id = (worker.sent.at(-1) as Extract<ToWorker, { type: 'profile' }>).id;
+    const done = vi.fn();
+    void next.then(done);
+    worker.receive({ type: 'profiled', id: old, report: null });
+    await Promise.resolve();
+    expect(done).not.toHaveBeenCalled();
+    worker.receive({ type: 'profiled', id, report: null });
+    expect(await next).toBeNull();
+    expect(done).toHaveBeenCalledOnce();
   });
 });

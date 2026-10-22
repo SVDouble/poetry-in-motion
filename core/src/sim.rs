@@ -171,12 +171,7 @@ impl Sim {
         true
     }
 
-    /// Inline simulation and retained allocations; shared compiled code is excluded.
-    #[must_use]
-    pub fn retained_bytes(&self) -> usize {
-        size_of::<Self>() + self.heap_bytes()
-    }
-
+    /// Retained allocations; the owner accounts for this simulation inline.
     pub(crate) fn heap_bytes(&self) -> usize {
         self.model.heap_bytes()
             + self.plan.heap_bytes()

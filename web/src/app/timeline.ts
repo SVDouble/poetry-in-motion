@@ -16,7 +16,6 @@ export class Timeline {
   readonly el = el('div', 'timeline overlay');
   private readonly frames: Checkpoints;
   private busy = false;
-  private lastT = Number.NaN;
   /** Index (0 = oldest) of the moment being shown, or −1: live. */
   private at = -1;
   private readonly replay: Snapshot;
@@ -53,12 +52,10 @@ export class Timeline {
   clear(): void {
     this.frames.clear();
     this.at = -1;
-    this.lastT = Number.NaN;
   }
 
   record(frame: CheckpointFrame): void {
     this.frames.record(frame);
-    this.lastT = frame.data[this.replay.layout.off.TIME]!;
   }
 
   /** The snapshot to draw: the recorded moment being shown, or the live one. */
@@ -110,7 +107,6 @@ export class Timeline {
     try {
       if (!(await this.events.resume(frame.checkpoint))) return;
       this.frames.truncate(at);
-      this.lastT = this.replay.t;
       this.at = -1;
       this.sync();
     } finally {
@@ -121,8 +117,10 @@ export class Timeline {
   private sync(): void {
     this.slider.max = String(Math.max(0, this.frames.count - 1));
     this.slider.value = String(this.at < 0 ? this.frames.count - 1 : this.at);
-    const t = this.at < 0 ? this.lastT : this.replay.t;
-    this.time.textContent = Number.isFinite(t) ? `t = ${t.toFixed(2)} s${this.at < 0 ? ' (now)' : ''}` : '';
+    const t =
+      this.at < 0 ? this.frames.get(this.frames.count - 1)?.data[this.replay.layout.off.TIME] : this.replay.t;
+    this.time.textContent =
+      t !== undefined && Number.isFinite(t) ? `t = ${t.toFixed(2)} s${this.at < 0 ? ' (now)' : ''}` : '';
   }
 
   /** Keep the slider at the end while live. */

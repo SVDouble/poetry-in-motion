@@ -97,6 +97,9 @@ function publish(c: Core): void {
   }
 }
 
+/** Phase timing is needed only for an explicit profiling request. */
+const stamp = () => (profiler ? performance.now() : 0);
+
 function tick(): void {
   const c = core;
   if (!c) return;
@@ -104,7 +107,7 @@ function tick(): void {
   const elapsed = Math.min((now - last) / 1000, MAX_CATCH_UP_S);
   last = now;
   let stepped = 0;
-  const integrateAt = performance.now();
+  const integrateAt = stamp();
   if (running) {
     acc += elapsed * speed;
     const n = Math.floor(acc / dt);
@@ -115,15 +118,15 @@ function tick(): void {
       stepsThisSecond += n;
     }
   }
-  const integratedAt = performance.now();
+  const integratedAt = stamp();
   c.publish();
-  const publishedAt = performance.now();
+  const publishedAt = stamp();
   if (now - secondStart >= 1000) {
     stats[1] = (stepsThisSecond * 1000) / (now - secondStart);
     stepsThisSecond = 0;
     secondStart = now;
   }
-  const benchAt = performance.now();
+  const benchAt = stamp();
   if (now - lastBench > BENCH_EVERY_MS) {
     // a few real-time steps are too short to time with the coarse clock, so time a batch on a copy, sized
     // from the last measurement to take about BENCH_MS
@@ -137,12 +140,12 @@ function tick(): void {
     benchSteps = Math.round(Math.min(20_000, Math.max(10, (BENCH_MS * 1000) / Math.max(stepCost, 0.05))));
     lastBench = now;
   }
-  const benchedAt = performance.now();
+  const benchedAt = stamp();
   stats[0] = stepCost;
   stats[2] = running ? speed : 0;
   stats[3] = running ? 1 : 0;
   publish(c);
-  const transportedAt = performance.now();
+  const transportedAt = stamp();
   const t = view(c)[timeOffset]!;
   if (
     t !== historyTime &&
@@ -168,7 +171,7 @@ function tick(): void {
     }
     historyTime = t;
   }
-  const endedAt = performance.now();
+  const endedAt = stamp();
   if (profiler) {
     const report = profiler.run.add(
       {
@@ -270,7 +273,7 @@ const handlers: Handlers = {
   profile: (_c, m) => {
     profiler = {
       id: m.id,
-      run: new TickProfiler(Math.max(1, Math.min(MAX_PROFILE_TICKS, Math.round(m.ticks))), !!shared),
+      run: new TickProfiler(Math.min(MAX_PROFILE_TICKS, m.ticks), !!shared),
     };
   },
   restore: (c, m) => {
@@ -288,8 +291,7 @@ const handlers: Handlers = {
     c.publish();
     historyTime = view(c)[timeOffset]!;
     const flags = {} as Record<Flag, number>;
-    const layout = parseLayout(text(c, c.layout_ptr(), c.layout_len()));
-    for (const key of FLAGS) flags[key] = c.flag_value(layout.flag[key]);
+    for (const key of FLAGS) flags[key] = c.flag_value(flagIds[key]);
     const params = Array.from({ length: c.param_count() }, (_, i) => c.param_value(i));
     const len = c.controllers();
     const controllers = parseControllers(text(c, c.controllers_ptr(), len));
@@ -341,8 +343,7 @@ const handlers: Handlers = {
     historyTime = Number.NaN;
   },
   advance: (c, m) => {
-    c.step(Math.max(1, Math.min(1000, Math.round(m.steps))));
-    c.publish();
+    c.step(Math.min(1000, m.steps));
   },
   run: (_c, m) => {
     running = m.running;

@@ -1,6 +1,5 @@
 import { cloneMechanism, encode, type Mechanism } from '../model/description';
 import type { Built, SimClient } from '../sim/client';
-import { Revisions } from './revision';
 
 type Outcome =
   | { kind: 'installed'; document: Mechanism; result: Built }
@@ -14,7 +13,7 @@ export class DocumentSession {
   get installed(): Mechanism | null {
     return this.runtimeDocument;
   }
-  private readonly revisions = new Revisions(cloneMechanism);
+  private revision = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -24,7 +23,7 @@ export class DocumentSession {
 
   edit(document: Mechanism): void {
     this.draft = document;
-    this.revisions.change();
+    this.revision++;
     this.cancelScheduled();
   }
 
@@ -40,19 +39,21 @@ export class DocumentSession {
 
   async rebuild(): Promise<Outcome> {
     this.cancelScheduled();
-    const ticket = this.revisions.capture(this.draft);
-    if (!ticket.document.bodies.length) {
+    const revision = this.revision;
+    const document = cloneMechanism(this.draft);
+    const current = () => revision === this.revision;
+    if (!document.bodies.length) {
       this.runtimeDocument = null;
       return { kind: 'empty' };
     }
-    const result = await this.client.build(encode(ticket.document), ticket.current);
-    if (!result.ok) return ticket.current() ? { kind: 'error', error: result.error } : { kind: 'stale' };
+    const result = await this.client.build(encode(document), current);
+    if (!result.ok) return current() ? { kind: 'error', error: result.error } : { kind: 'stale' };
     this.client.install(result);
     if (!this.draft.bodies.length) {
       this.runtimeDocument = null;
       return { kind: 'empty' };
     }
-    this.runtimeDocument = ticket.document;
-    return { kind: 'installed', document: ticket.document, result };
+    this.runtimeDocument = document;
+    return { kind: 'installed', document, result };
   }
 }

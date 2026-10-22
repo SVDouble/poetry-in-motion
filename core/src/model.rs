@@ -196,12 +196,7 @@ impl Model {
         }
     }
 
-    /// Owned model storage and replaceable coefficients, excluding shared code and derivation text.
-    #[must_use]
-    pub fn retained_bytes(&self) -> usize {
-        size_of::<Self>() + self.heap_bytes()
-    }
-
+    /// Owned allocations and replaceable coefficients, excluding shared code and derivation text.
     pub(crate) fn heap_bytes(&self) -> usize {
         vec_bytes(&self.desc.bodies)
             + vec_bytes(&self.desc.closures)

@@ -34,3 +34,18 @@ it('prunes expired IDs correctly across unsigned wrap and clears observations on
   b.record(frame(2, 2, 1, 0));
   expect(b.count).toBe(1);
 });
+
+it('keeps the bounded tail and releases the superseded future when branching', () => {
+  const b = new Checkpoints(1);
+  for (let id = 1; id <= HISTORY.frames + 3; id++) b.record(frame(id));
+  expect(b.count).toBe(HISTORY.frames);
+  expect(b.get(0)?.checkpoint).toBe(4);
+  expect(b.get(b.count - 1)?.checkpoint).toBe(HISTORY.frames + 3);
+  b.truncate(2);
+  expect(b.count).toBe(3);
+  expect(b.get(3)).toBeUndefined();
+  b.record(frame(HISTORY.frames + 4, 4, 1, 6.1));
+  expect(b.count).toBe(4);
+  expect(b.get(2)?.checkpoint).toBe(6);
+  expect(b.get(3)?.checkpoint).toBe(HISTORY.frames + 4);
+});

@@ -1,44 +1,33 @@
 import { HISTORY } from '../generated/contracts';
 import type { CheckpointFrame } from '../sim/protocol';
 
-/** Lazy snapshot retention: slots hold transferred doubles only after an actual checkpoint arrives. */
+/** A bounded list of transferred observations; snapshot buffers are never copied here. */
 export class Checkpoints {
-  private frames: (CheckpointFrame | undefined)[] = Array(HISTORY.frames);
+  private frames: CheckpointFrame[] = [];
   constructor(private readonly timeOffset: number) {}
-  private head = 0;
-  count = 0;
-  private generation = -1;
+  get count(): number {
+    return this.frames.length;
+  }
   clear(): void {
-    this.frames = Array(HISTORY.frames);
-    this.head = 0;
-    this.count = 0;
+    this.frames.length = 0;
   }
   get(index: number): CheckpointFrame | undefined {
-    if (index < 0 || index >= this.count) return undefined;
-    return this.frames[(this.head - this.count + index + HISTORY.frames) % HISTORY.frames];
+    return this.frames[index];
   }
   record(frame: CheckpointFrame): void {
-    const latest = this.get(this.count - 1);
+    const latest = this.frames.at(-1);
     if (
-      frame.generation !== this.generation ||
-      (latest && frame.data[this.timeOffset]! < latest.data[this.timeOffset]!)
+      latest &&
+      (frame.generation !== latest.generation || frame.data[this.timeOffset]! < latest.data[this.timeOffset]!)
     )
       this.clear();
-    this.generation = frame.generation;
-    while (this.count && (this.get(0)!.checkpoint - frame.oldest) >>> 0 >= 0x80000000) {
-      const index = (this.head - this.count + HISTORY.frames) % HISTORY.frames;
-      this.frames[index] = undefined;
-      this.count--;
-    }
-    this.frames[this.head] = frame;
-    this.head = (this.head + 1) % HISTORY.frames;
-    this.count = Math.min(HISTORY.frames, this.count + 1);
+    while (this.frames.length && (this.frames[0]!.checkpoint - frame.oldest) >>> 0 >= 0x80000000)
+      this.frames.shift();
+    this.frames.push(frame);
+    // At most 600 references move; the transferred snapshot data stays in place.
+    if (this.frames.length > HISTORY.frames) this.frames.shift();
   }
   truncate(index: number): void {
-    const keep = index + 1;
-    for (let i = keep; i < this.count; i++)
-      this.frames[(this.head - this.count + i + HISTORY.frames) % HISTORY.frames] = undefined;
-    this.head = (this.head - this.count + keep + HISTORY.frames) % HISTORY.frames;
-    this.count = keep;
+    this.frames.splice(index + 1);
   }
 }

@@ -108,5 +108,5 @@ The JSON output preserves all phase distributions for further investigation.
 
 These measurements do not establish a main-thread rendering, scope-recorder or initial-loading problem.
 Observation cadences and loading policy remain unchanged; the bundle warning alone does not justify a
-lazy-loading refactor. The production build is 537,869 bytes of WASM and 562.75 kB of main JavaScript
-(202.93 kB and 189.45 kB gzip respectively).
+lazy-loading refactor. The production build is 537,692 bytes of WASM and 562.10 kB of main JavaScript
+(202.83 kB and 189.24 kB gzip respectively).

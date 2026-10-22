@@ -40,9 +40,11 @@ it('invalidates a pending candidate at edit time and retains the installed docum
 
 it('installs the captured accepted document when a later edit arrives during commit', async () => {
   const s = session();
-  const captured = structuredClone(s.doc.draft);
+  const original = s.doc.draft;
+  const captured = structuredClone(original);
   const pending = s.doc.rebuild();
   expect(s.current()).toBe(true); // worker accepts prepare here
+  original.bodies.pop(); // the editor may mutate the previous draft before replacing it
   s.doc.edit(PRESETS['Cart-pole']!());
   s.resolve(built); // accepted commit acknowledgment
   expect(await pending).toEqual({ kind: 'installed', document: captured, result: built });

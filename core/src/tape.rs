@@ -165,13 +165,8 @@ impl Tape {
         Self { program: Arc::new(tape), coefficients, work }
     }
 
-    /// Inline tape, workspace and replaceable coefficients; immutable compiled code is excluded.
+    /// Workspace and replaceable coefficients; immutable compiled code is excluded.
     /// Shared coefficients are charged in full, so checkpoint estimates remain conservative.
-    #[must_use]
-    pub fn retained_bytes(&self) -> usize {
-        size_of::<Self>() + self.heap_bytes()
-    }
-
     pub(crate) fn heap_bytes(&self) -> usize {
         vec_bytes(&self.work.av)
             + vec_bytes(&self.work.hv)
