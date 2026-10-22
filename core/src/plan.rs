@@ -89,6 +89,13 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        crate::memory::vec_bytes(&self.config.tasks)
+            + self.design.lin.as_ref().map_or(0, |lin| {
+                [&lin.z, &lin.a, &lin.b].into_iter().map(|m| crate::memory::vec_bytes(&m.data)).sum::<usize>()
+            })
+    }
+
     #[must_use]
     pub fn new(model: &Model) -> Self {
         let mut q_target = [0.0; MAXN];

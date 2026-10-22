@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::cas::{Expr, Harmonic};
 use crate::mech::Vars;
+use crate::memory::{arc_bytes, vec_bytes};
 
 #[derive(Clone, Copy, Debug)]
 struct Term {
@@ -164,13 +165,21 @@ impl Tape {
         Self { program: Arc::new(tape), coefficients, work }
     }
 
-    /// Evaluation workspace plus conservatively counted replaceable coefficients, excluding shared code.
+    /// Inline tape, workspace and replaceable coefficients; immutable compiled code is excluded.
+    /// Shared coefficients are charged in full, so checkpoint estimates remain conservative.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        self.work.av.len() * 16
-            + (self.work.hv.len() + self.work.sv.len() + self.work.state.len()) * 8
-            + self.coefficients.hot.len() * size_of::<Hot>()
-            + self.coefficients.hot_out.len() * 8
+        size_of::<Self>() + self.heap_bytes()
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        vec_bytes(&self.work.av)
+            + vec_bytes(&self.work.hv)
+            + vec_bytes(&self.work.sv)
+            + vec_bytes(&self.work.state)
+            + arc_bytes(&self.coefficients)
+            + vec_bytes(&self.coefficients.hot)
+            + vec_bytes(&self.coefficients.hot_out)
     }
 
     #[must_use]

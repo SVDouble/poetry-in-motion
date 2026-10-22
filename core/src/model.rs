@@ -8,6 +8,7 @@ use crate::cas::{Angle, Expr};
 use crate::doc;
 use crate::dynamics::{Terms, VecN};
 use crate::mech::{BodyDesc, Derived, Desc, JointKind, MAXE, Vars, derive};
+use crate::memory::vec_bytes;
 use crate::tape::Tape;
 
 /// What the springs and dampers do at one state.
@@ -76,6 +77,14 @@ pub struct Model {
     pub derivation: Arc<str>,
 }
 
+/// An independent candidate and whether it reused the installed symbolic structure.
+#[derive(Debug)]
+#[must_use = "install the prepared model to apply the edit"]
+pub struct PreparedModel {
+    pub model: Model,
+    pub reused: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuxOffsets {
     pub mdot: usize,
@@ -135,10 +144,7 @@ impl Model {
     pub fn try_from_desc(desc: &Desc) -> Result<Self, String> {
         desc.validate()?;
         let mut model = Self::compile(&derive(desc));
-        let q = model.q0.clone();
-        if !model.regular(&q) {
-            return Err("mechanism must have finite positive effective inertia".into());
-        }
+        model.check_initial_inertia()?;
         Ok(model)
     }
 
@@ -146,7 +152,7 @@ impl Model {
     /// The candidate is independent, so rejection cannot modify the installed model or its overrides.
     /// # Errors
     /// Invalid description or singular initial effective inertia.
-    pub fn prepare(&self, desc: &Desc) -> Result<(Self, bool), String> {
+    pub fn prepare(&self, desc: &Desc) -> Result<PreparedModel, String> {
         desc.validate()?;
         let mut structure = desc.clone();
         structure.g = self.desc.g;
@@ -160,10 +166,11 @@ impl Model {
             }
         }
         if structure != self.desc {
-            return Self::try_from_desc(desc).map(|model| (model, false));
+            return Self::try_from_desc(desc).map(|model| PreparedModel { model, reused: false });
         }
         let mut model = self.clone();
-        model.defaults = desc.bodies.iter().flat_map(|b| b.values).chain(core::iter::once(desc.g)).collect();
+        let defaults =
+            desc.bodies.iter().flat_map(|b| b.values).chain(core::iter::once(desc.g)).collect::<Vec<_>>();
         for (j, &body) in model.coord_body.iter().enumerate() {
             model.q0[j] = desc.bodies[body].q0;
             model.q_target[j] = desc.bodies[body].q_target;
@@ -172,24 +179,54 @@ impl Model {
         // Both paths use the same generated parameter fragment; symbolic explanation stays identical.
         model.derivation =
             self.derivation.replacen(&doc::parameters(&self.desc), &doc::parameters(desc), 1).into();
-        model.desc = desc.clone();
-        model.set_params(&model.defaults.clone());
-        if !model.regular(&model.q0.clone()) {
-            return Err("mechanism must have finite positive effective inertia".into());
-        }
-        Ok((model, true))
+        model.desc.clone_from(desc);
+        model.set_params(&defaults);
+        model.defaults = defaults;
+        model.check_initial_inertia()?;
+        Ok(PreparedModel { model, reused: true })
     }
 
+    fn check_initial_inertia(&mut self) -> Result<(), String> {
+        let mut q = [0.0; MAXN];
+        q[..self.n].copy_from_slice(&self.q0);
+        if self.regular(&q) {
+            Ok(())
+        } else {
+            Err("mechanism must have finite positive effective inertia".into())
+        }
+    }
+
+    /// Owned model storage and replaceable coefficients, excluding shared code and derivation text.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        // Fixed and topology allowance includes the small per-coordinate vectors and frame-angle lists.
-        4096 + self.desc.nb() * 512
+        size_of::<Self>() + self.heap_bytes()
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        vec_bytes(&self.desc.bodies)
+            + vec_bytes(&self.desc.closures)
+            + vec_bytes(&self.desc.elements)
+            + vec_bytes(&self.coord_body)
+            + vec_bytes(&self.q0)
+            + vec_bytes(&self.q_target)
+            + vec_bytes(&self.limit)
+            + vec_bytes(&self.prismatic)
+            + vec_bytes(&self.revolute)
+            + vec_bytes(&self.beyond_tool)
+            + vec_bytes(&self.actuated)
+            + vec_bytes(&self.unactuated)
+            + vec_bytes(&self.b)
+            + vec_bytes(&self.defaults)
+            + vec_bytes(&self.beta_index)
+            + vec_bytes(&self.element_values)
+            + vec_bytes(&self.frame_angles)
+            + self.frame_angles.iter().map(|a| vec_bytes(&a.k)).sum::<usize>()
             + [&self.dynamics, &self.aux, &self.gravity, &self.energy, &self.points]
                 .into_iter()
                 .chain(self.tool.iter())
                 .chain(self.constraints.iter())
                 .chain(self.elements.iter())
-                .map(Tape::retained_bytes)
+                .map(Tape::heap_bytes)
                 .sum::<usize>()
     }
 

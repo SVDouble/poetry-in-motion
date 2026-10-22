@@ -6,6 +6,7 @@ use crate::control::{Controller, Ctx, Kind, Telemetry};
 use crate::dynamics::{self, MatN, Terms, VecM, VecN, mat_vec, sym_eigenvalues};
 use crate::layout::{Flag, MAXF, off, slot};
 use crate::mech::MAXM;
+use crate::memory::vec_bytes;
 use crate::model::Model;
 use crate::plan::{Invalidated, Plan, Tool, Tuning, manipulability};
 
@@ -170,14 +171,18 @@ impl Sim {
         true
     }
 
+    /// Inline simulation and retained allocations; shared compiled code is excluded.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        size_of::<Self>()
-            + self.model.retained_bytes()
+        size_of::<Self>() + self.heap_bytes()
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.model.heap_bytes()
+            + self.plan.heap_bytes()
             + self.ctrl.retained_bytes()
-            + self.aux.len() * 8
-            + self.p.len() * 8
-            + 4096
+            + vec_bytes(&self.aux)
+            + vec_bytes(&self.p)
     }
 
     /// An independent copy with the same model, settings and state, running controller `kind`.
@@ -383,10 +388,7 @@ impl Sim {
         if !v.is_finite() {
             return false;
         }
-        if matches!(flag, Flag::Coriolis | Flag::UseTool | Flag::PushOn)
-            && v.abs() > f64::EPSILON
-            && (v - 1.0).abs() > f64::EPSILON
-        {
+        if matches!(flag, Flag::Coriolis | Flag::UseTool | Flag::PushOn) && !matches!(v, 0.0 | 1.0) {
             return false;
         }
         if matches!(

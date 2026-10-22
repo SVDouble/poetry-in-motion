@@ -220,18 +220,21 @@ impl Desc {
             return Err("invalid gravity, tool, or mechanism capacity".into());
         }
         for (i, b) in self.bodies.iter().enumerate() {
-            let mut values = b.values.to_vec();
-            values.extend([
-                b.mount_s,
-                b.mount_xy[0],
-                b.mount_xy[1],
-                b.mount_angle,
-                b.axis_angle,
-                b.q0,
-                b.q_target,
-                b.limit,
-            ]);
-            if !values.iter().all(|v| v.is_finite())
+            let finite = b
+                .values
+                .into_iter()
+                .chain([
+                    b.mount_s,
+                    b.mount_xy[0],
+                    b.mount_xy[1],
+                    b.mount_angle,
+                    b.axis_angle,
+                    b.q0,
+                    b.q_target,
+                    b.limit,
+                ])
+                .all(f64::is_finite);
+            if !finite
                 || b.parent.is_some_and(|p| p >= i)
                 || b.shape > 1
                 || b.limit < 0.0

@@ -9,6 +9,7 @@ use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::{Constraints, Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
+use crate::memory::vec_bytes;
 use crate::model::Model;
 use crate::plan::{Plan, SubTask, TaskRole, Tool, Tuning, manipulability, resolve_accel};
 
@@ -345,6 +346,10 @@ pub struct Vmc {
 }
 
 impl Controller for Vmc {
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>() + vec_bytes(&self.projector)
+    }
+
     fn reset(&mut self) {
         self.lyap_prev = None;
     }

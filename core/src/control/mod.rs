@@ -45,14 +45,15 @@ impl<T: Controller + Clone + 'static> CloneController for T {
 }
 impl Clone for Box<dyn Controller> {
     fn clone(&self) -> Self {
-        self.clone_controller()
+        self.as_ref().clone_controller()
     }
 }
 
 pub trait Controller: std::fmt::Debug + CloneController {
-    /// Conservative retained-size estimate for bounding history; shared data may be counted more than once.
+    /// Inline controller plus retained allocations. Implementations with heap state must include it.
+    /// Shared allocations may be charged in full to keep checkpoint estimates conservative.
     fn retained_bytes(&self) -> usize {
-        4096
+        size_of_val(self)
     }
     /// Recompute gains after parameters, targets or the model changed.
     fn design(&mut self, _plan: &Plan, _model: &mut Model, _params: &[f64], _dt: f64) {}

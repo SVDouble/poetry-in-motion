@@ -5,6 +5,7 @@
 
 use crate::control::{Kind, specs_json};
 use crate::layout::{Flag, SLOTS, off, slot};
+use crate::memory::vec_bytes;
 use crate::model::Model;
 use crate::sim::Sim;
 
@@ -203,14 +204,17 @@ impl World {
         &self.out
     }
 
+    /// Checkpoint storage, including inline values and allocation capacities. Shared code is excluded;
+    /// shared coefficients/designs are charged in full. This excludes allocator bookkeeping.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        std::iter::once(&self.primary)
-            .chain(self.shadows.iter().flatten())
-            .map(Sim::retained_bytes)
-            .sum::<usize>()
-            + self.out.len() * 8
-            + self.params.iter().map(|p| p.len() * 8).sum::<usize>()
+        size_of::<Self>()
+            + self.primary.heap_bytes()
+            + vec_bytes(&self.shadows)
+            + self.shadows.iter().flatten().map(Sim::heap_bytes).sum::<usize>()
+            + vec_bytes(&self.out)
+            + vec_bytes(&self.params)
+            + self.params.iter().map(vec_bytes).sum::<usize>()
     }
 
     /// Copy the ongoing primary, including controller memory, before starting the integration timer.

@@ -115,6 +115,11 @@ fn invalid_native_descriptions_and_live_edits_do_not_change_a_valid_world() {
     assert!(!w.set_state(0, f64::NAN, 0.0));
     assert!(!w.kick(0, f64::MAX));
     assert!(!w.set_flag(Flag::MotorSpeed, f64::NAN));
+    for flag in [Flag::Coriolis, Flag::UseTool, Flag::PushOn] {
+        for value in [0.5, f64::EPSILON / 2.0, 1.0 - f64::EPSILON / 2.0] {
+            assert!(!w.set_flag(flag, value), "{flag:?} accepted non-boolean {value}");
+        }
+    }
     assert!(!w.set_flag(Flag::ElbowBody, 0.5));
     assert!(!w.set_dt(f64::NAN));
     assert!(!w.set_input(0, f64::INFINITY));
@@ -250,8 +255,9 @@ fn authored_parameter_candidates_match_fresh_derivation_and_preserve_old_model()
             body.q0 += 0.02;
             body.q_target += 0.03;
         }
-        let (mut updated, reused) = original.prepare(&edited).unwrap();
-        assert!(reused);
+        let candidate = original.prepare(&edited).unwrap();
+        assert!(candidate.reused);
+        let mut updated = candidate.model;
         let mut fresh = Model::from_desc(&edited);
         assert_eq!(updated.derivation, fresh.derivation);
         assert_eq!(updated.q0, fresh.q0);
@@ -264,39 +270,72 @@ fn authored_parameter_candidates_match_fresh_derivation_and_preserve_old_model()
         assert_eq!(original.derivation, old);
         assert_ne!(updated.energies(&q, &v), original.energies(&q, &v));
         edited.bodies[0].mount_angle += 0.1;
-        assert!(!original.prepare(&edited).unwrap().1);
+        assert!(!original.prepare(&edited).unwrap().reused);
     }
 }
 
 #[test]
 fn checkpoints_reproduce_controller_memory_settings_and_independent_shadows() {
     use motion_core::history::History;
-    for kind in Kind::ALL {
-        let mut w = world();
-        if kind.applicable(&w.primary().model, &w.primary().plan).is_err() {
-            continue;
+    for desc in [presets::arm2(), presets::cartpole(), presets::four_bar()] {
+        for kind in Kind::ALL {
+            let mut w = World::new(Model::from_desc(&desc));
+            if kind.applicable(&w.primary().model, &w.primary().plan).is_err() {
+                continue;
+            }
+            w.set_controller(0, Some(kind));
+            w.set_controller(1, Some(Kind::PdGravity));
+            w.set_flag(Flag::MotorSpeed, 15.0);
+            w.set_param(0, 1.7);
+            w.step(103);
+            w.publish();
+            let mut history = History::default();
+            let id = history.save(&w);
+            assert_ne!(id, 0);
+            w.step(137);
+            let expected = w.publish().to_vec();
+            let future = history.save(&w);
+            w.set_flag(Flag::MotorSpeed, 1.0);
+            w.set_controller(1, None);
+            assert!(history.restore(id, &mut w));
+            assert!(!history.restore(future, &mut w));
+            assert!((w.primary().t - 0.103).abs() < 1e-12);
+            w.step(137);
+            assert_eq!(expected, w.publish(), "{kind:?} checkpoint lost execution state");
+            history.clear();
+            assert!(!history.restore(id, &mut w));
+            assert_ne!(history.save(&w), id);
         }
-        w.set_controller(0, Some(kind));
-        w.set_controller(1, Some(Kind::PdGravity));
-        w.set_flag(Flag::MotorSpeed, 15.0);
-        w.set_param(0, 1.7);
-        w.step(103);
-        w.publish();
-        let mut history = History::default();
-        let id = history.save(&w);
-        assert_ne!(id, 0);
-        w.step(137);
-        let expected = w.publish().to_vec();
-        let future = history.save(&w);
-        w.set_flag(Flag::MotorSpeed, 1.0);
-        w.set_controller(1, None);
-        assert!(history.restore(id, &mut w));
-        assert!(!history.restore(future, &mut w));
-        assert!((w.primary().t - 0.103).abs() < 1e-12);
-        w.step(137);
-        assert_eq!(expected, w.publish(), "{kind:?} checkpoint lost execution state");
-        history.clear();
-        assert!(!history.restore(id, &mut w));
-        assert_ne!(history.save(&w), id);
+    }
+}
+
+#[test]
+fn additional_task_roles_do_not_overwrite_builtin_error_telemetry() {
+    use motion_core::plan::TaskRole;
+    let mut w = World::new(Model::from_desc(&presets::arm7()));
+    w.set_controller(0, Some(Kind::Impedance));
+    w.set_flag(Flag::OrientTarget, 0.7);
+    w.set_flag(Flag::Elbow, 2.0);
+    w.set_flag(Flag::ElbowX, -0.4);
+    w.set_flag(Flag::ElbowY, 0.6);
+    assert!(w.set_tasks(&[0.0, 0.0, -1.2, 0.0, 2.0, 1.0, 1.0, 0.3, -0.2, 2.0]));
+    for orient in [2.0, 0.0] {
+        w.set_flag(Flag::Orient, orient);
+        let p = w.primary_mut();
+        let tasks = p.plan.sub_tasks(&mut p.model, &p.q, &p.qd);
+        let roles = tasks.iter().map(|t| t.role).collect::<Vec<_>>();
+        let mut expected_roles = vec![TaskRole::Elbow, TaskRole::Additional, TaskRole::Additional];
+        if orient > 0.0 {
+            expected_roles.insert(0, TaskRole::Orientation);
+        }
+        assert_eq!(roles, expected_roles);
+        let orientation = tasks.iter().find(|t| t.role == TaskRole::Orientation).map_or(0.0, |t| t.e[0]);
+        let elbow = tasks.iter().find(|t| t.role == TaskRole::Elbow).unwrap().e;
+        w.step(1);
+        let out = w.publish();
+        let field =
+            |name| off::SLOT + slot::TELEMETRY + Kind::Impedance.spec().telemetry_field(name).unwrap().0;
+        assert!((out[field("orient_err")] - orientation).abs() < 1e-12);
+        assert_eq!(&out[field("elbow_err")..field("elbow_err") + 2], &elbow);
     }
 }

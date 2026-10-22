@@ -8,6 +8,7 @@ use crate::MAXN;
 use crate::dynamics::VecN;
 use crate::lqr::{c2d, dare, dlqr};
 use crate::mat::DMat;
+use crate::memory::{arc_bytes, vec_bytes};
 use crate::model::Model;
 use crate::plan::Plan;
 use crate::qp;
@@ -58,6 +59,10 @@ pub struct Lqr {
 }
 
 impl Controller for Lqr {
+    fn retained_bytes(&self) -> usize {
+        size_of::<Self>() + self.k.as_ref().map_or(0, |k| arc_bytes(k) + vec_bytes(&k.data))
+    }
+
     fn regulates(&self) -> bool {
         true
     }
@@ -144,21 +149,15 @@ pub struct Mpc {
 
 impl Controller for Mpc {
     fn retained_bytes(&self) -> usize {
-        4096 + [
-            self.h.len(),
-            self.f.len(),
-            self.phi.len(),
-            self.gamma.len(),
-            self.scale.len(),
-            self.free.len(),
-            self.du.len(),
-            self.scratch.len(),
-            self.plan_u.len(),
-            self.predicted.len(),
-        ]
-        .iter()
-        .sum::<usize>()
-            * 8
+        size_of::<Self>()
+            + [&self.h, &self.f, &self.phi, &self.gamma, &self.scale, &self.free]
+                .into_iter()
+                .map(arc_bytes)
+                .sum::<usize>()
+            + [&self.du, &self.scratch, &self.plan_u, &self.predicted]
+                .into_iter()
+                .map(vec_bytes)
+                .sum::<usize>()
     }
 
     fn regulates(&self) -> bool {

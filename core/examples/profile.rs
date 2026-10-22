@@ -29,7 +29,7 @@ fn main() {
         changed.bodies[0].values[0] *= 1.05;
         let edit = us(
             || {
-                black_box(model.prepare(&changed).unwrap());
+                drop(black_box(model.prepare(&changed).unwrap()));
             },
             100,
         );

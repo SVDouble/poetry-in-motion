@@ -25,7 +25,7 @@ pub enum TaskGoal {
     Point { frame: TaskFrame, target: [f64; 2], wn: f64 },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskRole {
     Orientation,
     Elbow,
@@ -88,19 +88,20 @@ impl Plan {
     pub fn sub_tasks(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> Vec<SubTask> {
         let g = self.config.goals;
         [
-            TaskGoal::Orientation { frame: TaskFrame::Tool, target: g.orient_target, wn: g.orient },
-            TaskGoal::Point { frame: TaskFrame::Body(g.elbow_body), target: g.elbow_target, wn: g.elbow },
+            (
+                TaskRole::Orientation,
+                TaskGoal::Orientation { frame: TaskFrame::Tool, target: g.orient_target, wn: g.orient },
+            ),
+            (
+                TaskRole::Elbow,
+                TaskGoal::Point { frame: TaskFrame::Body(g.elbow_body), target: g.elbow_target, wn: g.elbow },
+            ),
         ]
         .into_iter()
-        .chain(self.config.tasks.iter().copied())
-        .enumerate()
-        .filter_map(|(i, goal)| {
+        .chain(self.config.tasks.iter().copied().map(|goal| (TaskRole::Additional, goal)))
+        .filter_map(|(role, goal)| {
             goal.evaluate(model, q, qd).map(|mut task| {
-                task.role = match i {
-                    0 => TaskRole::Orientation,
-                    1 => TaskRole::Elbow,
-                    _ => TaskRole::Additional,
-                };
+                task.role = role;
                 task
             })
         })
@@ -115,17 +116,13 @@ impl TaskGoal {
     /// # Errors
     /// Malformed dimensions, tags, frames, non-finite targets or negative frequencies.
     pub fn parse(flat: &[f64], model: &Model) -> Result<Vec<Self>, String> {
-        if !flat.len().is_multiple_of(TASK_WIDTH)
-            || flat.len() / TASK_WIDTH > MAX_TASKS
-            || flat.iter().any(|v| !v.is_finite())
-        {
+        let (rows, remainder) = flat.as_chunks::<TASK_WIDTH>();
+        if !remainder.is_empty() || rows.len() > MAX_TASKS || flat.iter().any(|v| !v.is_finite()) {
             return Err("invalid task list length or values".into());
         }
-        flat.as_chunks::<TASK_WIDTH>()
-            .0
-            .iter()
-            .map(|row| {
-                let frame = match row[1] {
+        rows.iter()
+            .map(|&[kind, frame, x, y, wn]| {
+                let frame = match frame {
                     -2.0 if model.has_tool() => TaskFrame::Tool,
                     -1.0 => TaskFrame::Ground,
                     body if body >= 0.0 && body.fract() == 0.0 && body < model.desc.nb() as f64 => {
@@ -133,12 +130,12 @@ impl TaskGoal {
                     }
                     _ => return Err("task frame does not exist".into()),
                 };
-                if row[4] < 0.0 {
+                if wn < 0.0 {
                     return Err("task frequency must be nonnegative".into());
                 }
-                match row[0] {
-                    0.0 => Ok(Self::Orientation { frame, target: row[2], wn: row[4] }),
-                    1.0 => Ok(Self::Point { frame, target: [row[2], row[3]], wn: row[4] }),
+                match kind {
+                    0.0 => Ok(Self::Orientation { frame, target: x, wn }),
+                    1.0 => Ok(Self::Point { frame, target: [x, y], wn }),
                     _ => Err("unknown task kind".into()),
                 }
             })

@@ -3,13 +3,13 @@
 //! (`out_ptr`/`out_len`), the derivation (`derivation_*`) and errors (`error_*`) in place.
 #![allow(unsafe_code)] // `#[unsafe(no_mangle)]` only — no unsafe blocks
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use crate::control::Kind;
 use crate::history::History;
 use crate::layout::{self, Flag};
 use crate::mech::{Desc, presets};
-use crate::model::Model;
+use crate::model::{Model, PreparedModel};
 use crate::world::{Benchmark, World};
 
 thread_local! {
@@ -17,8 +17,8 @@ thread_local! {
     static HISTORY: RefCell<History> = RefCell::new(History::default());
     static BENCHMARK: RefCell<Option<Benchmark>> = const { RefCell::new(None) };
     static TASKS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
-    static REUSED: RefCell<bool> = const { RefCell::new(false) };
-    static PREPARED: RefCell<Option<Model>> = const { RefCell::new(None) };
+    static REUSED: Cell<bool> = const { Cell::new(false) };
+    static PREPARED: RefCell<Option<PreparedModel>> = const { RefCell::new(None) };
     static DESC: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     static CONTROLLERS: RefCell<String> = const { RefCell::new(String::new()) };
@@ -90,27 +90,30 @@ exports! {
             with(|w| w.primary().model.prepare(&desc))
         });
         match result {
-            Ok((model, reused)) => {
-                REUSED.with_borrow_mut(|r| *r = reused);
-                PREPARED.with_borrow_mut(|p| *p = Some(model));
+            Ok(candidate) => {
+                REUSED.set(candidate.reused);
+                PREPARED.with_borrow_mut(|p| *p = Some(candidate));
                 ERROR.with_borrow_mut(String::clear);
                 0
             }
             Err(error) => {
+                REUSED.set(false);
                 PREPARED.with_borrow_mut(|p| *p = None);
                 ERROR.with_borrow_mut(|e| *e = error); -1
             }
         }
     }
 
-    fn build_reused() -> u32 { REUSED.with_borrow(|r| u32::from(*r)) }
+    /// Reuse status of the last successful prepare/commit; cleared on failure or discard.
+    fn build_reused() -> u32 { u32::from(REUSED.get()) }
 
-    fn discard_build() { PREPARED.with_borrow_mut(|p| *p = None); }
+    fn discard_build() { PREPARED.with_borrow_mut(|p| *p = None); REUSED.set(false); }
 
     fn commit_build() -> i32 {
-        let Some(model) = PREPARED.with_borrow_mut(Option::take) else { return mutation(false) };
+        let Some(candidate) = PREPARED.with_borrow_mut(Option::take) else { REUSED.set(false); return mutation(false) };
+        REUSED.set(candidate.reused);
         HISTORY.with_borrow_mut(History::clear);
-        with(|w| { w.rebuild(model); w.publish(); });
+        with(|w| { w.rebuild(candidate.model); w.publish(); });
         mutation(true)
     }
 
@@ -139,7 +142,7 @@ exports! {
         });
     }
 
-    /// Prepare an isolated copy and controller design before starting an integration timer.
+    /// Clone the ongoing controller and simulation before starting an isolated integration timer.
     fn bench_prepare() { BENCHMARK.with_borrow_mut(|b| *b = Some(with(|w| w.benchmark()))) }
     /// Advance the prepared benchmark, leaving the live simulation untouched.
     fn bench(n: u32) { BENCHMARK.with_borrow_mut(|b| { if let Some(b) = b { b.run(n); } }); }

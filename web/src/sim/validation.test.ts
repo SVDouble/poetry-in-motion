@@ -74,6 +74,11 @@ describe('WASM validation and prepared builds', () => {
     expect(tc.core.set_dt(Number.NaN)).toBe(-1);
     expect(tc.snapshot().data).toEqual(before);
     expect(tc.text(tc.core.error_ptr(), tc.core.error_len())).toMatch(/invalid simulation input/);
+    for (const flag of ['Coriolis', 'UseTool', 'PushOn'] as const) {
+      for (const value of [0.5, Number.EPSILON / 2, 1 - Number.EPSILON / 2])
+        expect(tc.core.set_flag(tc.layout.flag[flag], value)).toBe(-1);
+    }
+    expect(tc.snapshot().data).toEqual(before);
     expect(tc.core.set_param(0, 2)).toBe(0);
   });
 });
@@ -138,6 +143,29 @@ it('reuses authored parameter candidates, resets runtime overrides, and keeps pr
   expect(tc.core.prepare(flat.length)).toBe(0);
   expect(tc.core.build_reused()).toBe(0);
   tc.core.discard_build();
+});
+
+it('clears candidate reuse metadata on discard, failed preparation and rejected commit', () => {
+  const flat = encode(PRESETS['Two-link arm']!());
+  tc.build(flat);
+  const before = tc.snapshot().data.slice();
+  write(flat);
+  expect(tc.core.prepare(flat.length)).toBe(0);
+  expect(tc.core.build_reused()).toBe(1);
+  tc.core.discard_build();
+  expect(tc.core.build_reused()).toBe(0);
+  write(flat);
+  expect(tc.core.prepare(flat.length)).toBe(0);
+  expect(tc.core.prepare(flat.length - 1)).toBe(-1);
+  expect(tc.core.build_reused()).toBe(0);
+  expect(tc.core.commit_build()).toBe(-1);
+  write(flat);
+  expect(tc.core.prepare(flat.length)).toBe(0);
+  expect(tc.core.commit_build()).toBe(0);
+  expect(tc.core.build_reused()).toBe(1);
+  expect(tc.core.commit_build()).toBe(-1);
+  expect(tc.core.build_reused()).toBe(0);
+  expect(tc.snapshot().data).toEqual(before);
 });
 
 it('restores full execution checkpoints through WASM and rejects replaced generations and invalid task lists', () => {

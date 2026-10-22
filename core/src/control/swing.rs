@@ -23,6 +23,11 @@ pub struct SwingUp {
 }
 
 impl Controller for SwingUp {
+    fn retained_bytes(&self) -> usize {
+        // Lqr is embedded inline; only its additional allocation belongs on top of Self.
+        size_of::<Self>() + self.lqr.retained_bytes() - size_of::<Lqr>()
+    }
+
     fn reset(&mut self) {
         self.phase = 0;
     }
