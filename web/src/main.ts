@@ -1,10 +1,10 @@
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
+import { DocumentSession } from './app/document';
 import { Gauges } from './app/gauges';
 import { History } from './app/history';
 import { closeLoop, type DragContext, dragJoint, dragTip } from './app/manipulate';
-import { Revisions } from './app/revision';
 import { defaultSettings, type Settings } from './app/settings';
 import { SimulateStage } from './app/simulate';
 import { Timeline } from './app/timeline';
@@ -20,7 +20,6 @@ import type { Derivation } from './model/derivation';
 import {
   cloneMechanism,
   DEFAULT_PRESET,
-  encode,
   type JointKind,
   MAX_CLOSURES,
   type Mechanism,
@@ -70,7 +69,13 @@ function decodeHash(): { mech: Mechanism | null; error?: string } {
 
 class App {
   private stageName: StageName = 'build';
-  private mech: Mechanism;
+  private readonly document: DocumentSession;
+  private get mech(): Mechanism {
+    return this.document.draft;
+  }
+  private get installed(): Mechanism | null {
+    return this.document.installed;
+  }
   private params: number[];
   private derivation: Derivation | null = null;
   private robot: RobotView | null = null;
@@ -84,9 +89,6 @@ class App {
   private readonly editor: Editor;
   private readonly gizmos: Gizmos;
   private readonly panel = new EquationPanel($('side'));
-  private buildTimer = 0;
-  private readonly revisions = new Revisions(cloneMechanism);
-  private installed: Mechanism | null = null;
   private lastBuildMs = 0;
   private readonly clock = { eq: 0, hud: 0, frames: 0 };
 
@@ -105,7 +107,7 @@ class App {
       this.status(message, 'sim');
     });
     const shared = decodeHash();
-    this.mech = shared.mech ?? PRESETS[DEFAULT_PRESET]!();
+    this.document = new DocumentSession(shared.mech ?? PRESETS[DEFAULT_PRESET]!(), client);
     if (shared.error) window.setTimeout(() => this.flash(shared.error!), 0);
     this.params = paramVector(this.mech);
     this.sim = new SimulateStage({
@@ -355,20 +357,16 @@ class App {
   /** A new document from the editor or a drag. Drags record history once, at their start. */
   private edited(m: Mechanism): void {
     if (!this.dragging) this.history.record(this.mech);
-    this.mech = m;
-    this.revisions.change();
+    this.document.edit(m);
     this.sim.cancelRun();
-    window.clearTimeout(this.buildTimer);
-    this.buildTimer = window.setTimeout(() => void this.rebuild(), this.dragging ? 10 : 60);
+    this.document.schedule(() => void this.rebuild(), this.dragging ? 10 : 60);
   }
 
   private undo(redo = false): void {
     const m = this.history.step(this.mech, redo);
     if (!m) return;
-    this.mech = m;
-    this.revisions.change();
+    this.document.edit(m);
     this.sim.cancelRun();
-    window.clearTimeout(this.buildTimer);
     this.editor.load(m);
     this.inspector.render();
     void this.rebuild();
@@ -378,7 +376,7 @@ class App {
   private showEmpty(): void {
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = null;
-    this.installed = null;
+    this.document.installed = null;
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
     this.robot = new RobotView(this.mech);
@@ -407,25 +405,17 @@ class App {
   }
 
   private async rebuild(): Promise<void> {
-    const ticket = this.revisions.capture(this.mech);
-    const mech = ticket.document;
-    if (!this.mech.bodies.length) {
+    const outcome = await this.document.rebuild();
+    if (outcome.kind === 'empty') {
       this.showEmpty();
       return;
     }
-    const res = await this.client.build(encode(mech), ticket.current);
-    if (!res.ok) {
-      if (ticket.current()) this.status(res.error, 'build');
+    if (outcome.kind === 'error') {
+      this.status(outcome.error, 'build');
       return;
     }
-    // Acceptance is linearized by the client before commit. A later draft may now be pending;
-    // keep the committed document paired with its own derivation and observation.
-    this.client.install(res);
-    if (!this.mech.bodies.length) {
-      this.showEmpty();
-      return;
-    }
-    this.installed = mech;
+    if (outcome.kind !== 'installed') return;
+    const { document: mech, result: res } = outcome;
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = res.derivation;
     this.lastBuildMs = res.ms;

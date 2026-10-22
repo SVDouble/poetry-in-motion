@@ -24,6 +24,7 @@ import {
   removeBody,
   reparent,
 } from '../model/description';
+import { physicalControl } from '../model/fields';
 import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
 import { initialFrames, poseBounds } from '../scene/kinematics';
 import { drawThumbnail } from '../scene/schematic';
@@ -582,41 +583,24 @@ export class Editor {
 
   private bodyFields(b: BodySpec, i: number): Field[] {
     const f: Field[] = [
-      { key: 'm', label: `m_{${i + 1}}`, tex: true, min: 0.05, max: 10, log: true, unit: 'kg' },
+      { key: 'm', label: `m_{${i + 1}}`, tex: true, ...physicalControl('m', 'slider'), log: true },
       {
         key: 'l',
         label: `l_{${i + 1}}`,
         tex: true,
-        min: 0,
-        max: 2,
-        step: GRID,
-        unit: 'm',
+        ...physicalControl('l', 'slider'),
         hint: 'length: children sit at (s·l, 0) in this body frame',
       },
     ];
     if (!b.uniform) {
-      f.push(
-        {
-          key: 'r',
-          label: `r_{${i + 1}}`,
+      for (const key of ['r', 'I'] as const)
+        f.push({
+          key,
+          label: `${key}_{${i + 1}}`,
           tex: true,
-          min: -1,
-          max: 2,
-          step: 0.01,
-          unit: 'm',
-          hint: 'centre of mass',
-        },
-        {
-          key: 'I',
-          label: `I_{${i + 1}}`,
-          tex: true,
-          min: 0,
-          max: 2,
-          step: 0.001,
-          unit: 'kg·m²',
-          hint: 'inertia',
-        },
-      );
+          ...physicalControl(key, 'slider'),
+          hint: key === 'r' ? 'centre of mass' : 'inertia',
+        });
     }
     return f;
   }

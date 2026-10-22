@@ -1,4 +1,5 @@
 import { LIMITS } from '../generated/contracts';
+import { uniformRod, validPhysical } from './fields';
 
 /**
  * The mechanism document edited by the builder, its presets, and its flat encoding for the wasm core
@@ -115,7 +116,7 @@ export function category(m: Mechanism): Category {
 
 export function normalise(b: BodySpec): BodySpec {
   if (!b.uniform) return b;
-  return { ...b, r: b.l / 2, I: (b.m * b.l * b.l) / 12 };
+  return { ...b, ...uniformRod(b.m, b.l) };
 }
 
 export const dof = (m: Mechanism) => m.bodies.filter((b) => b.joint !== 'fixed').length;
@@ -587,7 +588,8 @@ export function validateMechanism(raw: unknown): string | null {
         'limit',
       ]) ||
       !fraction(b.mountS) ||
-      ['m', 'l', 'I', 'beta', 'limit'].some((k) => (b[k] as number) < 0)
+      (['m', 'l', 'r', 'I', 'beta'] as const).some((k) => !validPhysical(k, b[k])) ||
+      (b.limit as number) < 0
     )
       return `Invalid body ${i + 1}: check parent, joint, finite values and nonnegative physical coefficients`;
     if (b.joint !== 'fixed') moving++;

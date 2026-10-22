@@ -9,6 +9,7 @@ import type { EquationPanel, SectionSpec } from '../eq/panel';
 import { fix, sci, texMat } from '../eq/tex';
 import type { Derivation } from '../model/derivation';
 import type { Mechanism } from '../model/description';
+import { physicalControl } from '../model/fields';
 import type { SimClient } from '../sim/client';
 import type { Snapshot } from '../sim/layout';
 import {
@@ -516,7 +517,6 @@ export function modelTab(
   highlight: (body: number) => void = () => undefined,
 ): HTMLElement {
   const host = el('div', 'editor');
-  const max = { m: 10, g: 20, beta: 2, l: 2, r: 2, I: 2 } as const;
   const sliders = new Map<number, Slider>();
   const set = (i: number, v: number) => {
     params[i] = v;
@@ -526,9 +526,7 @@ export function modelTab(
     const s = slider({
       label: p.tex,
       tex: true,
-      min: p.kind === 'r' ? -1 : 0,
-      max: max[p.kind],
-      step: 0.001,
+      ...physicalControl(p.kind, 'runtime'),
       value: params[p.index] ?? p.value,
       onInput: (v) => set(p.index, v),
     });
