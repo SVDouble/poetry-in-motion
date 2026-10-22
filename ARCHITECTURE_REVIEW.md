@@ -1,6 +1,7 @@
 # Architecture review
 
-Refined on 2026-10-22 against `1a3dbed`; implementation baseline: `9ecb67d`.
+Reviewed code: `9ecb67d`; refined review: `b8bdb60` (2026-10-22).
+Implementation status updated on 2026-10-22.
 
 The main architectural issue is ownership across transitions: a new shadow, mechanism, experiment, or
 snapshot can inherit some state while retaining other state from a different context. Fix those
@@ -17,8 +18,32 @@ document editing, rendering, history, and verification. Findings distinguish thr
 - **Proposal:** a maintainability improvement or feature extension, with a stated reason to undertake it.
 
 The earlier baseline passed `make check`, production build, 228 guided-experiment runs, and the browser
-crawl across 16 presets. Those checks do not establish correctness of the transition cases below. This
-refinement adds investigative probes and changes documentation; it does not implement the proposed fixes.
+crawl across 16 presets. Those checks do not establish correctness of the transition cases below. The
+implementation status below distinguishes the completed fixes from the remaining proposals.
+
+## Implementation status
+
+The five findings below describe the reviewed baseline. They are now addressed by the implementation:
+
+| Finding | Implemented behavior | Regression coverage |
+|---|---|---|
+| F1 | Persistent settings survive rebuilds; shadows refresh design from inherited targets and preserve the primary's linkage assembly; timestep changes invalidate controller designs. | `core/tests/transitions.rs` |
+| F2 | Reads stage data/stats before commit. Shared-memory frames and explicit observations share sequence ordering, including wrap handling. | `web/src/sim/lifecycle.test.ts` |
+| F3 | Builds prepare candidates without replacing the world. Revision checks authorize commit; installed documents, acknowledgments, and snapshots carry matching generations. Worker failures settle pending requests. | `web/src/sim/lifecycle.test.ts`, `web/src/sim/validation.test.ts` |
+| F4 | Native descriptions, flat codecs, imported documents, and live mutations validate before changing state. Rejected physical overrides restore the UI value. | `core/tests/transitions.rs`, `web/src/model/validation.test.ts`, `web/src/sim/validation.test.ts` |
+| F5 | Experiment waits follow simulation time and acknowledge prior commands. Cancellation guards every asynchronous action boundary and synchronously releases the current push before ownership changes. | `web/src/control/runner.test.ts`, `web/src/control/wait.test.ts`, `web/e2e/transitions.py` |
+
+A build is accepted when its prepared result passes the UI revision check. If a later edit occurs while
+that accepted commit is in flight, its acknowledgment installs the captured accepted document as the last
+successful runtime while the newer draft remains pending. A rejected newer draft leaves that runtime
+usable. Rebuilds retain persistent gains/tuning and reset mechanism-relative targets to the new document.
+
+`make e2e-smoke` checks actual workers with shared memory and message fallback, including pausing a push
+past its former wall-clock deadline and canceling it on stage exit. CI runs this target with the core job's
+WASM artifact. R1–R5 remain follow-up proposals; only the small extractions needed for F1–F5 are included.
+
+Verification passed: `make check`, production build, all 121 web tests (including 228 guided-experiment
+runs), the 16-preset browser crawl with zero errors, and smoke checks for both snapshot transports.
 
 ## Responsibilities to preserve
 
@@ -62,10 +87,10 @@ below identify the smallest useful change, not a schedule estimate.
 
 ### F1. Shadow inheritance includes stale derived state
 
-**Evidence.** [`Sim::fork`](core/src/sim.rs#L107) constructs and designs a fresh simulation, then copies
+**Evidence.** [`Sim::fork`](core/src/sim.rs) constructs and designs a fresh simulation, then copies
 parameters and targets. It omits `plan.tuning` and does not unconditionally invalidate the already computed
-plan. [`settle`](core/src/sim.rs#L144) resets references/controller state but only marks the plan dirty in
-a particular setpoint case. [`World::rebuild`](core/src/world.rs#L53) preserves only some global settings.
+plan. [`settle`](core/src/sim.rs) resets references/controller state but only marks the plan dirty in
+a particular setpoint case. [`World::rebuild`](core/src/world.rs) preserves only some global settings.
 
 Two WASM probes demonstrate different consequences:
 
@@ -78,7 +103,7 @@ Two WASM probes demonstrate different consequences:
 **Minimal fix.** Copy all inherited configuration before computing derived state, or explicitly invalidate
 and refresh the plan after copying. Preserve the intended restart of shadow references and controller
 memory. Define configuration capture/application helpers for fork, synchronization, and rebuild. Audit
-invalidation separately: [`World::set_dt`](core/src/world.rs#L112) changes the integration step without
+invalidation separately: [`World::set_dt`](core/src/world.rs) changes the integration step without
 invalidating discrete LQR/MPC designs, which depend on that step.
 
 **Acceptance.** Set nondefault tuning, parameters, and targets before creating/synchronizing a shadow;
@@ -88,10 +113,10 @@ These fixes can precede a larger `SimulationSettings` extraction.
 
 ### F2. Failed snapshot reads can modify the visible state
 
-**Evidence — code path.** [`SimClient.pull`](web/src/sim/client.ts#L97) writes directly into `snap.data`
+**Evidence — code path.** [`SimClient.pull`](web/src/sim/client.ts) writes directly into `snap.data`
 and updates visible stats before validating the second sequence number. A failed attempt followed by
 exhausted retries leaves those writes visible even though `pull()` returns false. The
-[`frame` loop](web/src/main.ts#L990) renders the snapshot regardless. This is a consistency defect in the
+[`frame` loop](web/src/main.ts) renders the snapshot regardless. This is a consistency defect in the
 failure path; no torn frame was reproduced during the earlier crawl.
 
 **Minimal fix.** Copy data and stats into reusable staging buffers. Validate the sequence, then commit the
@@ -105,8 +130,8 @@ belong to the installed mechanism.
 
 ### F3. Build request identity does not establish document/snapshot identity
 
-**Evidence — code path.** [`edited`](web/src/main.ts#L343) immediately changes `this.mech` and schedules a
-build; `buildSeq` increments only when [`rebuild`](web/src/main.ts#L390) starts. A possible interleaving is:
+**Evidence — code path.** [`edited`](web/src/main.ts) immediately changes `this.mech` and schedules a
+build; `buildSeq` increments only when [`rebuild`](web/src/main.ts) starts. A possible interleaving is:
 
 1. Build A is awaiting its response.
 2. Edit B replaces `this.mech`; B's debounce timer has not fired.
@@ -127,7 +152,7 @@ the last successful installed view while displaying draft/build errors. Carry an
 through the build acknowledgment and both snapshot transports; accept an observation only with matching
 metadata. Keep generation and data under the same consistency check in the shared-memory transport.
 
-Complete the request lifecycle in [`SimClient`](web/src/sim/client.ts#L43): worker errors after startup
+Complete the request lifecycle in [`SimClient`](web/src/sim/client.ts): worker errors after startup
 currently have no path that settles outstanding build promises. Fail pending requests and expose a terminal
 worker state. Coalescing unsent builds is a subsequent optimization; a token cannot interrupt a synchronous
 WASM derivation already executing in the worker.
@@ -139,13 +164,13 @@ retaining the previous model when parsing/building fails.
 
 ### F4. Validation must cover imports and live mutation
 
-**Evidence.** [`migrate`](web/src/model/description.ts#L542) fills legacy fields but largely trusts values.
-[`Desc::parse`](core/src/mech.rs#L119) checks sizes/references, yet converts some invalid tags and indices
+**Evidence.** [`migrate`](web/src/model/description.ts) fills legacy fields but largely trusts values.
+[`Desc::parse`](core/src/mech.rs) checks sizes/references, yet converts some invalid tags and indices
 and accepts non-finite fields. WASM probes returned build success for a NaN description version and for a
 negative mass. NaN is an ABI-level example; it is not a valid literal in a JSON share link. Negative mass
 can occur in JSON input.
 
-The same policy must cover [`Sim::set_param`](core/src/sim.rs#L180), which currently checks finiteness but
+The same policy must cover [`Sim::set_param`](core/src/sim.rs), which currently checks finiteness but
 not the parameter domain, and state/kick entry points. [`Model::from_desc`](core/src/model.rs) also lets
 native callers construct models without going through the flat parser. A parser-only patch would leave
 other routes inconsistent.
@@ -167,16 +192,16 @@ zero-gravity/friction examples too. Rejection must preserve the last valid insta
 
 ### F5. Experiment time and cancellation differ between runtime and tests
 
-**Evidence.** The browser supplies [`setTimeout` waits](web/src/app/simulate.ts#L33), while
-[`verify.test.ts`](web/src/control/verify.test.ts#L361) implements waits by advancing physics. At a different
+**Evidence.** The browser supplies [`setTimeout` waits](web/src/app/simulate.ts), while
+[`verify.test.ts`](web/src/control/verify.test.ts) implements waits by advancing physics. At a different
 playback speed, while paused, or under load, an identical action sequence therefore waits for different
 amounts of simulated motion. The verification harness also equates milliseconds with step count, retaining
 an assumption that `dt = 1 ms`.
 
-[`runExperiment`](web/src/control/runner.ts#L66) checks cancellation between actions, but individual actions
+[`runExperiment`](web/src/control/runner.ts) checks cancellation between actions, but individual actions
 continue after their internal waits. A controlled harness canceled a push during its wait and observed
 `setPush(null)`, `PushOn = 0`, and release/done marks afterward. That cleanup can interfere with a newer
-push. [`leave`](web/src/app/simulate.ts#L130) and `load` do not invalidate the run token either.
+push. [`leave`](web/src/app/simulate.ts) and `load` do not invalidate the run token either.
 
 **Minimal fix.** Give a run an explicit cancellation scope and model generation. Recheck ownership after
 each await and before mutations; cancel on replacement, stage exit, and model replacement. Cleanup must
@@ -199,7 +224,7 @@ numeric limits and name/type catalogs from explicit Rust metadata, with freshnes
 checks. Preserve runtime metadata as the authority for snapshot offsets and defaults. Generated TypeScript
 alone cannot establish compatibility with a stale WASM asset.
 
-Extend [`parseLayout`](web/src/sim/layout.ts#L186) to check field bounds/lengths and required metadata.
+Extend [`parseLayout`](web/src/sim/layout.ts) to check field bounds/lengths and required metadata.
 Use explicit compatibility versions for the WASM layout and worker transport as those contracts change;
 the mechanism description version has a different purpose. Controller parameter indices such as
 `params[4]` are another coordination point: derive named accessors or typed parameter views from their
@@ -208,9 +233,9 @@ manual duplication; a general-purpose schema framework is unnecessary for the fi
 
 ### R2. Share editing semantics while retaining distinct lifetimes
 
-[`Editor.bodyFields`](web/src/builder/editor.ts#L583),
-[`bodyControls`](web/src/builder/inspector.ts#L44), and the
-[`Model` tab](web/src/app/goals.ts#L510) repeat field semantics and use different ranges. Define units,
+[`Editor.bodyFields`](web/src/builder/editor.ts),
+[`bodyControls`](web/src/builder/inspector.ts), and the
+[`Model` tab](web/src/app/goals.ts) repeat field semantics and use different ranges. Define units,
 admissibility, uniform-rod dependencies, and edit effects once; let each control choose an explicit
 presentation range. Preserve runtime overrides as separate from the authored defaults unless the product
 explicitly gains an Apply-to-document action.
@@ -223,15 +248,15 @@ revision ownership and edit behavior provide the actual extraction boundaries.
 
 ### R3. Make design dependencies explicit before splitting Plan
 
-[`Plan`](core/src/plan.rs#L173) mixes goal configuration, reference state, and equilibrium/linearization
+[`Plan`](core/src/plan.rs) mixes goal configuration, reference state, and equilibrium/linearization
 caches. Record which inputs invalidate each cache, including model parameters, targets, timestep-dependent
 controller design, and tuning used in linearization. Apply those rules through setters or explicit revision
 checks. This addresses F1 directly. Extract goal configuration, reference generation, and design results
 when those boundaries make the invalidation rules easier to enforce.
 
-For additional body targets, generalize [`sub_tasks`](core/src/plan.rs#L539) into an ordered list of typed
+For additional body targets, generalize [`sub_tasks`](core/src/plan.rs) into an ordered list of typed
 point/orientation tasks, keeping posture/manipulability as explicit lower-priority preferences. For
-closed-loop hierarchies, extend [`stacked_accel`](core/src/control/task.rs#L409) to respect constraint
+closed-loop hierarchies, extend [`stacked_accel`](core/src/control/task.rs) to respect constraint
 tangent coordinates. This is a feature extension: the current fallback deliberately resolves only the
 tool task with loops. Require leakage, feasibility, and constraint tests before exposing more goal levels.
 A spatial/3D extension needs a separate review of kinematics, Jacobians, constraints, and expression
@@ -239,7 +264,7 @@ growth; a generalized task interface alone does not establish support for spatia
 
 ### R4. Measure before sharing model storage or changing observation cadence
 
-[`Model`](core/src/model.rs#L25) and [`Tape`](core/src/tape.rs#L31) combine reusable compiled tables with
+[`Model`](core/src/model.rs) and [`Tape`](core/src/tape.rs) combine reusable compiled tables with
 parameter-dependent coefficients and mutable evaluation scratch. Slots deep-clone them, and
 [`World::bench`](core/src/world.rs) forks another simulation for each measurement. The benchmark includes
 fork/setup cost and restarted controller/reference state; it does not measure only an ongoing step.
@@ -264,7 +289,7 @@ module-level mutable ink state. Preserve the shared drawing path, force-balance 
 
 For numerical helpers, document units, scaling, convergence criteria, and regularization where each
 algorithm lives. Consolidate a tolerance only when its mathematical meaning is shared. Add telemetry for
-[`integration recovery`](core/src/sim.rs#L463), which currently restores the old position, zeroes velocity,
+[`integration recovery`](core/src/sim.rs), which currently restores the old position, zeroes velocity,
 and restarts the energy budget without exposing that event. This helps distinguish a successful experiment
 from one interrupted by numerical recovery. Optimize recorder storage or lazy-load page content when
 profiling shows a user-visible benefit; the existing bundle warning alone does not establish one.
@@ -284,8 +309,8 @@ Keep the independent SymPy derivation and existing physics/property/experiment t
 Add independent branched/prismatic/constrained fixtures and capacity-boundary cases where coverage is
 missing. Add a focused CI browser job for the transition cases above; the broader crawl remains useful
 for interaction coverage. Replace fixed sleeps with observable readiness in new tests. Oracle freshness
-already runs through [`test_generated_files_are_up_to_date`](sym/tests/test_derive.py#L65).
+already runs through [`test_generated_files_are_up_to_date`](sym/tests/test_derive.py).
 
-Update [`PROJECT.md`](PROJECT.md#L47) to mark superseded production-SymPy and three.js/WebGPU decisions;
+Update [`PROJECT.md`](PROJECT.md) to mark superseded production-SymPy and three.js/WebGPU decisions;
 its historical entries currently sit beside the runtime-CAS/canvas design. Keep current invariants and
 transition policies in maintained documentation, with this review serving as the implementation backlog.

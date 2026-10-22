@@ -11,7 +11,9 @@ import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from
 interface Core {
   memory: WebAssembly.Memory;
   desc_buffer(len: number): number;
-  build(len: number): number;
+  prepare(len: number): number;
+  commit_build(): number;
+  discard_build(): void;
   error_ptr(): number;
   error_len(): number;
   derivation_ptr(): number;
@@ -20,17 +22,18 @@ interface Core {
   step(n: number): void;
   bench(n: number): void;
   publish(): void;
-  set_param(i: number, v: number): void;
+  set_param(i: number, v: number): number;
   set_controller(slot: number, kind: number): void;
-  set_ctrl_param(kind: number, i: number, v: number): void;
+  set_ctrl_param(kind: number, i: number, v: number): number;
+  param_value(i: number): number;
   sync_shadows(): void;
   controllers(): number;
   controllers_ptr(): number;
-  set_target(i: number, v: number): void;
-  set_input(i: number, v: number): void;
-  set_flag(id: number, v: number): void;
-  set_state(i: number, q: number, qd: number): void;
-  kick(i: number, v: number): void;
+  set_target(i: number, v: number): number;
+  set_input(i: number, v: number): number;
+  set_flag(id: number, v: number): number;
+  set_state(i: number, q: number, qd: number): number;
+  kick(i: number, v: number): number;
   out_ptr(): number;
   out_len(): number;
   layout_ptr(): number;
@@ -52,6 +55,13 @@ const BENCH_EVERY_MS = 2000;
 
 let core: Core | null = null;
 let running = false;
+let generation = 0;
+let sequence = 0;
+const nextSequence = () => {
+  sequence = (sequence + 2) >>> 0;
+  return sequence;
+};
+let candidate = 0;
 let speed = 1;
 let acc = 0;
 let last = performance.now();
@@ -85,17 +95,19 @@ async function load(): Promise<Core> {
 function publish(c: Core): void {
   const out = view(c);
   if (shared) {
-    Atomics.add(shared.seq, 0, 1);
+    const seq = nextSequence();
+    Atomics.store(shared.seq, 0, seq - 1);
+    Atomics.store(shared.seq, 1, generation);
     shared.stats.set(stats);
     shared.data.set(out);
-    Atomics.add(shared.seq, 0, 1);
+    Atomics.store(shared.seq, 0, seq);
   } else {
     const now = performance.now();
     if (now - lastPost < FALLBACK_POST_MS) return;
     lastPost = now;
     const data = out.slice();
     const s = stats.slice();
-    post({ type: 'snapshot', data, stats: s }, [data.buffer, s.buffer]);
+    post({ type: 'snapshot', sequence: nextSequence(), generation, data, stats: s }, [data.buffer, s.buffer]);
   }
 }
 
@@ -141,28 +153,79 @@ function tick(): void {
   publish(c);
 }
 
+let buildMs = 0;
 function build(c: Core, id: number, desc: number[]): void {
   const t0 = performance.now();
   const ptr = c.desc_buffer(desc.length);
   new Float64Array(c.memory.buffer, ptr, desc.length).set(desc);
-  if (c.build(desc.length) === 0) {
-    const buildMs = performance.now() - t0;
-    const derivation = text(c, c.derivation_ptr(), c.derivation_len());
-    const len = c.controllers();
-    const controllers = text(c, c.controllers_ptr(), len);
-    post({ type: 'built', id, ok: true, derivation, controllers, buildMs });
-    lastBench = -Infinity;
-    benchSteps = 50;
-    stepCost = 0;
+  if (c.prepare(desc.length) === 0) {
+    candidate = id;
+    buildMs = performance.now() - t0;
+    post({ type: 'prepared', id });
   } else {
+    candidate = 0;
     post({ type: 'built', id, ok: false, error: text(c, c.error_ptr(), c.error_len()) });
   }
 }
 
-type Handlers = { [K in ToWorker['type']]: (c: Core, msg: Extract<ToWorker, { type: K }>) => void };
+function commit(c: Core, id: number): void {
+  if (candidate !== id) {
+    post({ type: 'built', id, ok: false, error: 'Build superseded by a newer revision' });
+    return;
+  }
+  candidate = 0;
+  if (c.commit_build() !== 0) {
+    post({ type: 'built', id, ok: false, error: text(c, c.error_ptr(), c.error_len()) });
+    return;
+  }
+  generation = id;
+  const derivation = text(c, c.derivation_ptr(), c.derivation_len());
+  const len = c.controllers();
+  const controllers = text(c, c.controllers_ptr(), len);
+  const data = view(c).slice(),
+    s = stats.slice();
+  post(
+    {
+      type: 'built',
+      id,
+      ok: true,
+      sequence: nextSequence(),
+      generation,
+      data,
+      stats: s,
+      derivation,
+      controllers,
+      buildMs,
+    },
+    [data.buffer, s.buffer],
+  );
+  acc = 0;
+  last = performance.now();
+  lastBench = -Infinity;
+  benchSteps = 50;
+  stepCost = 0;
+}
+
+type Handlers = { [K in ToWorker['type']]: (c: Core, msg: Extract<ToWorker, { type: K }>) => unknown };
 
 const handlers: Handlers = {
   build: (c, m) => build(c, m.id, m.desc),
+  commitBuild: (c, m) => commit(c, m.id),
+  discardBuild: (c, m) => {
+    if (candidate === m.id) {
+      c.discard_build();
+      candidate = 0;
+    }
+  },
+  observe: (c, m) => {
+    c.publish();
+    const data = view(c).slice(),
+      s = stats.slice();
+    post({ type: 'observed', id: m.id, sequence: nextSequence(), generation, data, stats: s }, [
+      data.buffer,
+      s.buffer,
+    ]);
+  },
   param: (c, m) => c.set_param(m.i, m.v),
   controller: (c, m) => c.set_controller(m.slot, m.kind),
   ctrlParam: (c, m) => c.set_ctrl_param(m.kind, m.i, m.v),
@@ -186,13 +249,44 @@ const handlers: Handlers = {
 };
 
 function handle(c: Core, msg: ToWorker): void {
-  (handlers[msg.type] as (c: Core, m: ToWorker) => void)(c, msg);
+  if (
+    !['build', 'commitBuild', 'discardBuild', 'observe', 'run', 'speed'].includes(msg.type) &&
+    msg.generation !== generation
+  )
+    return;
+  const index = (v: number, off = false) => Number.isInteger(v) && v >= (off ? -1 : 0) && v <= 0xffffffff;
+  if (
+    ('i' in msg && !index(msg.i)) ||
+    ('slot' in msg && !index(msg.slot)) ||
+    ('kind' in msg && !index(msg.kind, msg.type === 'controller')) ||
+    (msg.type === 'flag' && !index(msg.id)) ||
+    (msg.type === 'advance' && (!Number.isInteger(msg.steps) || msg.steps < 1)) ||
+    (msg.type === 'speed' && (!Number.isFinite(msg.speed) || msg.speed <= 0))
+  ) {
+    post({ type: 'invalid', message: 'Invalid simulation command index or step/speed value' });
+    return;
+  }
+  const status = (handlers[msg.type] as (c: Core, m: ToWorker) => unknown)(c, msg);
+  if (typeof status === 'number' && status < 0) {
+    const value = msg.type === 'param' ? c.param_value(msg.i) : Number.NaN;
+    post({
+      type: 'invalid',
+      message: text(c, c.error_ptr(), c.error_len()),
+      ...(msg.type === 'param' && Number.isFinite(value) ? { param: { i: msg.i, value } } : {}),
+    });
+  }
 }
 
 const queue: ToWorker[] = [];
 scope.onmessage = (e: MessageEvent<ToWorker>) => {
-  if (core) handle(core, e.data);
-  else queue.push(e.data);
+  if (core) {
+    try {
+      handle(core, e.data);
+    } catch (error) {
+      running = false;
+      post({ type: 'error', message: String(error) });
+    }
+  } else queue.push(e.data);
 };
 
 load()
@@ -204,13 +298,20 @@ load()
     if (scope.crossOriginIsolated) {
       sab = new SharedArrayBuffer(DATA_OFFSET + c.out_len() * 8);
       shared = {
-        seq: new Int32Array(sab, 0, 1),
+        seq: new Int32Array(sab, 0, 2),
         stats: new Float64Array(sab, STATS_OFFSET, STATS),
         data: new Float64Array(sab, DATA_OFFSET, c.out_len()),
       };
     }
     post({ type: 'ready', layout, shared: sab });
     for (const m of queue.splice(0)) handle(c, m);
-    setInterval(tick, TICK_MS);
+    setInterval(() => {
+      try {
+        tick();
+      } catch (error) {
+        running = false;
+        post({ type: 'error', message: String(error) });
+      }
+    }, TICK_MS);
   })
   .catch((err: unknown) => post({ type: 'error', message: String(err) }));

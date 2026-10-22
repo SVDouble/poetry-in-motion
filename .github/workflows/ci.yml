@@ -65,3 +65,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
       - run: npx vite build
+      - uses: astral-sh/setup-uv@v7
+      - run: uv run --with playwright python -m playwright install --with-deps chromium
+      # The core job supplied the WASM artifact; the smoke target only needs to serve it.
+      - run: make -C .. -o wasm e2e-smoke

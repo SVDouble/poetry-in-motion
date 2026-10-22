@@ -538,19 +538,112 @@ export function cloneMechanism(m: Mechanism): Mechanism {
   };
 }
 
+/** Validate before traversing a document's graph. Empty scenes are valid editor documents. */
+export function validateMechanism(raw: unknown): string | null {
+  const record = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  if (
+    !record(raw) ||
+    !Array.isArray(raw.bodies) ||
+    !Array.isArray(raw.closures) ||
+    !Array.isArray(raw.elements)
+  )
+    return 'Mechanism must contain body, closure and element arrays';
+  if (typeof raw.name !== 'string' || typeof raw.g !== 'number' || !Number.isFinite(raw.g))
+    return 'Invalid name or gravity';
+  const nb = raw.bodies.length;
+  if (nb > MAX_BODIES || raw.closures.length > MAX_CLOSURES || raw.elements.length > MAX_ELEMENTS)
+    return 'Mechanism exceeds engine capacity';
+  const index = (v: unknown, max: number, ground = false) =>
+    typeof v === 'number' && Number.isInteger(v) && v >= (ground ? -1 : 0) && v < max;
+  const finite = (r: Record<string, unknown>, keys: string[]) =>
+    keys.every((k) => typeof r[k] === 'number' && Number.isFinite(r[k]));
+  const fraction = (v: unknown) => typeof v === 'number' && v >= 0 && v <= 1;
+  if (!index(raw.tool, nb, true)) return 'Tool must refer to an existing body, or ground';
+  let moving = 0;
+  for (const [i, b] of raw.bodies.entries()) {
+    if (
+      !record(b) ||
+      !index(b.parent, i, true) ||
+      !['revolute', 'prismatic', 'fixed'].includes(String(b.joint)) ||
+      !['link', 'block'].includes(String(b.shape)) ||
+      typeof b.actuated !== 'boolean' ||
+      typeof b.uniform !== 'boolean' ||
+      !finite(b, [
+        'mountS',
+        'mountX',
+        'mountY',
+        'mountAngle',
+        'axisAngle',
+        'm',
+        'l',
+        'r',
+        'I',
+        'beta',
+        'q0',
+        'qTarget',
+        'limit',
+      ]) ||
+      !fraction(b.mountS) ||
+      ['m', 'l', 'I', 'beta', 'limit'].some((k) => (b[k] as number) < 0)
+    )
+      return `Invalid body ${i + 1}: check parent, joint, finite values and nonnegative physical coefficients`;
+    if (b.joint !== 'fixed') moving++;
+  }
+  if (moving > MAX_DOF || (nb > 0 && moving === 0)) return `Mechanism needs 1–${MAX_DOF} moving joints`;
+  const ends = (r: Record<string, unknown>) =>
+    index(r.a, nb, true) &&
+    index(r.b, nb) &&
+    r.a !== r.b &&
+    fraction(r.sa) &&
+    fraction(r.sb) &&
+    finite(r, ['gx', 'gy']);
+  for (const c of raw.closures)
+    if (!record(c) || !ends(c) || !['pin', 'slot'].includes(String(c.kind)) || !finite(c, ['angle']))
+      return 'Invalid loop closure endpoints, kind or angle';
+  for (const e of raw.elements)
+    if (
+      !record(e) ||
+      !ends(e) ||
+      !finite(e, ['k', 'l0', 'd']) ||
+      ['k', 'l0', 'd'].some((k) => (e[k] as number) < 0)
+    )
+      return 'Invalid spring/damper endpoints or coefficients';
+  return null;
+}
+
 /** Accept documents from older links (v1 had `mountTip` and no closures). */
-export function migrate(raw: unknown): Mechanism | null {
+export function migrateOrThrow(raw: unknown): Mechanism {
   type Legacy = Partial<BodySpec> & { mountTip?: boolean };
   const m = raw as Omit<Partial<Mechanism>, 'bodies'> & { bodies?: Legacy[] };
-  if (!m || !Array.isArray(m.bodies) || m.bodies.length === 0) return null;
+  if (!m || !Array.isArray(m.bodies)) throw new Error('Mechanism must contain a bodies array');
   const bodies = m.bodies.map((b) => {
+    if (!b || typeof b !== 'object' || Array.isArray(b)) throw new Error('Invalid body record');
+    for (const key of [
+      'mountS',
+      'mountX',
+      'mountY',
+      'mountAngle',
+      'axisAngle',
+      'm',
+      'l',
+      'r',
+      'I',
+      'beta',
+      'q0',
+      'qTarget',
+      'limit',
+    ] as const) {
+      if (b[key] !== undefined && (typeof b[key] !== 'number' || !Number.isFinite(b[key])))
+        throw new Error(`Invalid body value: ${key}`);
+    }
     const { mountTip, ...rest } = b;
     return link(b.parent ?? -1, b.joint ?? 'revolute', {
       ...rest,
       mountS: b.mountS ?? (mountTip ? 1 : 0),
     } as Partial<BodySpec>);
   });
-  return {
+  const result = {
     name: m.name ?? 'Custom',
     g: m.g ?? 9.81,
     tool: m.tool ?? -1,
@@ -558,6 +651,18 @@ export function migrate(raw: unknown): Mechanism | null {
     elements: (m.elements ?? []).map((e) => ({ ...spring(e.a ?? -1, e.sa ?? 1, e.b ?? 0, e.sb ?? 1), ...e })),
     bodies,
   };
+  const error = validateMechanism(result);
+  if (error) throw new Error(error);
+  return result;
+}
+
+/** Compatibility helper for callers that do not need an import error message. */
+export function migrate(raw: unknown): Mechanism | null {
+  try {
+    return migrateOrThrow(raw);
+  } catch {
+    return null;
+  }
 }
 
 /** Is `d` a descendant of (or equal to) `i` in the tree? */

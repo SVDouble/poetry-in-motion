@@ -23,7 +23,7 @@ export function dragJoint(
   free: boolean,
 ): Mechanism | null {
   const b = c.mech.bodies[i];
-  if (!b) return null;
+  if (!b || !c.robot.mech.bodies[i]) return null;
   const m = cloneMechanism(c.mech);
   const t = m.bodies[i]!;
   if (b.parent < 0) {
@@ -51,7 +51,7 @@ export function dragTip(
   initial: boolean,
 ): Mechanism | null {
   const b = c.mech.bodies[i];
-  if (!b) return null;
+  if (!b || !c.robot.mech.bodies[i]) return null;
   const [ox, oy] = c.snap.frame(i + 1);
   const [, , parentPhi] = c.robot.parentPose(i, c.snap);
   const desired = Math.atan2(y - oy, x - ox);

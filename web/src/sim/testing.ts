@@ -13,6 +13,9 @@ export interface Core {
   memory: WebAssembly.Memory;
   desc_buffer(len: number): number;
   build(len: number): number;
+  prepare(len: number): number;
+  commit_build(): number;
+  discard_build(): void;
   error_ptr(): number;
   error_len(): number;
   derivation_ptr(): number;
@@ -22,16 +25,16 @@ export interface Core {
   reset(): void;
   step(n: number): void;
   publish(): void;
-  set_dt(dt: number): void;
-  set_param(i: number, v: number): void;
+  set_dt(dt: number): number;
+  set_param(i: number, v: number): number;
   set_controller(slot: number, kind: number): void;
-  set_ctrl_param(kind: number, i: number, v: number): void;
+  set_ctrl_param(kind: number, i: number, v: number): number;
   sync_shadows(): void;
-  set_target(i: number, v: number): void;
-  set_input(i: number, v: number): void;
-  set_flag(id: number, v: number): void;
-  set_state(i: number, q: number, qd: number): void;
-  kick(i: number, v: number): void;
+  set_target(i: number, v: number): number;
+  set_input(i: number, v: number): number;
+  set_flag(id: number, v: number): number;
+  set_state(i: number, q: number, qd: number): number;
+  kick(i: number, v: number): number;
   param_count(): number;
   out_ptr(): number;
   out_len(): number;
@@ -77,6 +80,19 @@ export class TestCore {
     this.core.publish();
     into.data.set(new Float64Array(this.core.memory.buffer, this.core.out_ptr(), this.layout.len));
     return into;
+  }
+
+  /** Advance a physical duration, sampling in batches and reporting actual simulated seconds.
+   * A custom dt must already have been applied with core.set_dt; the final sample can overshoot by < dt. */
+  advance(ms: number, sample: (seconds: number) => void, dt = this.layout.dt, sampleMs = 10): void {
+    let left = Math.ceil(ms / (1000 * dt) - 1e-9);
+    const batch = Math.max(1, Math.round(sampleMs / (1000 * dt)));
+    while (left > 0) {
+      const steps = Math.min(batch, left);
+      this.core.step(steps);
+      sample(steps * dt);
+      left -= steps;
+    }
   }
 
   flag(f: Flag, v: number): void {

@@ -359,11 +359,15 @@ async function play(
     for (const [id, s] of sigs) rec.get(id)!.push(s ? s.get() : Number.NaN);
   };
   port.sleep = async (ms) => {
-    for (let k = 0; k < ms; k += SAMPLE_MS) {
-      tc.core.step(SAMPLE_MS);
-      clock += SAMPLE_MS / 1000;
-      sample();
-    }
+    tc.advance(
+      ms,
+      (seconds) => {
+        clock += seconds;
+        sample();
+      },
+      tc.layout.dt,
+      SAMPLE_MS,
+    );
   };
   port.mark = (name) => marks.push([name, clock]);
   sample();

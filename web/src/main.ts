@@ -4,6 +4,7 @@ import './styles.css';
 import { Gauges } from './app/gauges';
 import { History } from './app/history';
 import { closeLoop, type DragContext, dragJoint, dragTip } from './app/manipulate';
+import { Revisions } from './app/revision';
 import { defaultSettings, type Settings } from './app/settings';
 import { SimulateStage } from './app/simulate';
 import { Timeline } from './app/timeline';
@@ -23,7 +24,7 @@ import {
   type JointKind,
   MAX_CLOSURES,
   type Mechanism,
-  migrate,
+  migrateOrThrow,
   PRESETS,
   paramVector,
   reparent,
@@ -57,13 +58,13 @@ function savedTheme(): string | null {
 
 const encodeHash = (m: Mechanism) => `#m=${btoa(encodeURIComponent(JSON.stringify(m)))}`;
 
-function decodeHash(): Mechanism | null {
+function decodeHash(): { mech: Mechanism | null; error?: string } {
   const match = /^#m=(.+)$/.exec(location.hash);
-  if (!match?.[1]) return null;
+  if (!match?.[1]) return { mech: null };
   try {
-    return migrate(JSON.parse(decodeURIComponent(atob(match[1]))));
-  } catch {
-    return null;
+    return { mech: migrateOrThrow(JSON.parse(decodeURIComponent(atob(match[1])))) };
+  } catch (error) {
+    return { mech: null, error: `Could not import mechanism: ${String(error)}` };
   }
 }
 
@@ -84,7 +85,8 @@ class App {
   private readonly gizmos: Gizmos;
   private readonly panel = new EquationPanel($('side'));
   private buildTimer = 0;
-  private buildSeq = 0;
+  private readonly revisions = new Revisions(cloneMechanism);
+  private installed: Mechanism | null = null;
   private lastBuildMs = 0;
   private readonly clock = { eq: 0, hud: 0, frames: 0 };
 
@@ -93,7 +95,18 @@ class App {
     private readonly stage: Stage,
   ) {
     this.settings = defaultSettings(client.layout);
-    this.mech = decodeHash() ?? PRESETS[DEFAULT_PRESET]!();
+    client.onParamRejected(({ i, value }) => {
+      this.params[i] = value;
+      this.sim.refreshModel();
+    });
+    client.onError((message) => {
+      this.sim.cancelRun();
+      this.setRunning(false);
+      this.status(message, 'sim');
+    });
+    const shared = decodeHash();
+    this.mech = shared.mech ?? PRESETS[DEFAULT_PRESET]!();
+    if (shared.error) window.setTimeout(() => this.flash(shared.error!), 0);
     this.params = paramVector(this.mech);
     this.sim = new SimulateStage({
       client,
@@ -103,7 +116,7 @@ class App {
       store: new ControlStore(client, client.layout.slots),
       settings: this.settings,
       robot: () => this.robot,
-      mech: () => this.mech,
+      mech: () => this.installed ?? this.mech,
       params: () => this.params,
       running: () => this.running,
       setRunning: (on) => this.setRunning(on),
@@ -241,7 +254,7 @@ class App {
     const reach = 9 * this.stage.metresPerPixel;
     let html = '';
     let best = reach;
-    this.mech.bodies.forEach((b, k) => {
+    (this.installed ?? this.mech).bodies.forEach((b, k) => {
       const [fx, fy] = s.frame(k + 1);
       const j = d.coords.findIndex((c) => c.body === k);
       if (j >= 0 && Math.hypot(x - fx, y - fy) < best) {
@@ -272,7 +285,7 @@ class App {
 
   /** Distance between the ends of spring/damper k at the current pose. */
   private elementLength(k: number): number {
-    if (!this.robot || !this.mech.elements[k]) return 0;
+    if (!this.robot || !(this.installed ?? this.mech).elements[k]) return 0;
     const [[ax, ay], [bx, by]] = this.robot.elementEnds(k, this.snap, this.params);
     return Math.hypot(bx - ax, by - ay);
   }
@@ -343,6 +356,8 @@ class App {
   private edited(m: Mechanism): void {
     if (!this.dragging) this.history.record(this.mech);
     this.mech = m;
+    this.revisions.change();
+    this.sim.cancelRun();
     window.clearTimeout(this.buildTimer);
     this.buildTimer = window.setTimeout(() => void this.rebuild(), this.dragging ? 10 : 60);
   }
@@ -351,6 +366,9 @@ class App {
     const m = this.history.step(this.mech, redo);
     if (!m) return;
     this.mech = m;
+    this.revisions.change();
+    this.sim.cancelRun();
+    window.clearTimeout(this.buildTimer);
     this.editor.load(m);
     this.inspector.render();
     void this.rebuild();
@@ -360,6 +378,7 @@ class App {
   private showEmpty(): void {
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = null;
+    this.installed = null;
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
     this.robot = new RobotView(this.mech);
@@ -388,38 +407,51 @@ class App {
   }
 
   private async rebuild(): Promise<void> {
-    const seq = ++this.buildSeq;
+    const ticket = this.revisions.capture(this.mech);
+    const mech = ticket.document;
     if (!this.mech.bodies.length) {
       this.showEmpty();
       return;
     }
-    const res = await this.client.build(encode(this.mech));
-    if (seq !== this.buildSeq) return; // a newer edit superseded this build
-    if (!res.ok) return this.status(res.error, 'build');
+    const res = await this.client.build(encode(mech), ticket.current);
+    if (!res.ok) {
+      if (ticket.current()) this.status(res.error, 'build');
+      return;
+    }
+    // Acceptance is linearized by the client before commit. A later draft may now be pending;
+    // keep the committed document paired with its own derivation and observation.
+    this.client.install(res);
+    if (!this.mech.bodies.length) {
+      this.showEmpty();
+      return;
+    }
+    this.installed = mech;
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = res.derivation;
     this.lastBuildMs = res.ms;
-    this.params = paramVector(this.mech);
-    history.replaceState(null, '', encodeHash(this.mech));
-    this.robot = new RobotView(this.mech);
+    this.params = paramVector(mech);
+    history.replaceState(null, '', encodeHash(mech));
+    this.robot = new RobotView(mech);
     this.schematic?.host.remove();
-    this.schematic = new SchematicView(this.mech, res.derivation, this.robot.bounds());
+    this.schematic = new SchematicView(mech, res.derivation, this.robot.bounds());
     $('viewport').prepend(this.schematic.host);
     this.sim.load(res.derivation, res.controllers);
     this.gauges.load(res.derivation);
     this.timeline.clear();
     this.freeBody = -1;
     // a different mechanism is framed afresh; edits keep the view unless the user has not touched it
-    if (this.mech.name !== this.framedName || this.mech.name === 'Custom') {
-      if (this.mech.name !== this.framedName) this.userView = false;
-      this.framedName = this.mech.name;
+    if (mech.name !== this.framedName || mech.name === 'Custom') {
+      if (mech.name !== this.framedName) this.userView = false;
+      this.framedName = mech.name;
     }
     if (!this.dragging && !this.userView) this.fitView();
     const sel = this.stageName === 'build' ? this.editor.selection : -1;
     this.schematic.select(sel);
     this.gizmos.select(sel);
     // the loop closures are solved numerically from q(0): report when they cannot close
+    const generation = this.client.generation;
     window.setTimeout(() => {
+      if (this.client.generation !== generation) return;
       const gap = this.snap.v('CONSTRAINT');
       if (this.snap.v('NC') > 0 && gap > 1e-3) {
         this.status(
@@ -571,7 +603,10 @@ class App {
       tools.append(undo, redo, next('Derive equations →', 'derive'));
       const dof = constraints ? `${d.n} − ${constraints} = ${d.n - constraints} DOF` : `${d.n} DOF`;
       head.append(
-        title('Build', `${this.mech.bodies.length} bodies · ${dof} · ${d.nu} actuated · derived in ${ms}`),
+        title(
+          'Build',
+          `${(this.installed ?? this.mech).bodies.length} bodies · ${dof} · ${d.nu} actuated · derived in ${ms}`,
+        ),
         tools,
       );
       $('side').replaceChildren(this.editor.host);
@@ -580,7 +615,7 @@ class App {
         title('Derivation', `Lagrange's method for this topology · ${ms}`),
         next('Simulate →', 'simulate'),
       );
-      this.panel.mount(derivationSections(this.mech, d), undefined, true);
+      this.panel.mount(derivationSections(this.installed ?? this.mech, d), undefined, true);
     } else {
       head.append(title('Simulation', `${d.n - constraints} DOF · 1 kHz RK4`));
       this.sim.enter(head);
@@ -753,7 +788,7 @@ class App {
       this.userView = false;
       return;
     }
-    const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.mech);
+    const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.installed ?? this.mech);
     this.stage.setView(b.cx, b.cy, b.width, b.height);
     this.userView = false;
   }
@@ -1000,7 +1035,7 @@ class App {
     this.schematic?.draw(this.stage.mapping(), this.schematicFrame());
     if (simulating) this.gauges.draw(this.view, now);
     if (this.stageName === 'build' && this.robot)
-      this.gizmos.update(this.mech, this.robot, this.snap, this.params);
+      this.gizmos.update(this.installed ?? this.mech, this.robot, this.snap, this.params);
     c.frames++;
     if (refresh) {
       this.panel.update();

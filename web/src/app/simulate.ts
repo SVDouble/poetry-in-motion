@@ -8,6 +8,7 @@ import { type Experiment, pageContext } from '../control/page';
 import { shortName } from '../control/pages';
 import { kickable, type Port, runExperiment } from '../control/runner';
 import type { ControlStore } from '../control/store';
+import { waitSimTime } from '../control/wait';
 import { liveSections } from '../eq/live';
 import type { EquationPanel } from '../eq/panel';
 import { tex } from '../eq/tex';
@@ -30,7 +31,6 @@ type SideTab = 'control' | 'goals' | 'eq' | 'model';
 const PLOT_HZ = 30;
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
-const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
 /** What the app shell provides. */
 export interface Shell {
@@ -67,6 +67,7 @@ export class SimulateStage {
   private pushAt: [number, number] | null = null;
   private readonly held = new Set<string>();
   private runToken = 0;
+  private runAbort: AbortController | null = null;
   private lastPlot = 0;
   /** Simulated time since the primary controller has been saturated far from its target (NaN: it is not). */
   private stuckSince = Number.NaN;
@@ -84,6 +85,7 @@ export class SimulateStage {
 
   /** A new mechanism was built (the robot view already exists). */
   load(d: Derivation, controllers: Controllers): void {
+    this.cancelRun();
     const { store } = this.s;
     this.d = d;
     this.signals = new Signals(d, this.snap, store);
@@ -95,7 +97,11 @@ export class SimulateStage {
       run: (kind, e) => void this.run(kind, e),
       watch: (kind) => this.watch(kind),
     });
-    if (!toolTargets(d)) this.s.settings.useTool = false;
+    // Targets refer to the newly installed mechanism. Keep persistent gains, reset target coordinates.
+    this.s.settings.useTool = false;
+    this.s.settings.orientTarget = this.snap.v('GOALS', 1);
+    this.s.settings.elbowX = this.snap.v('GOALS', 3);
+    this.s.settings.elbowY = this.snap.v('GOALS', 4);
     pushSettings(this.s.client, this.s.settings);
     store.load(controllers, defaultController(controllers));
     this.scope.clear();
@@ -128,10 +134,15 @@ export class SimulateStage {
   }
 
   leave(): void {
+    this.cancelRun();
     this.active = false;
     this.release();
     $('dock').replaceChildren();
     $('keys').replaceChildren();
+  }
+
+  refreshModel(): void {
+    if (this.active && this.side === 'model') this.mountSide();
   }
 
   private mountSide(): void {
@@ -231,13 +242,25 @@ export class SimulateStage {
     if (lab?.watch.length) this.scope.show(`watch:${spec.key}`, lab.watch, shortName(spec));
   }
 
+  /** Cancel synchronously: an old async action must never release a newer owner's push. */
+  cancelRun(): void {
+    this.runToken++;
+    this.runAbort?.abort(new Error('Experiment canceled'));
+    this.runAbort = null;
+    this.release();
+  }
+
   /** Set up an experiment from a clean slate, then play its steps. A newer run cancels this one. */
   private async run(kind: number, e: Experiment): Promise<void> {
     const d = this.d;
     const why = this.s.store.reason(kind);
     if (!d) return;
     if (why) return this.s.flash(why);
-    const token = ++this.runToken;
+    this.cancelRun();
+    const token = this.runToken;
+    const abort = new AbortController();
+    this.runAbort = abort;
+    const generation = this.s.client.generation;
     this.scope.show('experiment', e.plots as PlotDef[], e.title);
     this.scope.clearMarks();
     this.tab?.ran(kind, e.title);
@@ -254,8 +277,21 @@ export class SimulateStage {
       send: (m) => client.send(m),
       flag: (f, v) => client.flag(f, v),
       snap: () => this.snap,
-      sleep,
-      reset: () => this.reset(),
+      sleep: async (ms) => {
+        if (!(await client.refresh(abort.signal))) throw new Error('Simulation observation unavailable');
+        await waitSimTime(
+          ms,
+          () => {
+            client.pull();
+            return this.snap.t;
+          },
+          abort.signal,
+        );
+      },
+      reset: () => {
+        client.send({ type: 'reset' });
+        this.s.resetTrails();
+      },
       setUseTool: (on) => this.setUseTool(on),
       setPush: (at) => {
         this.pushAt = at;
@@ -272,12 +308,31 @@ export class SimulateStage {
         }, 30);
       },
     };
-    await runExperiment(port, kind, e, () => token === this.runToken);
+    try {
+      await runExperiment(
+        port,
+        kind,
+        e,
+        () =>
+          token === this.runToken &&
+          generation === client.generation &&
+          !abort.signal.aborted &&
+          !client.failure,
+      );
+    } catch (error) {
+      if (!abort.signal.aborted) this.s.flash(String(error));
+    } finally {
+      if (token === this.runToken) {
+        this.runAbort = null;
+        this.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------- interaction
 
   reset(): void {
+    this.cancelRun();
     this.s.client.send({ type: 'reset' });
     this.s.resetTrails();
   }
@@ -304,7 +359,7 @@ export class SimulateStage {
     if (this.pushAt || (shift && kind === 'down' && d.tool)) {
       if (kind === 'up' || !pressed) this.release();
       else {
-        this.runToken++; // a manual push takes over from a running experiment
+        this.cancelRun(); // release the old owner before taking over
         this.pushAt = [x, y];
         client.flag('PushX', x);
         client.flag('PushY', y);
@@ -384,7 +439,8 @@ export class SimulateStage {
 
   /** Release every held actuator key (window blur). */
   releaseKeys(): void {
-    for (let a = 0; a < ACTUATOR_KEYS.length; a++) this.s.client.send({ type: 'input', i: a, v: 0 });
+    for (let a = 0; a < Math.min(ACTUATOR_KEYS.length, this.d?.nu ?? 0); a++)
+      this.s.client.send({ type: 'input', i: a, v: 0 });
     this.held.clear();
   }
 

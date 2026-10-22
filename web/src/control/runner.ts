@@ -51,23 +51,55 @@ export async function runExperiment(
   e: Experiment,
   alive: () => boolean,
 ): Promise<void> {
-  const { store, settings } = port;
-  port.setPush(null);
-  port.flag('PushOn', 0);
-  store.setPrimary(kind);
-  store.clearShadows();
-  store.resetParams(kind);
-  const defaults = defaultSettings(port.snap().layout);
-  for (const [key] of SETTING_FLAGS) settings[key] = defaults[key];
-  settings.coriolis = defaults.coriolis;
-  pushSettings({ flag: (f, v) => port.flag(f, v) }, settings);
-  port.setUseTool(false);
-  port.settingsChanged?.();
-  for (const a of e.actions) {
-    if (!alive()) return;
-    await act(port, a);
+  const canceled = Symbol('experiment canceled');
+  const check = () => {
+    if (!alive()) throw canceled;
+  };
+  // Guard every boundary mutation, not just the interval between actions. The owner cancels and
+  // releases its push synchronously before handing ownership to the next run or manual gesture.
+  const guard =
+    <A extends unknown[]>(fn: (...args: A) => void) =>
+    (...args: A) => {
+      check();
+      fn(...args);
+    };
+  const scoped: Port = {
+    ...port,
+    send: guard((m) => port.send(m)),
+    flag: guard((f, v) => port.flag(f, v)),
+    reset: guard(() => port.reset()),
+    setUseTool: guard((on) => port.setUseTool(on)),
+    setPush: guard((at) => port.setPush(at)),
+    sleep: async (ms) => {
+      check();
+      await port.sleep(ms);
+      check();
+    },
+    mark: guard((event) => port.mark?.(event)),
+  };
+  const { store, settings } = scoped;
+  try {
+    check();
+    scoped.setPush(null);
+    scoped.flag('PushOn', 0);
+    store.setPrimary(kind);
+    store.clearShadows();
+    store.resetParams(kind);
+    const defaults = defaultSettings(scoped.snap().layout);
+    for (const [key] of SETTING_FLAGS) settings[key] = defaults[key];
+    settings.coriolis = defaults.coriolis;
+    pushSettings({ flag: (f, v) => scoped.flag(f, v) }, settings);
+    scoped.setUseTool(false);
+    scoped.settingsChanged?.();
+    for (const a of e.actions) {
+      if (!alive()) return;
+      await act(scoped, a);
+    }
+    check();
+    scoped.mark?.('done');
+  } catch (error) {
+    if (error !== canceled && alive()) throw error;
   }
-  port.mark?.('done');
 }
 
 async function act(port: Port, a: Action): Promise<void> {
