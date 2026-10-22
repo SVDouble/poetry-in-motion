@@ -10,7 +10,7 @@ import wasmUrl from '../wasm/motion_core.wasm?url';
 import { parseControllers } from './controllers';
 import type { Core } from './core';
 import { FLAGS, type Flag, parseLayout } from './layout';
-import { TickProfiler } from './profile';
+import { MAX_PROFILE_TICKS, TickProfiler } from './profile';
 import {
   DATA_OFFSET,
   type FromWorker,
@@ -270,7 +270,7 @@ const handlers: Handlers = {
   profile: (_c, m) => {
     profiler = {
       id: m.id,
-      run: new TickProfiler(Math.max(1, Math.min(5000, Math.round(m.ticks))), !!shared),
+      run: new TickProfiler(Math.max(1, Math.min(MAX_PROFILE_TICKS, Math.round(m.ticks))), !!shared),
     };
   },
   restore: (c, m) => {

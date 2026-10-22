@@ -1,4 +1,5 @@
 /** Bounded, opt-in measurements of actual worker ticks, including publication and checkpoint retention. */
+export const MAX_PROFILE_TICKS = 5000;
 export const PHASES = ['integration', 'publication', 'transport', 'history', 'benchmark', 'total'] as const;
 export type Phase = (typeof PHASES)[number];
 export interface TickProfile {

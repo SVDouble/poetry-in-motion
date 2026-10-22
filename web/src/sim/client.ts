@@ -1,7 +1,7 @@
 import type { Derivation } from '../model/derivation';
 import { type Controllers, parseControllers } from './controllers';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
-import type { TickProfile } from './profile';
+import { MAX_PROFILE_TICKS, type TickProfile } from './profile';
 import {
   type CheckpointFrame,
   type FromWorker,
@@ -92,7 +92,13 @@ export class SimClient {
     });
   }
   profile(ticks = 250): Promise<TickProfile | null> {
-    if (this.failure || this.profiles.size || !Number.isInteger(ticks) || ticks < 1 || ticks > 5000)
+    if (
+      this.failure ||
+      this.profiles.size ||
+      !Number.isInteger(ticks) ||
+      ticks < 1 ||
+      ticks > MAX_PROFILE_TICKS
+    )
       return Promise.resolve(null);
     const id = this.id();
     return new Promise((resolve) => {
