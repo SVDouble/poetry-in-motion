@@ -223,8 +223,7 @@ export function goalsTab(g: GoalsContext): HTMLElement {
 function hierarchyCard(g: GoalsContext): HTMLElement {
   const { d, mech, client, settings, snap } = g;
   // joints that move the tool (a gripper's fingers do not)
-  const dof = d.phi.length ? d.n - d.phi.length : toolChainDof(d);
-  const open = d.closures.length === 0;
+  const dof = d.closures.length ? snap.v('DOF') : toolChainDof(d);
   const box = card('Task hierarchy');
   if (d.tool && !toolTargets(d)) {
     box.append(
@@ -238,12 +237,12 @@ function hierarchyCard(g: GoalsContext): HTMLElement {
   }
   box.append(
     note(
-      open && dof > 2
+      dof > 2
         ? `Pursued by VMC, impedance and admittance control. Each level acts only in what the levels above leave free (${dof} DOF − 2 for the tool = ${dof - 2} to share): a lower goal can never disturb a higher one, and an unreachable one is pursued as far as possible.`
-        : 'This mechanism has no redundancy for the tool task (or has loops): only the tool position is controlled.',
+        : 'This mechanism has no redundancy for the tool task: only the tool position is controlled.',
     ),
   );
-  if (!open || dof <= 2) return box;
+  if (dof <= 2) return box;
   const set = (key: Numeric, v: number) => setSetting(client, settings, key, v);
   const toggle = (key: 'orient' | 'elbow', on: boolean) => {
     set(key, on ? GOAL_W : 0);
@@ -457,6 +456,11 @@ function goalSections(d: Derivation, snap: Snapshot, mech: Mechanism): SectionSp
       b.math(
         String.raw`\hat\Lambda_k = \big(\hat J_k M^{-1}\hat J_k^{T}\big)^{-1},\qquad \hat J_k^{\#} = M^{-1}\hat J_k^{T}\hat\Lambda_k,\qquad P_k = P_{k-1} - \hat J_k^{\#}\hat J_k`,
       );
+      if (d.closures.length) {
+        b.text(
+          String.raw`With loop constraints, the hierarchy acts in the tangent space spanned by $Z$: use $H = Z(Z^T M Z)^{-1}Z^T$ in place of $M^{-1}$ and start from $P_0 = HM$. Each task correction then preserves the loop constraints; the initial acceleration accounts for their curvature.`,
+        );
+      }
       b.math(
         String.raw`\ddot q \mathrel{+}= \hat J_k^{\#}\,\big(a_k - \dot J_k\dot q - J_k\ddot q\big)\quad\text{(impedance)},\qquad \tau \mathrel{+}= \hat J_k^{T}\hat\Lambda_k\,a_k\quad\text{(VMC)}`,
       );
