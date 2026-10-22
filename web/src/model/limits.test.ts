@@ -1,6 +1,6 @@
 /**
- * The builder encodes mechanisms before the wasm core is loaded, so it keeps its own copy of the
- * description's limits and record sizes; the core publishes the originals in its layout. They must agree.
+ * The builder's pure document helpers mirror the description's limits and record sizes; the core
+ * publishes the originals in its layout. They must agree.
  * Run `make wasm` first.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
