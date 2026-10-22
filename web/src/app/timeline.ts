@@ -1,28 +1,21 @@
-/**
- * Rewind: the last 20 s of the simulation, kept as snapshots at 30 Hz (as Float32: about 5 MB). While
- * paused, a timeline under the figure scrubs through them — the figure, the gauges and the readouts show
- * that moment — steps frame by frame (at the live end, the physics advances one frame), and resumes the
- * simulation from any recorded moment.
- */
+/** Exact rewind from worker-owned execution checkpoints, retained within a frame and memory budget. */
+import { HISTORY } from '../generated/contracts';
 import { type Layout, Snapshot } from '../sim/layout';
+import type { CheckpointFrame } from '../sim/protocol';
 import { button, el } from '../ui/widgets';
-
-const HZ = 30;
-const SECONDS = 20;
-const CAP = HZ * SECONDS;
+import { Checkpoints } from './checkpoints';
 
 export interface TimelineEvents {
   /** Advance the physics by `steps` of the core’s fixed timestep while paused. */
   advance(steps: number): void;
-  /** Continue the simulation from snapshot `s` (its q and q̇). */
-  resume(s: Snapshot): void;
+  /** Restore the selected worker checkpoint. Expired checkpoints leave the live world untouched. */
+  resume(checkpoint: number): Promise<boolean>;
 }
 
 export class Timeline {
   readonly el = el('div', 'timeline overlay');
-  private readonly frames: Float32Array[] = [];
-  private head = 0;
-  private count = 0;
+  private readonly frames: Checkpoints;
+  private busy = false;
   private lastT = Number.NaN;
   /** Index (0 = oldest) of the moment being shown, or −1: live. */
   private at = -1;
@@ -35,7 +28,7 @@ export class Timeline {
     private readonly events: TimelineEvents,
   ) {
     this.replay = new Snapshot(layout);
-    for (let k = 0; k < CAP; k++) this.frames.push(new Float32Array(layout.len));
+    this.frames = new Checkpoints(layout.off.TIME);
     this.slider.type = 'range';
     this.slider.min = '0';
     this.slider.addEventListener('input', () => this.show(Number(this.slider.value)));
@@ -48,7 +41,7 @@ export class Timeline {
       this.time,
       button(
         'Resume here',
-        () => this.resumeHere(),
+        () => void this.resumeHere(),
         'btn small primary',
         'continue the simulation from this moment',
       ),
@@ -58,27 +51,27 @@ export class Timeline {
 
   /** Forget everything (new mechanism, reset). */
   clear(): void {
-    this.count = 0;
-    this.head = 0;
+    this.frames.clear();
     this.at = -1;
     this.lastT = Number.NaN;
   }
 
-  /** Keep the live snapshot if 1/30 s of simulated time has passed (time going back: a reset). */
-  record(snap: Snapshot): void {
-    const t = snap.t;
-    if (t < this.lastT) this.clear();
-    if (!(t - this.lastT < 1 / HZ - 1e-9)) {
-      this.frames[this.head]!.set(snap.data);
-      this.head = (this.head + 1) % CAP;
-      this.count = Math.min(CAP, this.count + 1);
-      this.lastT = t;
-    }
+  record(frame: CheckpointFrame): void {
+    this.frames.record(frame);
+    this.lastT = frame.data[this.replay.layout.off.TIME]!;
   }
 
   /** The snapshot to draw: the recorded moment being shown, or the live one. */
   view(live: Snapshot): Snapshot {
     return this.at < 0 ? live : this.replay;
+  }
+
+  viewParams(live: number[]): number[] {
+    return this.at < 0 ? live : (this.frames.get(this.at)?.params ?? live);
+  }
+
+  viewPush(live: [number, number] | null): [number, number] | null {
+    return this.at < 0 ? live : (this.frames.get(this.at)?.push ?? null);
   }
 
   get replaying(): boolean {
@@ -87,46 +80,47 @@ export class Timeline {
 
   /** Visible while paused in the simulation and there is something to look back at. */
   setVisible(on: boolean): void {
-    const show = on && this.count > 1;
+    const show = on && this.frames.count > 1;
     if (!show) this.at = -1;
     if (show && this.el.hidden) this.sync();
     this.el.hidden = !show;
   }
 
-  private frame(i: number): Float32Array {
-    return this.frames[(this.head - this.count + i + CAP) % CAP]!;
-  }
-
   private show(i: number): void {
-    this.at = i < 0 || i >= this.count - 1 ? -1 : i;
-    if (this.at >= 0) this.replay.data.set(this.frame(this.at));
+    this.at = i < 0 || i >= this.frames.count - 1 ? -1 : i;
+    if (this.at >= 0) this.replay.data.set(this.frames.get(this.at)!.data);
     this.sync();
   }
 
   private step(dir: number): void {
-    const i = this.at < 0 ? this.count - 1 : this.at;
+    const i = this.at < 0 ? this.frames.count - 1 : this.at;
     if (dir > 0 && this.at < 0) {
-      this.events.advance(Math.max(1, Math.round(1 / (HZ * this.replay.layout.dt))));
+      this.events.advance(Math.max(1, Math.round(1 / (HISTORY.hz * this.replay.layout.dt))));
       return;
     }
     this.show(Math.max(0, i + dir));
   }
 
-  private resumeHere(): void {
-    if (this.at < 0) return;
-    // the moments after this one are a future that will not happen
-    const keep = this.at + 1;
-    this.head = (this.head - this.count + keep + CAP) % CAP;
-    this.count = keep;
-    this.lastT = this.replay.t;
-    this.events.resume(this.replay);
-    this.at = -1;
-    this.sync();
+  private async resumeHere(): Promise<void> {
+    if (this.at < 0 || this.busy) return;
+    const at = this.at;
+    const frame = this.frames.get(at);
+    if (!frame) return;
+    this.busy = true;
+    try {
+      if (!(await this.events.resume(frame.checkpoint))) return;
+      this.frames.truncate(at);
+      this.lastT = this.replay.t;
+      this.at = -1;
+      this.sync();
+    } finally {
+      this.busy = false;
+    }
   }
 
   private sync(): void {
-    this.slider.max = String(Math.max(0, this.count - 1));
-    this.slider.value = String(this.at < 0 ? this.count - 1 : this.at);
+    this.slider.max = String(Math.max(0, this.frames.count - 1));
+    this.slider.value = String(this.at < 0 ? this.frames.count - 1 : this.at);
     const t = this.at < 0 ? this.lastT : this.replay.t;
     this.time.textContent = Number.isFinite(t) ? `t = ${t.toFixed(2)} s${this.at < 0 ? ' (now)' : ''}` : '';
   }

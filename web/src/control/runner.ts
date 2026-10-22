@@ -80,6 +80,7 @@ export async function runExperiment(
   const { store, settings } = scoped;
   try {
     check();
+    scoped.send({ type: 'tasks', tasks: [] });
     scoped.setPush(null);
     scoped.flag('PushOn', 0);
     store.setPrimary(kind);

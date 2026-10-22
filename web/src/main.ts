@@ -30,7 +30,8 @@ import {
 } from './model/description';
 import { poseBounds } from './scene/kinematics';
 import { param, RobotView } from './scene/robot';
-import { type Focus, parseFocus, type SchematicFrame, SchematicView } from './scene/schematic';
+import { type Focus, parseFocus, type SchematicFrame } from './scene/schematic';
+import { SchematicView } from './scene/schematic-view';
 import { Stage } from './scene/stage';
 import { setDark } from './scene/theme';
 import { SimClient } from './sim/client';
@@ -90,6 +91,7 @@ class App {
   private readonly gizmos: Gizmos;
   private readonly panel = new EquationPanel($('side'));
   private lastBuildMs = 0;
+  private lastBuildReused = false;
   private readonly clock = { eq: 0, hud: 0, frames: 0 };
 
   constructor(
@@ -184,12 +186,20 @@ class App {
     this.gauges = new Gauges(this.settings);
     this.timeline = new Timeline(client.layout, {
       advance: (steps) => client.send({ type: 'advance', steps }),
-      resume: (s) => {
-        for (let j = 0; j < (this.derivation?.n ?? 0); j++)
-          client.send({ type: 'state', i: j, q: s.v('Q', j), qd: s.v('QD', j) });
+      resume: async (checkpoint) => {
+        this.sim.cancelRun();
+        const state = await client.restore(checkpoint);
+        if (!state) {
+          this.flash('This checkpoint is no longer available.');
+          return false;
+        }
+        this.params = [...state.params];
+        this.sim.restore(state);
         this.setRunning(true);
+        return true;
       },
     });
+    client.onCheckpoint((frame) => this.timeline.record(frame));
     this.readout.className = 'readout overlay';
     this.readout.hidden = true;
     $('viewport').append(this.gauges.el, this.timeline.el, this.readout);
@@ -418,6 +428,7 @@ class App {
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = res.derivation;
     this.lastBuildMs = res.ms;
+    this.lastBuildReused = res.reused;
     this.params = paramVector(mech);
     history.replaceState(null, '', encodeHash(mech));
     this.robot = new RobotView(mech);
@@ -594,7 +605,7 @@ class App {
       head.append(
         title(
           'Build',
-          `${(this.installed ?? this.mech).bodies.length} bodies · ${dof} · ${d.nu} actuated · derived in ${ms}`,
+          `${(this.installed ?? this.mech).bodies.length} bodies · ${dof} · ${d.nu} actuated · ${this.lastBuildReused ? 'updated' : 'derived'} in ${ms}`,
         ),
         tools,
       );
@@ -789,10 +800,15 @@ class App {
     this.ghostSlots ??= this.snap.slots.slice(1);
     return {
       snap: this.view,
-      params: this.params,
+      params: this.timeline.viewParams(this.params),
       running: simulating,
-      push: this.sim.pushPoint,
-      ghosts: simulating && this.settings.ghosts ? this.ghostSlots : [],
+      push: this.timeline.viewPush(this.sim.pushPoint),
+      ghosts:
+        simulating && this.settings.ghosts
+          ? this.timeline.replaying
+            ? this.view.slots.slice(1)
+            : this.ghostSlots
+          : [],
       annotate: this.settings.labels,
       frames: this.settings.frames,
       dims: this.settings.dims,
@@ -1015,7 +1031,6 @@ class App {
     const c = this.clock;
     this.client.pull();
     const simulating = this.stageName === 'simulate';
-    if (simulating && this.running) this.timeline.record(this.snap);
     this.timeline.setVisible(simulating && !this.running);
     this.timeline.tick();
     this.sim.setCursor(this.timeline.replaying ? this.view.t : null);

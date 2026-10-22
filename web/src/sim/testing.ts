@@ -9,6 +9,7 @@ import { type Controllers, parseControllers } from './controllers';
 import type { Core } from './core';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
 import type { ToWorker } from './protocol';
+import { encodeTasks } from './tasks';
 
 export class TestCore {
   private constructor(
@@ -71,6 +72,13 @@ export class TestCore {
   send(m: ToWorker): void {
     const c = this.core;
     switch (m.type) {
+      case 'tasks': {
+        const flat = encodeTasks(m.tasks);
+        const ptr = c.desc_buffer(flat.length);
+        new Float64Array(c.memory.buffer, ptr, flat.length).set(flat);
+        if (c.set_tasks(flat.length) !== 0) throw new Error(this.text(c.error_ptr(), c.error_len()));
+        return;
+      }
       case 'param':
         c.set_param(m.i, m.v);
         return;

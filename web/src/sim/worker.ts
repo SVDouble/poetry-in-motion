@@ -4,9 +4,13 @@
  * 1 kHz clock in real time and publishes snapshots through a SharedArrayBuffer (seqlock), or by message
  * when cross-origin isolation is missing.
  */
+
+import { HISTORY } from '../generated/contracts';
 import wasmUrl from '../wasm/motion_core.wasm?url';
+import { parseControllers } from './controllers';
 import type { Core } from './core';
-import { parseLayout } from './layout';
+import { FLAGS, type Flag, parseLayout } from './layout';
+import { TickProfiler } from './profile';
 import {
   DATA_OFFSET,
   type FromWorker,
@@ -15,12 +19,16 @@ import {
   type ToWorker,
   TRANSPORT_VERSION,
 } from './protocol';
+import { decodeTasks, encodeTasks } from './tasks';
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (msg: FromWorker, transfer: Transferable[] = []) => scope.postMessage(msg, transfer);
 
 /** The core's fixed step (s), read from its layout. */
 let dt: number;
+let timeOffset: number;
+let countOffset: number;
+let flagIds: Record<Flag, number>;
 const TICK_MS = 4;
 const MAX_CATCH_UP_S = 0.05;
 const FALLBACK_POST_MS = 16;
@@ -38,6 +46,8 @@ const nextSequence = () => {
   return sequence;
 };
 let candidate = 0;
+let historyTime = Number.NaN;
+let profiler: { id: number; run: TickProfiler } | null = null;
 let speed = 1;
 let acc = 0;
 let last = performance.now();
@@ -93,24 +103,27 @@ function tick(): void {
   const now = performance.now();
   const elapsed = Math.min((now - last) / 1000, MAX_CATCH_UP_S);
   last = now;
+  let stepped = 0;
+  const integrateAt = performance.now();
   if (running) {
     acc += elapsed * speed;
     const n = Math.floor(acc / dt);
     acc -= n * dt;
     if (n > 0) {
-      c.step(n);
+      c.integrate(n);
+      stepped = n;
       stepsThisSecond += n;
-    } else {
-      c.publish();
     }
-  } else {
-    c.publish();
   }
+  const integratedAt = performance.now();
+  c.publish();
+  const publishedAt = performance.now();
   if (now - secondStart >= 1000) {
     stats[1] = (stepsThisSecond * 1000) / (now - secondStart);
     stepsThisSecond = 0;
     secondStart = now;
   }
+  const benchAt = performance.now();
   if (now - lastBench > BENCH_EVERY_MS) {
     // a few real-time steps are too short to time with the coarse clock, so time a batch on a copy, sized
     // from the last measurement to take about BENCH_MS
@@ -124,10 +137,55 @@ function tick(): void {
     benchSteps = Math.round(Math.min(20_000, Math.max(10, (BENCH_MS * 1000) / Math.max(stepCost, 0.05))));
     lastBench = now;
   }
+  const benchedAt = performance.now();
   stats[0] = stepCost;
   stats[2] = running ? speed : 0;
   stats[3] = running ? 1 : 0;
   publish(c);
+  const transportedAt = performance.now();
+  const t = view(c)[timeOffset]!;
+  if (
+    t !== historyTime &&
+    (t < historyTime || !Number.isFinite(historyTime) || t - historyTime >= 1 / HISTORY.hz - 1e-9)
+  ) {
+    const checkpoint = c.checkpoint_save();
+    if (checkpoint) {
+      const data = view(c).slice();
+      post(
+        {
+          type: 'checkpoint',
+          generation,
+          checkpoint,
+          oldest: c.checkpoint_oldest(),
+          data,
+          params: Array.from({ length: c.param_count() }, (_, i) => c.param_value(i)),
+          push: c.flag_value(flagIds.PushOn)
+            ? [c.flag_value(flagIds.PushX), c.flag_value(flagIds.PushY)]
+            : null,
+        },
+        [data.buffer],
+      );
+    }
+    historyTime = t;
+  }
+  const endedAt = performance.now();
+  if (profiler) {
+    const report = profiler.run.add(
+      {
+        integration: (integratedAt - integrateAt) * 1000,
+        publication: (publishedAt - integratedAt) * 1000,
+        benchmark: (benchedAt - benchAt) * 1000,
+        transport: (transportedAt - benchedAt) * 1000,
+        history: (endedAt - transportedAt) * 1000,
+        total: (endedAt - now) * 1000,
+      },
+      stepped,
+    );
+    if (report) {
+      post({ type: 'profiled', id: profiler.id, report });
+      profiler = null;
+    }
+  }
 }
 
 let buildMs = 0;
@@ -155,7 +213,12 @@ function commit(c: Core, id: number): void {
     post({ type: 'built', id, ok: false, error: text(c, c.error_ptr(), c.error_len()) });
     return;
   }
+  if (profiler) {
+    post({ type: 'profiled', id: profiler.id, report: null });
+    profiler = null;
+  }
   generation = id;
+  historyTime = Number.NaN;
   const derivation = text(c, c.derivation_ptr(), c.derivation_len());
   const len = c.controllers();
   const controllers = text(c, c.controllers_ptr(), len);
@@ -173,6 +236,8 @@ function commit(c: Core, id: number): void {
       derivation,
       controllers,
       buildMs,
+      reused: c.build_reused() !== 0,
+      targets: readTargets(c),
     },
     [data.buffer, s.buffer],
   );
@@ -183,9 +248,68 @@ function commit(c: Core, id: number): void {
   stepCost = 0;
 }
 
+function readTargets(c: Core): number[] {
+  return Array.from({ length: view(c)[countOffset]! }, (_, i) => c.target_value(i));
+}
+function readTasks(c: Core) {
+  const len = c.tasks();
+  return decodeTasks(new Float64Array(c.memory.buffer, c.tasks_ptr(), len));
+}
+
 type Handlers = { [K in ToWorker['type']]: (c: Core, msg: Extract<ToWorker, { type: K }>) => unknown };
 
 const handlers: Handlers = {
+  tasks: (c, m) => {
+    const flat = encodeTasks(m.tasks);
+    const ptr = c.desc_buffer(flat.length);
+    new Float64Array(c.memory.buffer, ptr, flat.length).set(flat);
+    const result = c.set_tasks(flat.length);
+    post({ type: 'tasksChanged', generation, tasks: readTasks(c) });
+    return result;
+  },
+  profile: (_c, m) => {
+    profiler = {
+      id: m.id,
+      run: new TickProfiler(Math.max(1, Math.min(5000, Math.round(m.ticks))), !!shared),
+    };
+  },
+  restore: (c, m) => {
+    if (c.checkpoint_restore(m.checkpoint) !== 0) {
+      post({
+        type: 'restoreFailed',
+        id: m.id,
+        error: 'Checkpoint expired or belongs to a replaced mechanism',
+      });
+      return;
+    }
+    running = false;
+    acc = 0;
+    last = performance.now();
+    c.publish();
+    historyTime = view(c)[timeOffset]!;
+    const flags = {} as Record<Flag, number>;
+    const layout = parseLayout(text(c, c.layout_ptr(), c.layout_len()));
+    for (const key of FLAGS) flags[key] = c.flag_value(layout.flag[key]);
+    const params = Array.from({ length: c.param_count() }, (_, i) => c.param_value(i));
+    const len = c.controllers();
+    const controllers = parseControllers(text(c, c.controllers_ptr(), len));
+    const data = view(c).slice(),
+      s = stats.slice();
+    s[2] = 0;
+    s[3] = 0;
+    post(
+      {
+        type: 'restored',
+        id: m.id,
+        sequence: nextSequence(),
+        generation,
+        data,
+        stats: s,
+        runtime: { params, flags, controllers, tasks: readTasks(c), targets: readTargets(c) },
+      },
+      [data.buffer, s.buffer],
+    );
+  },
   build: (c, m) => build(c, m.id, m.desc),
   commitBuild: (c, m) => commit(c, m.id),
   discardBuild: (c, m) => {
@@ -212,7 +336,10 @@ const handlers: Handlers = {
   target: (c, m) => c.set_target(m.i, m.v),
   kick: (c, m) => c.kick(m.i, m.v),
   state: (c, m) => c.set_state(m.i, m.q, m.qd),
-  reset: (c) => c.reset(),
+  reset: (c) => {
+    c.reset();
+    historyTime = Number.NaN;
+  },
   advance: (c, m) => {
     c.step(Math.max(1, Math.min(1000, Math.round(m.steps))));
     c.publish();
@@ -227,7 +354,7 @@ const handlers: Handlers = {
 
 function handle(c: Core, msg: ToWorker): void {
   if (
-    !['build', 'commitBuild', 'discardBuild', 'observe', 'run', 'speed'].includes(msg.type) &&
+    !['build', 'commitBuild', 'discardBuild', 'observe', 'run', 'speed', 'profile'].includes(msg.type) &&
     msg.generation !== generation
   )
     return;
@@ -238,6 +365,8 @@ function handle(c: Core, msg: ToWorker): void {
     ('kind' in msg && !index(msg.kind, msg.type === 'controller')) ||
     (msg.type === 'flag' && !index(msg.id)) ||
     (msg.type === 'advance' && (!Number.isInteger(msg.steps) || msg.steps < 1)) ||
+    (msg.type === 'restore' && (!index(msg.checkpoint) || msg.checkpoint === 0)) ||
+    (msg.type === 'profile' && (!Number.isInteger(msg.ticks) || msg.ticks < 1)) ||
     (msg.type === 'speed' && (!Number.isFinite(msg.speed) || msg.speed <= 0))
   ) {
     post({ type: 'invalid', message: 'Invalid simulation command index or step/speed value' });
@@ -269,7 +398,11 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
 load()
   .then((c) => {
     const layout = text(c, c.layout_ptr(), c.layout_len());
-    dt = parseLayout(layout).dt;
+    const contract = parseLayout(layout);
+    dt = contract.dt;
+    timeOffset = contract.off.TIME;
+    countOffset = contract.off.NQ;
+    flagIds = contract.flag;
     core = c;
     let sab: SharedArrayBuffer | null = null;
     if (scope.crossOriginIsolated) {

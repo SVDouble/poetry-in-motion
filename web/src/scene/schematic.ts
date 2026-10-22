@@ -989,5 +989,3 @@ export function drawThumbnail(
     trail: false,
   });
 }
-
-export { SchematicView } from './schematic-view';

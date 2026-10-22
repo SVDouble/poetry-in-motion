@@ -1,15 +1,19 @@
 import type { Derivation } from '../model/derivation';
 import { type Controllers, parseControllers } from './controllers';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
+import type { TickProfile } from './profile';
 import {
+  type CheckpointFrame,
   type FromWorker,
   newerSequence,
   type Observation,
+  type RuntimeState,
   STATS,
   type ToWorker,
   TRANSPORT_VERSION,
 } from './protocol';
 import { SharedReader } from './shared';
+import type { TaskGoal } from './tasks';
 
 export interface SimStats {
   stepUs: number;
@@ -19,7 +23,14 @@ export interface SimStats {
   shared: boolean;
 }
 
-export type Built = Observation & { ok: true; derivation: Derivation; controllers: Controllers; ms: number };
+export type Built = Observation & {
+  ok: true;
+  derivation: Derivation;
+  controllers: Controllers;
+  ms: number;
+  reused: boolean;
+  targets: number[];
+};
 export type BuildResult = Built | { ok: false; error: string };
 
 /** UI handle to one worker. A build is installed explicitly after the document revision is checked. */
@@ -37,13 +48,58 @@ export class SimClient {
     do {
       id = this.nextId;
       this.nextId = id === 0x7fffffff ? 1 : id + 1;
-    } while (id === this.generation || this.pending.has(id) || this.observations.has(id));
+    } while (
+      id === this.generation ||
+      this.pending.has(id) ||
+      this.observations.has(id) ||
+      this.restores.has(id) ||
+      this.profiles.has(id)
+    );
     return id;
   }
   private readonly pending = new Map<number, { done: (r: BuildResult) => void; current: () => boolean }>();
   private readonly observations = new Map<number, (o: Observation | null) => void>();
   private readonly rejected = new Set<(param: { i: number; value: number }) => void>();
   private readonly errors = new Set<(message: string) => void>();
+
+  tasks: TaskGoal[] = [];
+  /** Requested joint targets, distinct from the projected equilibrium in Q_TARGET. */
+  targets: number[] = [];
+  private readonly checkpoints = new Set<(frame: CheckpointFrame) => void>();
+  private readonly taskListeners = new Set<() => void>();
+  private readonly restores = new Map<number, (state: RuntimeState | null) => void>();
+  private readonly profiles = new Map<number, (report: TickProfile | null) => void>();
+
+  onCheckpoint(fn: (frame: CheckpointFrame) => void): () => void {
+    this.checkpoints.add(fn);
+    return () => this.checkpoints.delete(fn);
+  }
+  onTasks(fn: () => void): () => void {
+    this.taskListeners.add(fn);
+    return () => this.taskListeners.delete(fn);
+  }
+  setTasks(tasks: TaskGoal[]): void {
+    this.tasks = tasks.map((t) => ({ ...t, y: t.kind === 'orientation' ? 0 : t.y }));
+    this.send({ type: 'tasks', tasks: this.tasks });
+  }
+  restore(checkpoint: number): Promise<RuntimeState | null> {
+    if (this.failure || !Number.isInteger(checkpoint) || checkpoint < 1 || checkpoint > 0xffffffff)
+      return Promise.resolve(null);
+    const id = this.id();
+    return new Promise((resolve) => {
+      this.restores.set(id, resolve);
+      this.send({ type: 'restore', id, checkpoint });
+    });
+  }
+  profile(ticks = 250): Promise<TickProfile | null> {
+    if (this.failure || this.profiles.size || !Number.isInteger(ticks) || ticks < 1 || ticks > 5000)
+      return Promise.resolve(null);
+    const id = this.id();
+    return new Promise((resolve) => {
+      this.profiles.set(id, resolve);
+      this.send({ type: 'profile', id, ticks });
+    });
+  }
 
   constructor(
     private readonly worker: Worker,
@@ -57,8 +113,35 @@ export class SimClient {
       if (this.failure) return;
       const msg = e.data;
       try {
-        if ('data' in msg) this.validate(msg);
-        if (msg.type === 'prepared') {
+        if ('sequence' in msg) this.validate(msg);
+        if (msg.type === 'checkpoint') {
+          if (msg.generation === this.generation && msg.data.length === this.layout.len)
+            for (const fn of this.checkpoints) fn(msg);
+        } else if (msg.type === 'tasksChanged') {
+          if (msg.generation === this.generation) {
+            const changed = JSON.stringify(this.tasks) !== JSON.stringify(msg.tasks);
+            this.tasks = msg.tasks;
+            if (changed) for (const fn of this.taskListeners) fn();
+          }
+        } else if (msg.type === 'profiled') {
+          this.profiles.get(msg.id)?.(msg.report);
+          this.profiles.delete(msg.id);
+        } else if (msg.type === 'restoreFailed') {
+          this.restores.get(msg.id)?.(null);
+          this.restores.delete(msg.id);
+          this.report(msg.error);
+        } else if (msg.type === 'restored') {
+          const done = this.restores.get(msg.id);
+          this.restores.delete(msg.id);
+          if (msg.generation === this.generation) {
+            // A newer periodic observation may arrive before this acknowledgment is handled.
+            // It supersedes the sample, but the restore and its configuration still succeeded.
+            this.accept(msg);
+            this.tasks = msg.runtime.tasks;
+            this.targets = msg.runtime.targets;
+            done?.(msg.runtime);
+          } else done?.(null);
+        } else if (msg.type === 'prepared') {
           const request = this.pending.get(msg.id);
           if (request?.current()) this.send({ type: 'commitBuild', id: msg.id });
           else {
@@ -81,6 +164,8 @@ export class SimClient {
                 derivation: JSON.parse(msg.derivation) as Derivation,
                 controllers: parseControllers(msg.controllers),
                 ms: msg.buildMs,
+                reused: msg.reused,
+                targets: msg.targets,
               }
             : { ok: false, error: msg.error };
           this.pending.delete(msg.id);
@@ -147,6 +232,10 @@ export class SimClient {
     this.pending.clear();
     for (const done of this.observations.values()) done(null);
     this.observations.clear();
+    for (const done of this.restores.values()) done(null);
+    this.restores.clear();
+    for (const done of this.profiles.values()) done(null);
+    this.profiles.clear();
     this.report(message);
   }
 
@@ -154,6 +243,14 @@ export class SimClient {
     if (this.failure) return false;
     try {
       this.worker.postMessage({ ...msg, generation: this.generation });
+      if (
+        msg.type === 'target' &&
+        Number.isInteger(msg.i) &&
+        msg.i >= 0 &&
+        msg.i < this.targets.length &&
+        Number.isFinite(msg.v)
+      )
+        this.targets[msg.i] = msg.v;
       return true;
     } catch (error) {
       this.fail(String(error));
@@ -177,7 +274,11 @@ export class SimClient {
   install(result: Built): void {
     if (this.failure) return;
     this.validate(result);
+    for (const done of this.restores.values()) done(null);
+    this.restores.clear();
     this.generation = result.generation;
+    this.tasks = [];
+    this.targets = [...result.targets];
     this.sequence = null;
     this.latest = null;
     this.shared?.reset();

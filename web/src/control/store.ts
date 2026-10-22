@@ -61,6 +61,14 @@ export class ControlStore {
     this.notify();
   }
 
+  /** Adopt a restored core state without sending assignments that would reset its controllers. */
+  restore(reg: Controllers, slots: number[]): void {
+    this.reg = reg;
+    this.slots.splice(0, this.slots.length, ...slots);
+    this.chosen = true;
+    this.notify();
+  }
+
   setPrimary(kind: number): void {
     if (this.reason(kind) !== null || kind === this.primary) return;
     this.chosen = true;

@@ -33,6 +33,7 @@ import {
   TUNING,
   toolTargets,
 } from './settings';
+import { taskList } from './tasks';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint' | 'format'>>;
 
@@ -120,12 +121,11 @@ export function goalsTab(g: GoalsContext): HTMLElement {
       min: -range,
       max: range,
       step: angular ? 1 : 0.01,
-      value: b.qTarget * (angular ? DEG : 1),
+      value: client.targets[i]! * (angular ? DEG : 1),
       unit: angular ? '°' : 'm',
       onInput: (v) => {
-        b.qTarget = v / (angular ? DEG : 1);
         g.onJointTarget();
-        client.send({ type: 'target', i, v: b.qTarget });
+        client.send({ type: 'target', i, v: v / (angular ? DEG : 1) });
       },
     });
   });
@@ -176,6 +176,7 @@ export function goalsTab(g: GoalsContext): HTMLElement {
   );
 
   const secondary = hierarchyCard(g);
+  if (g.d.tool && toolTargets(g.d)) secondary.append(taskList(g.mech, g.snap, g.client, g.refresh));
 
   const world = card(
     'Interaction & limits',

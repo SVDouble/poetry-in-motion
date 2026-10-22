@@ -25,6 +25,7 @@ RECORD = """() => {
         if (this.index !== 0) return;
         if (data.type === 'built' && data.ok) window.mainGeneration = data.generation;
         if (data.type === 'observed') window.responses.push({id: data.id, t: data.data[0]});
+        if (data.type === 'restored') window.restored = data;
       });
     }
     postMessage(message, ...args) {
@@ -67,6 +68,37 @@ CLIENT = """async () => {
   const second = await client.build(encode(PRESETS['Cart-pole']()));
   assert(second.ok, 'replacement build failed'); client.install(second);
   assert(client.generation !== generation && client.snap.nu === 1, 'new metadata/snapshot not installed');
+  const arm = PRESETS['Two-link arm']();
+  let updated = await client.build(encode(arm));
+  assert(updated.ok, 'arm rebuild failed'); client.install(updated);
+  arm.bodies[0].m *= 1.1;
+  updated = await client.build(encode(arm));
+  assert(updated.ok && updated.reused, 'parameter edit did not reuse compilation'); client.install(updated);
+  const mpc = updated.controllers.specs.find(s => s.key === 'mpc').id;
+  client.send({type:'controller', slot:0, kind:mpc});
+  client.send({type:'controller', slot:1, kind:1});
+  client.setTasks([{kind:'orientation',frame:0,x:0.3,y:0,wn:2}]);
+  let saved;
+  const stop = client.onCheckpoint(f => { if (f.data[client.layout.off.TIME] > 0.1) saved = f; });
+  client.send({type:'advance',steps:103});
+  await client.refresh();
+  const deadline = performance.now() + 5000;
+  while (!saved && performance.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  assert(saved, 'worker did not retain a checkpoint'); stop();
+  client.send({type:'advance',steps:137}); await client.refresh();
+  const future = client.snap.data.slice();
+  client.flag('MotorSpeed', 0.5); client.setTasks([]);
+  const runtime = await client.restore(saved.checkpoint);
+  assert(runtime && runtime.tasks.length === 1 && runtime.flags.MotorSpeed === 1,
+    'checkpoint did not restore settings/tasks');
+  client.send({type:'advance',steps:137}); await client.refresh();
+  assert(future.every((v,i) => Object.is(v,client.snap.data[i])), 'checkpoint changed the future trajectory');
+  assert(await client.restore(0xfffffffe) === null, 'expired checkpoint restored');
+  client.send({type:'run',running:true});
+  const report = await client.profile(10);
+  client.send({type:'run',running:false});
+  assert(report && report.ticks === 10 && report.steps > 0 && report.shared === client.stats.shared,
+    'worker profile did not complete');
   window.flags = client.layout.flag;
   return client.stats.shared;
 }"""
@@ -124,6 +156,45 @@ async def experiment(page: Page) -> None:
     )
 
 
+async def timeline_and_tasks(page: Page) -> None:
+    await page.locator("[data-stage=simulate]").click()
+    await page.locator(".side-head .segmented button").filter(has_text="Goals").click()
+    await page.get_by_role("button", name="Add point goal", exact=True).click()
+    await page.get_by_role("button", name="Add orientation goal", exact=True).click()
+    await page.wait_for_function("window.commands.filter(m => m.type === 'tasks').at(-1)?.tasks.length === 2")
+    await page.get_by_title("higher priority", exact=True).last.click()
+    await page.wait_for_function(
+        "window.commands.filter(m => m.type === 'tasks').at(-1)?.tasks[0].kind === 'orientation'"
+    )
+    await page.get_by_role("button", name="remove", exact=True).last.click()
+    await page.wait_for_function("window.commands.filter(m => m.type === 'tasks').at(-1)?.tasks.length === 1")
+    await page.get_by_role("button", name="remove", exact=True).click()
+    # Physical-time progress produces worker checkpoints even without animation sampling.
+    if await page.locator("#run").text_content() == "Run":
+        await page.locator("#run").click()
+    await page.wait_for_timeout(500)
+    await page.locator("#run").click()
+    await page.locator(".timeline").wait_for(state="visible")
+    await page.locator("#side input[type=range]").first.evaluate(
+        "e => {e.value = '80'; e.dispatchEvent(new Event('input'));}"
+    )
+    await page.locator(".timeline input").evaluate(
+        "e => {e.value = '0'; e.dispatchEvent(new Event('input'));}"
+    )
+    await page.evaluate("window.commands.length = 0")
+    await page.get_by_role("button", name="Resume here", exact=True).click()
+    await page.wait_for_function(
+        """window.commands.some(m => m.type === 'restore') &&
+        window.commands.some(m => m.type === 'run' && m.running)"""
+    )
+    await page.wait_for_function("""window.restored &&
+        Math.abs(Number(document.querySelector('#side input[type=range]').value) * 0.36 - 180 -
+        window.restored.runtime.targets[0] * 180 / Math.PI) <= 0.51""")
+    assert not await page.evaluate(
+        "window.commands.some(m => ['state', 'controller', 'reset'].includes(m.type))"
+    ), "timeline resume restarted controller state"
+
+
 async def without_isolation(route: Route) -> None:
     response = await route.fetch()
     headers = {
@@ -154,6 +225,16 @@ async def main() -> None:
             )
             assert await page.evaluate(CLIENT) == isolated, "wrong snapshot transport"
             await experiment(page)
+            try:
+                await timeline_and_tasks(page)
+            except Exception:
+                print(
+                    await page.evaluate(
+                        "({commands:window.commands, errors:document.querySelector('.notice')?.textContent})"
+                    )
+                )
+                print(errors)
+                raise
             assert not errors, errors
             await page.close()
             transport = "shared memory" if isolated else "message fallback"

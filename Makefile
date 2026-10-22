@@ -6,7 +6,7 @@ SHELL := bash
 WASM_SRC := target/wasm32-unknown-unknown/release/motion_core.wasm
 WASM_DST := web/src/wasm/motion_core.wasm
 
-.PHONY: help setup hooks gen gen-check wasm dev build preview test fuzz e2e e2e-smoke lint fmt check bench clean
+.PHONY: help setup hooks gen gen-check wasm dev build preview test fuzz e2e e2e-smoke e2e-profile lint fmt check bench clean
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -53,12 +53,13 @@ fuzz: ## property tests on many random mechanisms (FUZZ_CASES=n, default 1000)
 
 e2e: wasm ## crawl the running app in a headless browser (CHROMIUM=/path/to/chromium)
 e2e-smoke: wasm ## browser transition checks with shared memory and message fallback
-e2e e2e-smoke:
+e2e-profile: wasm ## profile actual browser worker ticks with both snapshot transports
+e2e e2e-smoke e2e-profile:
 	cd web; ./node_modules/.bin/vite --port 5174 --strictPort >/dev/null 2>&1 & pid=$$!; \
 	trap 'kill $$pid 2>/dev/null || true' EXIT; \
 	for _ in $$(seq 100); do curl -sf -o /dev/null http://localhost:5174/ && break; \
 		kill -0 $$pid 2>/dev/null || { echo "vite did not start (port 5174 in use?)"; exit 1; }; sleep 0.1; done; \
-	APP_URL=http://localhost:5174/ uv run -q e2e/$(if $(filter e2e-smoke,$@),transitions,crawl).py
+	APP_URL=http://localhost:5174/ uv run -q e2e/$(if $(filter e2e-profile,$@),profile,$(if $(filter e2e-smoke,$@),transitions,crawl)).py
 
 lint: ## formatters in check mode + linters + type checkers
 	cargo fmt --all --check

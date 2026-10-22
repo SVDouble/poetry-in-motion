@@ -113,3 +113,66 @@ it.each([
   if (canTurn) expect(orientationError).toBeLessThan(0.005);
   else expect(orientationError).toBeCloseTo(0.03, 6);
 });
+
+it('reuses authored parameter candidates, resets runtime overrides, and keeps prepare transactional', () => {
+  const mech = PRESETS['Two-link arm']!();
+  tc.build(encode(mech));
+  tc.core.set_param(0, 3);
+  tc.core.step(50);
+  const before = tc.snapshot().data.slice();
+  mech.bodies[0]!.m = 2;
+  mech.bodies[0]!.l = 0.7;
+  mech.bodies[0]!.q0 = 0.3;
+  const flat = encode(mech);
+  write(flat);
+  expect(tc.core.prepare(flat.length)).toBe(0);
+  expect(tc.core.build_reused()).toBe(1);
+  expect(tc.snapshot().data).toEqual(before);
+  expect(tc.core.commit_build()).toBe(0);
+  expect(tc.core.param_value(0)).toBe(2);
+  expect(tc.core.param_value(2)).toBeCloseTo(0.35);
+  expect(tc.core.param_value(3)).toBeCloseTo((2 * 0.7 * 0.7) / 12);
+  expect(tc.snapshot().v('Q')).toBeCloseTo(0.3);
+  mech.bodies[0]!.mountAngle += 0.1;
+  write(encode(mech));
+  expect(tc.core.prepare(flat.length)).toBe(0);
+  expect(tc.core.build_reused()).toBe(0);
+  tc.core.discard_build();
+});
+
+it('restores full execution checkpoints through WASM and rejects replaced generations and invalid task lists', () => {
+  tc.build(encode(PRESETS['Two-link arm']!()));
+  const kind = tc.controllers().specs.find((s) => s.key === 'mpc')!.id;
+  tc.core.set_controller(0, kind);
+  tc.core.set_controller(1, 2);
+  tc.core.set_param(0, 1.7);
+  const tasks = [0, -2, 0.3, 0, 2];
+  write(tasks);
+  expect(tc.core.set_tasks(tasks.length)).toBe(0);
+  const taskLen = tc.core.tasks();
+  const taskValues = Array.from(new Float64Array(tc.core.memory.buffer, tc.core.tasks_ptr(), taskLen));
+  for (const invalid of [[0, 100, 0.3, 0, 2], [9, -2, 0, 0, 2], [0, -2, 0, 0, -1], [0, -2, NaN, 0, 2], [0]]) {
+    write(invalid);
+    expect(tc.core.set_tasks(invalid.length)).toBe(-1);
+    const len = tc.core.tasks();
+    expect(Array.from(new Float64Array(tc.core.memory.buffer, tc.core.tasks_ptr(), len))).toEqual(taskValues);
+  }
+  tc.core.set_target(0, 0.4);
+  expect(tc.core.target_value(0)).toBe(0.4);
+  expect(tc.core.target_value(2)).toBeNaN();
+  tc.core.step(103);
+  const before = tc.snapshot().data.slice();
+  const saved = tc.core.checkpoint_save();
+  tc.core.step(137);
+  const expected = tc.snapshot().data.slice();
+  const future = tc.core.checkpoint_save();
+  tc.flag('Umax', 1);
+  tc.core.set_controller(1, -1);
+  expect(tc.core.checkpoint_restore(saved)).toBe(0);
+  expect(tc.snapshot().data).toEqual(before);
+  expect(tc.core.checkpoint_restore(future)).toBe(-1);
+  tc.core.step(137);
+  expect(tc.snapshot().data).toEqual(expected);
+  tc.build(encode(PRESETS['Cart-pole']!()));
+  expect(tc.core.checkpoint_restore(saved)).toBe(-1);
+});

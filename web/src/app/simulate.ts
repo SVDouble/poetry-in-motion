@@ -20,11 +20,12 @@ import { type PlotDef, Scope } from '../scope/scope';
 import { Signals } from '../scope/signals';
 import type { SimClient } from '../sim/client';
 import type { Controllers } from '../sim/controllers';
+import type { RuntimeState } from '../sim/protocol';
 import { segmented } from '../ui/widgets';
 import { ControlTab, dock } from './control';
 import { goalsTab, modelTab } from './goals';
 import { ACTUATOR_KEYS, ACTUATOR_LABELS } from './keys';
-import { GOAL_W, pushSettings, type Settings, setSetting, toolTargets } from './settings';
+import { GOAL_W, pushSettings, SETTING_FLAGS, type Settings, setSetting, toolTargets } from './settings';
 
 type SideTab = 'control' | 'goals' | 'eq' | 'model';
 
@@ -77,6 +78,9 @@ export class SimulateStage {
 
   constructor(private readonly s: Shell) {
     s.store.onSlots(() => this.slotsChanged());
+    s.client.onTasks(() => {
+      if (this.active && this.side === 'goals') this.mountSide();
+    });
   }
 
   private get snap() {
@@ -105,6 +109,27 @@ export class SimulateStage {
     pushSettings(this.s.client, this.s.settings);
     store.load(controllers, defaultController(controllers));
     this.scope.clear();
+  }
+
+  /** Adopt checkpoint configuration without replaying mutations into the restored world. */
+  restore(state: RuntimeState): void {
+    for (const [key, flag] of SETTING_FLAGS) this.s.settings[key] = state.flags[flag];
+    this.s.settings.coriolis = state.flags.Coriolis !== 0;
+    this.s.settings.useTool = state.flags.UseTool !== 0;
+    this.pushAt = state.flags.PushOn ? [state.flags.PushX, state.flags.PushY] : null;
+    this.s.store.restore(
+      state.controllers,
+      this.snap.slots.map((s) => s.kind),
+    );
+    this.scope.clear();
+    this.lastPlot = 0;
+    this.stuckSince = Number.NaN;
+    this.lost = false;
+    this.s.resetTrails();
+    if (this.active) {
+      this.mountSide();
+      this.renderDock();
+    }
   }
 
   // ---------------------------------------------------------------- mounting
@@ -399,7 +424,6 @@ export class SimulateStage {
     const axis = jp + b.axisAngle;
     let target = (x - jx) * Math.cos(axis) + (y - jy) * Math.sin(axis);
     if (b.limit > 0) target = Math.max(-b.limit * 0.9, Math.min(b.limit * 0.9, target));
-    mech.bodies[i]!.qTarget = target;
     client.send({ type: 'target', i: coordIndex(mech)[i]!, v: target });
     this.railDragged = true;
   }

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { Revisions } from '../app/revision';
 import { cloneMechanism, PRESETS } from '../model/description';
 import { type Built, SimClient } from './client';
-import type { Layout } from './layout';
+import type { Flag, Layout } from './layout';
 import {
   DATA_OFFSET,
   type FromWorker,
@@ -49,7 +49,17 @@ function observation(generation: number, value: number): Observation {
   };
 }
 function reply(id: number, value = 1): Extract<FromWorker, { type: 'built'; ok: true }> {
-  return { type: 'built', id, ok: true, ...observation(id, value), derivation, controllers, buildMs: 1 };
+  return {
+    type: 'built',
+    id,
+    ok: true,
+    ...observation(id, value),
+    derivation,
+    controllers,
+    buildMs: 1,
+    reused: false,
+    targets: [0, 0],
+  };
 }
 async function installed(worker: FakeWorker, client: SimClient, value = 1): Promise<Built> {
   const promise = client.build([]);
@@ -195,5 +205,49 @@ describe('physics client transitions', () => {
     expect(await waiting).toBe(false);
     worker.receive({ type: 'observed', id, ...observation(0, 9) });
     expect(client.snap.data[0]).toBe(0);
+  });
+  it('settles checkpoint/profile requests on rejection, replacement and worker failure', async () => {
+    const worker = new FakeWorker();
+    const client = new SimClient(worker as unknown as Worker, layout, null);
+    await installed(worker, client);
+    expect(await client.restore(0)).toBeNull();
+    expect(await client.restore(1.5)).toBeNull();
+    expect(await client.profile(0)).toBeNull();
+    expect(await client.profile(5001)).toBeNull();
+    const expired = client.restore(17);
+    const id = (worker.sent.at(-1) as Extract<ToWorker, { type: 'restore' }>).id;
+    worker.receive({ type: 'restoreFailed', id, error: 'expired' });
+    expect(await expired).toBeNull();
+    const superseded = client.restore(18);
+    await installed(worker, client);
+    expect(await superseded).toBeNull();
+    const restoring = client.restore(19);
+    const profiling = client.profile(20);
+    expect(await client.profile(20)).toBeNull();
+    worker.receive({ type: 'error', message: 'worker stopped' });
+    expect(await restoring).toBeNull();
+    expect(await profiling).toBeNull();
+    expect(worker.terminated).toBe(true);
+  });
+  it('acknowledges restore configuration when a newer periodic observation already arrived', async () => {
+    const worker = new FakeWorker();
+    const client = new SimClient(worker as unknown as Worker, layout, null);
+    const built = await installed(worker, client);
+    const waiting = client.restore(1);
+    const id = (worker.sent.at(-1) as Extract<ToWorker, { type: 'restore' }>).id;
+    const older = observation(built.generation, 2);
+    worker.receive({ type: 'snapshot', ...observation(built.generation, 3) });
+    client.pull();
+    const runtime = {
+      params: [],
+      targets: [0.3, 0.6],
+      flags: {} as Record<Flag, number>,
+      controllers: JSON.parse(controllers),
+      tasks: [],
+    };
+    worker.receive({ type: 'restored', id, runtime, ...older });
+    expect(await waiting).toEqual(runtime);
+    expect(client.targets).toEqual([0.3, 0.6]);
+    expect(client.snap.data[0]).toBe(3);
   });
 });
