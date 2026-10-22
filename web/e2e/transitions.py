@@ -156,6 +156,42 @@ async def experiment(page: Page) -> None:
     )
 
 
+async def delayed_marks(page: Page) -> None:
+    """Completed runs may still have plot marks queued when another run or stage takes over."""
+    await page.locator("[data-stage=simulate]").click()
+    await page.locator(".page-picker").click()
+    await page.locator(".ctrl-menu-item").filter(has=page.get_by_text("Passive", exact=True)).click()
+    item = page.locator(".lab-item").filter(has=page.get_by_text("Where does the energy go?", exact=True))
+    await page.evaluate("""async () => {
+      const {Scope} = await import('/src/scope/scope.ts');
+      const timeout = window.setTimeout;
+      const mark = Scope.prototype.mark;
+      window.delayedMarks = []; window.marked = [];
+      window.setTimeout = (fn, ms, ...args) => ms === 30
+        ? (window.delayedMarks.push(() => fn(...args)), 0) : timeout(fn, ms, ...args);
+      Scope.prototype.mark = function(...args) {
+        window.marked.push(args[0]); return mark.apply(this, args);
+      };
+      window.restoreMarkHooks = () => { window.setTimeout = timeout; Scope.prototype.mark = mark; };
+    }""")
+    try:
+        await item.locator("button").click()
+        await page.wait_for_function("window.delayedMarks.length === 1")
+        await item.locator("button").click()  # supersede a completed run whose mark is still pending
+        await page.wait_for_function("window.delayedMarks.length === 2")
+        await page.evaluate("window.delayedMarks.shift()()")
+        assert await page.evaluate("window.marked") == [], "old run marked the newer experiment"
+        await page.evaluate("window.delayedMarks.shift()()")
+        assert await page.evaluate("window.marked") == ["kick"], "completed run lost its own delayed mark"
+        await item.locator("button").click()
+        await page.wait_for_function("window.delayedMarks.length === 1")
+        await page.locator("[data-stage=build]").click()
+        await page.evaluate("window.delayedMarks.shift()()")
+        assert await page.evaluate("window.marked") == ["kick"], "old run marked after leaving the stage"
+    finally:
+        await page.evaluate("window.restoreMarkHooks()")
+
+
 async def timeline_and_tasks(page: Page) -> None:
     await page.locator("[data-stage=simulate]").click()
     await page.locator(".side-head .segmented button").filter(has_text="Goals").click()
@@ -225,6 +261,7 @@ async def main() -> None:
             )
             assert await page.evaluate(CLIENT) == isolated, "wrong snapshot transport"
             await experiment(page)
+            await delayed_marks(page)
             try:
                 await timeline_and_tasks(page)
             except Exception:

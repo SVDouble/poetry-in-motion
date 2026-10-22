@@ -131,7 +131,8 @@ impl World {
         {
             return false;
         }
-        self.update(|s| s.set_param(i, v))
+        self.each(|s| s.apply_param(i, v));
+        true
     }
     /// Validate the entire list before installing it in any slot.
     pub fn set_tasks(&mut self, flat: &[f64]) -> bool {

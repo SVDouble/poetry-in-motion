@@ -25,6 +25,11 @@ build, observation, restore and profiling requests and disables further commands
 Experiments own an abort scope and generation. Physical waits advance on simulation time, remain pending
 while paused, and acknowledge preceding commands. Leaving the stage, editing, rebuilding or replacing a
 run cancels it and synchronously releases its push before a new owner starts.
+The same abort signal guards asynchronous actions and delayed plot marks; a completed run keeps its
+signal until cancellation so its queued marks cannot spill into the next run.
+
+Physical parameter edits preflight every active slot before changing any slot's parameters or budget.
+Application then reuses that validation rather than repeating the physical checks.
 
 ## Core execution
 
@@ -35,6 +40,7 @@ and describes the topology. Each `Tape` contains three kinds of data:
 - `Arc<Coefficients>`: folded/merged physical coefficients; setting parameters replaces them for that tape.
 - `Workspace`: private harmonic, monomial and state evaluation scratch.
 
+The compiler's temporary harmonic table is discarded once runtime angle indices are built.
 Derivation text is also shared. Model description/topology arrays remain small owned copies. Slot states,
 reference/controller memory and evaluation scratch never alias. This allows future parameter divergence
 without silently changing another slot.

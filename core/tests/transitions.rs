@@ -127,6 +127,34 @@ fn invalid_native_descriptions_and_live_edits_do_not_change_a_valid_world() {
 }
 
 #[test]
+fn parameter_edits_preflight_every_slot_before_changing_any_state() {
+    let mut w = world();
+    // The shadow keeps a finite high-energy state while the primary returns to rest.
+    let q = w.primary().q[0];
+    assert!(w.primary_mut().set_state(0, q, 1e100));
+    w.set_controller(1, Some(Kind::Passive));
+    assert!(w.primary_mut().set_state(0, q, 0.0));
+    let before = w.publish().to_vec();
+    let budgets = [w.primary().budget, w.slot(1).unwrap().budget];
+    // This mass is valid at rest, but overflows the shadow's kinetic energy.
+    assert!(w.primary_mut().can_set_param(0, 1e150));
+    assert!(!w.set_param(0, 1e150));
+    assert_eq!(w.publish(), before);
+    for (slot, budget) in budgets.into_iter().enumerate() {
+        let s = w.slot(slot).unwrap();
+        assert_eq!(s.p[0], 1.0);
+        assert_eq!(s.budget.e0, budget.e0);
+        assert_eq!(s.budget.work, budget.work);
+    }
+    assert!(w.set_param(0, 2.4));
+    assert_eq!(w.primary().p[0], 2.4);
+    assert_eq!(w.slot(1).unwrap().p[0], 2.4);
+    assert!(w.primary_mut().set_param(0, 1.0)); // standalone Sim uses the checked path too
+    assert!(!w.primary_mut().set_param(0, -1.0));
+    assert_eq!(w.primary().p[0], 1.0);
+}
+
+#[test]
 fn point_masses_zero_gravity_and_massless_fixed_bodies_are_valid() {
     let mut desc = presets::arm2();
     desc.bodies.truncate(1);

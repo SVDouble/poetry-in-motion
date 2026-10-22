@@ -32,7 +32,6 @@ struct Hot {
 /// Compiled symbolic tables, shared by all slot clones. No evaluation state lives here.
 #[derive(Debug)]
 struct Program {
-    harm: Vec<(bool, Vec<(usize, f64)>)>,
     angles: Vec<Vec<(usize, f64)>>,
     harm_angle: Vec<(u32, bool)>,
     smono: Vec<Vec<(usize, i32)>>,
@@ -99,8 +98,8 @@ impl Tape {
         let mut harm_ix: HashMap<Harmonic, u32> = HashMap::new();
         let mut s_ix: HashMap<Vec<(usize, i32)>, u32> = HashMap::new();
         let mut p_ix: HashMap<Vec<(usize, i32)>, u32> = HashMap::new();
+        let mut harmonics = Vec::new();
         let mut tape = Program {
-            harm: Vec::new(),
             smono: Vec::new(),
             pmono: Vec::new(),
             terms: Vec::new(),
@@ -124,15 +123,15 @@ impl Tape {
                     }
                 }
                 let h = *harm_ix.entry(k.h.clone()).or_insert_with(|| {
-                    let sparse =
+                    let sparse: Vec<_> =
                         k.h.k
                             .iter()
                             .enumerate()
                             .filter(|(_, x)| **x != 0)
                             .map(|(j, &x)| (j, f64::from(x)))
                             .collect();
-                    tape.harm.push((k.h.sin, sparse));
-                    (tape.harm.len() - 1) as u32
+                    harmonics.push((k.h.sin, sparse));
+                    (harmonics.len() - 1) as u32
                 });
                 let sm = *s_ix.entry(sm.clone()).or_insert_with(|| {
                     tape.smono.push(sm);
@@ -147,9 +146,8 @@ impl Tape {
             tape.outputs.push((start, tape.terms.len() as u32));
         }
         // sin and cos of one angle come from one `sin_cos`
-        for (sin, ks) in &tape.harm {
-            let key = |a: &Vec<(usize, f64)>| a.iter().map(|&(j, k)| (j, k.to_bits())).collect::<Vec<_>>();
-            let at = tape.angles.iter().position(|a| key(a) == key(ks)).unwrap_or_else(|| {
+        for (sin, ks) in &harmonics {
+            let at = tape.angles.iter().position(|a| a == ks).unwrap_or_else(|| {
                 tape.angles.push(ks.clone());
                 tape.angles.len() - 1
             });
@@ -157,7 +155,7 @@ impl Tape {
         }
         let work = Workspace {
             av: vec![(0.0, 1.0); tape.angles.len()],
-            hv: vec![0.0; tape.harm.len()],
+            hv: vec![0.0; harmonics.len()],
             sv: vec![0.0; tape.smono.len()],
             state: vec![0.0; 2 * n],
         };
@@ -201,7 +199,7 @@ impl Tape {
     #[must_use]
     pub fn stats(&self) -> (usize, usize, usize, usize, usize) {
         (
-            self.program.harm.len(),
+            self.program.harm_angle.len(),
             self.program.angles.len(),
             self.program.smono.len(),
             self.program.terms.len(),

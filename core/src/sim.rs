@@ -159,7 +159,6 @@ impl Sim {
             p.config.goals.elbow,
         ] = s.weights;
         self.invalidate(Invalidated::Plan);
-        self.invalidate(Invalidated::Controller);
     }
 
     pub fn set_dt(&mut self, dt: f64) -> bool {
@@ -314,11 +313,16 @@ impl Sim {
         if !self.can_set_param(i, v) {
             return false;
         }
+        self.apply_param(i, v);
+        true
+    }
+
+    /// Apply an edit after preflight in this slot. World preflights every slot before applying any edit.
+    pub(crate) fn apply_param(&mut self, i: usize, v: f64) {
         self.p[i] = v;
         self.model.set_params(&self.p);
         self.invalidate(Invalidated::Plan);
         self.restart_budget();
-        true
     }
 
     pub fn set_target(&mut self, i: usize, v: f64) -> bool {

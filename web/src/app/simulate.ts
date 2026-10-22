@@ -67,7 +67,7 @@ export class SimulateStage {
   private dockCollapsed = false;
   private pushAt: [number, number] | null = null;
   private readonly held = new Set<string>();
-  private runToken = 0;
+  /** Keep the last run's signal until cancellation also invalidates its delayed plot marks. */
   private runAbort: AbortController | null = null;
   private lastPlot = 0;
   /** Simulated time since the primary controller has been saturated far from its target (NaN: it is not). */
@@ -269,7 +269,6 @@ export class SimulateStage {
 
   /** Cancel synchronously: an old async action must never release a newer owner's push. */
   cancelRun(): void {
-    this.runToken++;
     this.runAbort?.abort(new Error('Experiment canceled'));
     this.runAbort = null;
     this.release();
@@ -282,7 +281,6 @@ export class SimulateStage {
     if (!d) return;
     if (why) return this.s.flash(why);
     this.cancelRun();
-    const token = this.runToken;
     const abort = new AbortController();
     this.runAbort = abort;
     const generation = this.s.client.generation;
@@ -329,7 +327,7 @@ export class SimulateStage {
       mark: (event) => {
         if (!MARKED.has(event)) return;
         window.setTimeout(() => {
-          if (token === this.runToken) this.scope.mark(event, this.snap.t);
+          if (!abort.signal.aborted) this.scope.mark(event, this.snap.t);
         }, 30);
       },
     };
@@ -338,19 +336,12 @@ export class SimulateStage {
         port,
         kind,
         e,
-        () =>
-          token === this.runToken &&
-          generation === client.generation &&
-          !abort.signal.aborted &&
-          !client.failure,
+        () => generation === client.generation && !abort.signal.aborted && !client.failure,
       );
     } catch (error) {
       if (!abort.signal.aborted) this.s.flash(String(error));
     } finally {
-      if (token === this.runToken) {
-        this.runAbort = null;
-        this.release();
-      }
+      if (!abort.signal.aborted) this.release();
     }
   }
 
