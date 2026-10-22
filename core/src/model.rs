@@ -1,6 +1,8 @@
 //! A built mechanism: the symbolic derivation compiled into numeric tapes plus everything the simulator
 //! and controllers need to know about it.
 
+use std::sync::Arc;
+
 use crate::MAXN;
 use crate::cas::{Angle, Expr};
 use crate::doc;
@@ -71,7 +73,7 @@ pub struct Model {
     pub nc: usize,
     pub ncon: usize,
     /// LaTeX derivation as JSON (see `doc`).
-    pub derivation: String,
+    pub derivation: Arc<str>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -260,7 +262,7 @@ impl Model {
             element_values: d.desc.elements.iter().map(|e| [e.k, e.l0, e.d]).collect(),
             nc: d.desc.closures.len(),
             ncon: d.phi.len(),
-            derivation: doc::json(d),
+            derivation: doc::json(d).into(),
             defaults,
         };
         model.set_params(&model.defaults.clone());
