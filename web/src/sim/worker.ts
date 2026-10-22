@@ -5,40 +5,16 @@
  * when cross-origin isolation is missing.
  */
 import wasmUrl from '../wasm/motion_core.wasm?url';
+import type { Core } from './core';
 import { parseLayout } from './layout';
-import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from './protocol';
-
-interface Core {
-  memory: WebAssembly.Memory;
-  desc_buffer(len: number): number;
-  prepare(len: number): number;
-  commit_build(): number;
-  discard_build(): void;
-  error_ptr(): number;
-  error_len(): number;
-  derivation_ptr(): number;
-  derivation_len(): number;
-  reset(): void;
-  step(n: number): void;
-  bench(n: number): void;
-  publish(): void;
-  set_param(i: number, v: number): number;
-  set_controller(slot: number, kind: number): void;
-  set_ctrl_param(kind: number, i: number, v: number): number;
-  param_value(i: number): number;
-  sync_shadows(): void;
-  controllers(): number;
-  controllers_ptr(): number;
-  set_target(i: number, v: number): number;
-  set_input(i: number, v: number): number;
-  set_flag(id: number, v: number): number;
-  set_state(i: number, q: number, qd: number): number;
-  kick(i: number, v: number): number;
-  out_ptr(): number;
-  out_len(): number;
-  layout_ptr(): number;
-  layout_len(): number;
-}
+import {
+  DATA_OFFSET,
+  type FromWorker,
+  STATS,
+  STATS_OFFSET,
+  type ToWorker,
+  TRANSPORT_VERSION,
+} from './protocol';
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (msg: FromWorker, transfer: Transferable[] = []) => scope.postMessage(msg, transfer);
@@ -303,7 +279,7 @@ load()
         data: new Float64Array(sab, DATA_OFFSET, c.out_len()),
       };
     }
-    post({ type: 'ready', layout, shared: sab });
+    post({ type: 'ready', version: TRANSPORT_VERSION, layout, shared: sab });
     for (const m of queue.splice(0)) handle(c, m);
     setInterval(() => {
       try {

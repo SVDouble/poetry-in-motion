@@ -12,29 +12,8 @@ import { presets } from '../scope/presets';
 import { Signals } from '../scope/signals';
 import type { SimClient } from './client';
 import { type Controllers, parseControllers } from './controllers';
+import type { Core } from './core';
 import { type Layout, parseLayout, Snapshot } from './layout';
-
-interface Core {
-  memory: WebAssembly.Memory;
-  desc_buffer(len: number): number;
-  build(len: number): number;
-  error_ptr(): number;
-  error_len(): number;
-  derivation_ptr(): number;
-  derivation_len(): number;
-  reset(): void;
-  step(n: number): void;
-  set_controller(slot: number, kind: number): void;
-  set_ctrl_param(kind: number, i: number, v: number): void;
-  controllers(): number;
-  controllers_ptr(): number;
-  set_state(i: number, q: number, qd: number): void;
-  param_count(): number;
-  out_ptr(): number;
-  out_len(): number;
-  layout_ptr(): number;
-  layout_len(): number;
-}
 
 let core: Core;
 let layout: Layout;

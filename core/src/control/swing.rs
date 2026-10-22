@@ -1,7 +1,7 @@
 //! Energy-based swing-up for underactuated mechanisms (Åström–Furuta / Spong), with an LQR catch near q*.
 
 use super::optimal::Lqr;
-use super::{Controller, Ctx, Telemetry};
+use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::{MAXK, VecN, lstsq};
 use crate::model::Model;
@@ -29,7 +29,7 @@ impl Controller for SwingUp {
 
     fn design(&mut self, plan: &Plan, model: &mut Model, _p: &[f64], dt: f64) {
         // the catch uses the LQR with its default weights
-        self.lqr.design(plan, model, &super::Kind::Lqr.defaults(), dt);
+        self.lqr.design(plan, model, &Kind::Lqr.defaults(), dt);
         self.energy_ref = plan.e_ref;
         self.coupling = 0.0;
     }
@@ -60,7 +60,8 @@ impl Controller for SwingUp {
         let watched: Vec<usize> = if model.closed() { (0..n).collect() } else { un };
         let err = |i: usize| Plan::error(model, i, q[i], plan.q_star[i]).abs();
         // Leave the catch region at twice its entry threshold to avoid chattering.
-        let (reach, speed) = (c.params[4], c.params[5]);
+        let (reach, speed) =
+            (Kind::SwingUp.param(c.params, "catch"), Kind::SwingUp.param(c.params, "catch_speed"));
         let near = watched.iter().all(|&i| err(i) < reach && qd[i].abs() < speed);
         let far = watched.iter().any(|&i| err(i) > 2.0 * reach);
         if self.phase == CATCHING && far || self.phase != CATCHING && !near {
@@ -90,7 +91,12 @@ impl SwingUp {
     fn pump(&self, plan: &Plan, model: &Model, c: &Ctx<'_>) -> VecN {
         let (q, qd, t) = (c.q, c.qd, c.terms);
         let n = model.n;
-        let (ke, kc, kv, a_max) = (c.params[0], c.params[1], c.params[2], c.params[3]);
+        let (ke, kc, kv, a_max) = (
+            Kind::SwingUp.param(c.params, "ke"),
+            Kind::SwingUp.param(c.params, "kc"),
+            Kind::SwingUp.param(c.params, "kv"),
+            Kind::SwingUp.param(c.params, "amax"),
+        );
         let (act, un) = (&model.actuated, &model.unactuated);
         let at_rest = qd[..n].iter().all(|v| v.abs() < 1e-3);
         let mut v = [0.0; MAXN];

@@ -6,41 +6,9 @@
 import { readFile } from 'node:fs/promises';
 import type { Derivation } from '../model/derivation';
 import { type Controllers, parseControllers } from './controllers';
+import type { Core } from './core';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
 import type { ToWorker } from './protocol';
-
-export interface Core {
-  memory: WebAssembly.Memory;
-  desc_buffer(len: number): number;
-  build(len: number): number;
-  prepare(len: number): number;
-  commit_build(): number;
-  discard_build(): void;
-  error_ptr(): number;
-  error_len(): number;
-  derivation_ptr(): number;
-  derivation_len(): number;
-  controllers(): number;
-  controllers_ptr(): number;
-  reset(): void;
-  step(n: number): void;
-  publish(): void;
-  set_dt(dt: number): number;
-  set_param(i: number, v: number): number;
-  set_controller(slot: number, kind: number): void;
-  set_ctrl_param(kind: number, i: number, v: number): number;
-  sync_shadows(): void;
-  set_target(i: number, v: number): number;
-  set_input(i: number, v: number): number;
-  set_flag(id: number, v: number): number;
-  set_state(i: number, q: number, qd: number): number;
-  kick(i: number, v: number): number;
-  param_count(): number;
-  out_ptr(): number;
-  out_len(): number;
-  layout_ptr(): number;
-  layout_len(): number;
-}
 
 export class TestCore {
   private constructor(
@@ -140,3 +108,5 @@ export class TestCore {
     }
   }
 }
+
+export type { Core } from './core';

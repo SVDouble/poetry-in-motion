@@ -16,6 +16,8 @@ use crate::sim::{DT, UMAX};
 pub const MAXF: usize = MAXB + 2;
 /// Simulation slots: the primary and up to four shadows.
 pub const SLOTS: usize = 5;
+/// Incompatible snapshot/command ABI changes increment this, independently of document versions.
+pub const ABI_VERSION: u32 = 1;
 
 macro_rules! layout {
     ($module:ident, $fields:ident; $($(#[$doc:meta])* $name:ident : $len:expr),* $(,)?) => {
@@ -268,7 +270,7 @@ pub fn json() -> String {
         "\"version\":{DESC_VERSION:?},\"header\":{HEADER},\"perBody\":{PER_BODY},\"perClosure\":{PER_CLOSURE},\"perElement\":{PER_ELEMENT},\"paramsPerBody\":{PARAMS_PER_BODY},\"maxBodies\":{MAXB},\"maxDof\":{MAXN},\"maxClosures\":{MAXC},\"maxElements\":{MAXE}"
     );
     format!(
-        "{{\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"slots\":{SLOTS},\"slotLen\":{},\"dt\":{DT:?},\"fields\":{{{}}},\"slot\":{{{}}},\"flags\":{{{}}},\"defaults\":{{{}}},\"limits\":{{{limits}}}}}",
+        "{{\"abiVersion\":{ABI_VERSION},\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"slots\":{SLOTS},\"slotLen\":{},\"dt\":{DT:?},\"fields\":{{{}}},\"slot\":{{{}}},\"flags\":{{{}}},\"defaults\":{{{}}},\"limits\":{{{limits}}}}}",
         off::LEN,
         slot::LEN,
         fields_json(FIELDS),

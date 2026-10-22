@@ -1,7 +1,7 @@
 //! Joint-space controllers: PD, PD + gravity compensation, computed torque and passivity-based tracking.
 //! All of them work with loops: inputs come from the constrained inverse dynamics `B u − Aᵀλ = f`.
 
-use super::{Controller, Ctx, Telemetry};
+use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::{MatN, VecN, inverse_dynamics, mat_vec};
 use crate::model::Model;
@@ -43,7 +43,7 @@ impl Pd {
 impl Controller for Pd {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
-        let (wn, zeta) = (c.params[0], c.params[1]);
+        let (wn, zeta) = (Kind::Pd.param(c.params, "wn"), Kind::Pd.param(c.params, "zeta"));
         let (mut e, mut ed) = errors(plan, model, c);
         if c.k.is_none() {
             // an open chain: PD is a collocated servo on the actuated joints; feeding the passive joints'
@@ -91,7 +91,8 @@ pub struct ComputedTorque {
 impl Controller for ComputedTorque {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
-        let (wn, zeta) = (c.params[0], c.params[1]);
+        let (wn, zeta) =
+            (Kind::ComputedTorque.param(c.params, "wn"), Kind::ComputedTorque.param(c.params, "zeta"));
         let (kp, kv) = (wn * wn, 2.0 * zeta * wn);
         let (e, ed) = errors(plan, model, c);
         let v: VecN = core::array::from_fn(|i| plan.qdd_ref[i] + kv * ed[i] + kp * e[i]);
@@ -127,7 +128,7 @@ pub struct Passivity {
 impl Controller for Passivity {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
-        let (lambda, kd) = (c.params[0], c.params[1]);
+        let (lambda, kd) = (Kind::Passivity.param(c.params, "lambda"), Kind::Passivity.param(c.params, "kd"));
         let (e, ed) = errors(plan, model, c);
         let qd_r: VecN = core::array::from_fn(|i| plan.qd_ref[i] + lambda * e[i]);
         let qdd_r: VecN = core::array::from_fn(|i| plan.qdd_ref[i] + lambda * ed[i]);

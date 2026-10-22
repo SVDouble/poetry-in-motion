@@ -5,7 +5,7 @@
 //! orientation, then the elbow, then posture and manipulability. Each level acts only in the null space of
 //! the levels above it, in the metric of M (dynamically consistent), so it cannot disturb them.
 
-use super::{Controller, Ctx, Telemetry};
+use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::{Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
@@ -319,7 +319,11 @@ impl Controller for Vmc {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
         let Some(tool) = c.tool else { return [0.0; MAXN] };
-        let (k, zeta, k_null) = (c.params[0], c.params[1], c.params[2]);
+        let (k, zeta, k_null) = (
+            Kind::Vmc.param(c.params, "k"),
+            Kind::Vmc.param(c.params, "zeta"),
+            Kind::Vmc.param(c.params, "null"),
+        );
         let d = 2.0 * zeta * (k * task_mass(n, c.terms, &tool.jp)).sqrt();
         let (xd, xd_dot, _) = plan.task_ref();
         self.x = tool.p;
@@ -526,7 +530,12 @@ impl Controller for Impedance {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
         let Some(tool) = c.tool else { return [0.0; MAXN] };
-        let (mass, k, zeta, k_null) = (c.params[0], c.params[1], c.params[2], c.params[3]);
+        let (mass, k, zeta, k_null) = (
+            Kind::Impedance.param(c.params, "mass"),
+            Kind::Impedance.param(c.params, "k"),
+            Kind::Impedance.param(c.params, "zeta"),
+            Kind::Impedance.param(c.params, "null"),
+        );
         let d = 2.0 * zeta * (k * mass).sqrt();
         let (xd, xd_dot, xd_ddot) = plan.task_ref();
         self.x = tool.p;
@@ -584,7 +593,12 @@ impl Controller for Admittance {
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
         let n = model.n;
         let Some(tool) = c.tool else { return [0.0; MAXN] };
-        let (mass, k, zeta, wn) = (c.params[0], c.params[1], c.params[2], c.params[3]);
+        let (mass, k, zeta, wn) = (
+            Kind::Admittance.param(c.params, "mass"),
+            Kind::Admittance.param(c.params, "k"),
+            Kind::Admittance.param(c.params, "zeta"),
+            Kind::Admittance.param(c.params, "wn_in"),
+        );
         let d = 2.0 * zeta * (k.max(1.0) * mass).sqrt();
         let (xd, xd_dot, _) = plan.task_ref();
         let mut xv = self.xv.unwrap_or(tool.p);

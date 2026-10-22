@@ -1,7 +1,7 @@
 //! Optimal control about the equilibrium q*: infinite-horizon LQR and receding-horizon MPC with input bounds.
 //! Both use the plan's linearisation in tangent coordinates x = (ξ, ξ̇), so they work with loops too.
 
-use super::{Controller, Ctx, Telemetry};
+use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::VecN;
 use crate::lqr::{c2d, dare, dlqr};
@@ -66,7 +66,12 @@ impl Controller for Lqr {
             .as_ref()
             .and_then(|l| {
                 let (ad, bd) = c2d(&l.a, &l.b, dt);
-                let (q, rm) = weights(plan, l, (p[0], p[1], p[2]), dt);
+                let (q, rm) = weights(
+                    plan,
+                    l,
+                    (Kind::Lqr.param(p, "qx"), Kind::Lqr.param(p, "qv"), Kind::Lqr.param(p, "r")),
+                    dt,
+                );
                 dlqr(&ad, &bd, &q, &rm)
             })
             .filter(|k| k.max_abs().is_finite());
@@ -80,7 +85,11 @@ impl Controller for Lqr {
         for a in 0..model.nu {
             u[a] = plan.u_ff[a] - (0..x.len()).map(|j| k[(a, j)] * x[j]).sum::<f64>();
         }
-        let (qx, qv, rw) = (c.params[0], c.params[1], c.params[2]);
+        let (qx, qv, rw) = (
+            Kind::Lqr.param(c.params, "qx"),
+            Kind::Lqr.param(c.params, "qv"),
+            Kind::Lqr.param(c.params, "r"),
+        );
         self.cost = (0..r).map(|i| qx * x[i] * x[i] + qv * x[r + i] * x[r + i]).sum::<f64>()
             + (0..model.nu).map(|a| rw * (u[a] - plan.u_ff[a]).powi(2)).sum::<f64>();
         u
@@ -140,15 +149,16 @@ impl Controller for Mpc {
     }
 
     fn design(&mut self, plan: &Plan, model: &mut Model, p: &[f64], dt: f64) {
+        let get = |key| Kind::Mpc.param(p, key);
         let Some(l) = &plan.lin else {
             self.steps = 0;
             return;
         };
         let (nx, nu) = (l.a.rows, model.nu);
-        let step = p[1].max(dt);
-        let steps = (p[0].round() as usize).clamp(1, (MAX_VARS / nu.max(1)).max(1));
+        let step = get("step").max(dt);
+        let steps = (get("horizon").round() as usize).clamp(1, (MAX_VARS / nu.max(1)).max(1));
         let (ad, bd) = c2d(&l.a, &l.b, step);
-        let (q, r) = weights(plan, l, (p[2], p[3], p[4]), step);
+        let (q, r) = weights(plan, l, (get("qx"), get("qv"), get("r")), step);
         let terminal = dare(&ad, &bd, &q, &r).unwrap_or_else(|| q.clone());
 
         // prediction matrices: x_{k+1} = Φ_k x₀ + Σ_{j ≤ k} Γ_{k,j} u_j
@@ -267,7 +277,7 @@ impl Controller for Mpc {
                     self.du[a] = v.clamp(lo[a], hi[a]);
                 }
             }
-            let iters = c.params[5].round() as usize;
+            let iters = Kind::Mpc.param(c.params, "iters").round() as usize;
             self.iterations =
                 qp::solve_box(&self.h, &g, &lo, &hi, self.lip, &mut self.du, &mut self.scratch, iters);
             if !self.du.iter().all(|v| v.is_finite()) {

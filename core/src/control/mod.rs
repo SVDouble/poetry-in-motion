@@ -100,6 +100,17 @@ impl Kind {
         self.spec().params.iter().map(|p| p.default).collect()
     }
 
+    /// Named parameter access follows the registry's order, keeping compact ABI arrays private to it.
+    /// Literal keys and kinds are constant-folded by release builds.
+    /// # Panics
+    /// If the controller implementation requests an undeclared key or a truncated parameter vector.
+    #[inline]
+    #[must_use]
+    pub fn param(self, values: &[f64], key: &str) -> f64 {
+        let index = self.spec().params.iter().position(|p| p.key == key).expect("undeclared parameter");
+        values[index]
+    }
+
     /// A fresh controller of this kind.
     #[must_use]
     pub fn create(self) -> Box<dyn Controller> {

@@ -18,10 +18,12 @@ setup: hooks ## install all dependencies (uv, npm) and git hooks
 hooks: ## use the repo's git hooks (format + lint before commit)
 	git config core.hooksPath .githooks
 
-gen: ## regenerate the SymPy oracle kernels used by the Rust tests
+gen: ## regenerate Rust/browser contracts and the independent SymPy oracle
+	cargo run -q -p motion-core --example contracts
 	cd sym && uv run motion-derive
 
 gen-check: ## fail if generated code is stale
+	cargo run -q -p motion-core --example contracts -- --check
 	cd sym && uv run motion-derive --check
 
 wasm: ## build the physics core for the browser

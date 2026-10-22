@@ -1,3 +1,6 @@
+/** Incompatible worker messages or shared-memory headers increment this independently of the core ABI. */
+export const TRANSPORT_VERSION = 1;
+
 /** Messages between the UI thread and the physics worker. */
 export type ToWorker = (
   | { type: 'build'; id: number; desc: number[] }
@@ -27,7 +30,7 @@ export interface Observation {
 }
 
 export type FromWorker =
-  | { type: 'ready'; layout: string; shared: SharedArrayBuffer | null }
+  | { type: 'ready'; version: number; layout: string; shared: SharedArrayBuffer | null }
   | { type: 'prepared'; id: number }
   | ({
       type: 'built';

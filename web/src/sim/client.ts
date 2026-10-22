@@ -1,7 +1,14 @@
 import type { Derivation } from '../model/derivation';
 import { type Controllers, parseControllers } from './controllers';
 import { type Flag, type Layout, parseLayout, Snapshot } from './layout';
-import { type FromWorker, newerSequence, type Observation, STATS, type ToWorker } from './protocol';
+import {
+  type FromWorker,
+  newerSequence,
+  type Observation,
+  STATS,
+  type ToWorker,
+  TRANSPORT_VERSION,
+} from './protocol';
 import { SharedReader } from './shared';
 
 export interface SimStats {
@@ -102,6 +109,8 @@ export class SimClient {
       const onMessage = (e: MessageEvent<FromWorker>) => {
         if (e.data.type === 'ready') {
           try {
+            if (e.data.version !== TRANSPORT_VERSION)
+              throw new Error('Incompatible physics worker transport');
             const layout = parseLayout(e.data.layout);
             worker.removeEventListener('message', onMessage);
             worker.removeEventListener('error', onError);

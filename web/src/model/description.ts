@@ -1,3 +1,5 @@
+import { LIMITS } from '../generated/contracts';
+
 /**
  * The mechanism document edited by the builder, its presets, and its flat encoding for the wasm core
  * (`core/src/mech.rs::Desc::parse` — keep the two in sync).
@@ -76,13 +78,13 @@ export interface Mechanism {
   tool: number;
 }
 
-export const MAX_BODIES = 8;
-export const MAX_DOF = 7;
-export const MAX_CLOSURES = 4;
-export const DESC_VERSION = 4;
-export const MAX_ELEMENTS = 8;
-export const PER_BODY = 18;
-export const PARAMS_PER_BODY = 5;
+export const MAX_BODIES = LIMITS.maxBodies;
+export const MAX_DOF = LIMITS.maxDof;
+export const MAX_CLOSURES = LIMITS.maxClosures;
+export const DESC_VERSION = LIMITS.version;
+export const MAX_ELEMENTS = LIMITS.maxElements;
+export const PER_BODY = LIMITS.perBody;
+export const PARAMS_PER_BODY = LIMITS.paramsPerBody;
 
 /** Keep r and I consistent with a uniform rod when requested. */
 /** Nothing yet: the ground and gravity, to build on from scratch. */

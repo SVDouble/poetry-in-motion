@@ -3,123 +3,18 @@
  * arrives as JSON; `parseLayout` validates that every field this UI relies on exists.
  */
 
-export const FIELDS = [
-  'TIME',
-  'STEPS',
-  'NQ',
-  'NU',
-  'KIND',
-  'PHASE',
-  'Q',
-  'QD',
-  'QDD',
-  'U',
-  'TAU',
-  'TAU_EXT',
-  'M',
-  'C',
-  'N',
-  'DV',
-  'MQDD',
-  'CQD',
-  'MDOT',
-  'ENERGY',
-  'POWER',
-  'DISSIPATION',
-  'SKEW',
-  'DET_M',
-  'WORK',
-  'E0',
-  'BUDGET',
-  'EIG_M',
-  'FRAMES',
-  'COMS',
-  'TOOL_P',
-  'JP',
-  'JS',
-  'LIN_A',
-  'LIN_B',
-  'U_FF',
-  'EQ_RESIDUAL',
-  'DOF',
-  'CT_OK',
-  'TARGET',
-  'USE_TOOL',
-  'REACHABLE',
-  'Q_TARGET',
-  'Q_REF',
-  'QD_REF',
-  'X_REF',
-  'FEXT',
-  'MANIPULABILITY',
-  'UMAX',
-  'GOALS',
-  'NC',
-  'NCON',
-  'CONSTRAINT',
-  'LAMBDA',
-  'AT_LAMBDA',
-  'VCOM',
-  'ACOM',
-  'OMEGA',
-  'ALPHA',
-  'ELEMENT_F',
-  'JCOM',
-  'SLOT',
-] as const;
+import {
+  ABI_VERSION,
+  DEFAULT_FLAGS,
+  FIELDS,
+  FIELDS_LENGTHS,
+  FLAGS,
+  LIMITS,
+  SLOT_FIELDS,
+  SLOT_FIELDS_LENGTHS,
+} from '../generated/contracts';
 
-/** Fields of one slot block (primary and shadows). */
-export const SLOT_FIELDS = [
-  'KIND',
-  'PHASE',
-  'ERR_Q',
-  'ERR_X',
-  'EFFORT',
-  'ENERGY',
-  'Q',
-  'U',
-  'FRAMES',
-  'TOOL',
-  'TELEMETRY',
-] as const;
-
-export const FLAGS = [
-  'Coriolis',
-  'Umax',
-  'TargetX',
-  'TargetY',
-  'UseTool',
-  'RefWn',
-  'PushX',
-  'PushY',
-  'PushOn',
-  'PushK',
-  'Posture',
-  'Manipulability',
-  'Orient',
-  'OrientTarget',
-  'Elbow',
-  'ElbowX',
-  'ElbowY',
-  'ElbowBody',
-  'NullDamping',
-  'DlsEps',
-  'DlsMax',
-  'DlsLowerEps',
-  'DlsLowerMax',
-  'FadeLo',
-  'FadeHi',
-  'ReachMargin',
-  'IkStep',
-  'IkDamping',
-  'PushMax',
-  'StopK',
-  'StopC',
-  'StopDepth',
-  'Baumgarte',
-  'MotorSpeed',
-  'Lead',
-] as const;
+export { FIELDS, FLAGS, SLOT_FIELDS } from '../generated/contracts';
 
 export type Field = (typeof FIELDS)[number];
 export type SlotField = (typeof SLOT_FIELDS)[number];
@@ -156,6 +51,7 @@ export interface Layout {
 }
 
 interface RawLayout {
+  abiVersion: number;
   len: number;
   dt: number;
   defaults: Partial<Record<Flag, number>>;
@@ -168,42 +64,55 @@ interface RawLayout {
   flags: Record<string, number>;
 }
 
-function pick<K extends string>(
-  keys: readonly K[],
-  raw: Record<string, unknown>,
-  what: string,
-  at: (v: never) => number,
-) {
-  const out = {} as Record<K, number>;
-  for (const k of keys) {
-    const v = raw[k];
-    if (v === undefined) throw new Error(`snapshot layout is missing ${what} ${k} — rebuild the wasm core`);
-    out[k] = at(v as never);
-  }
-  return out;
+function invalid(what: string): never {
+  throw new Error(`Invalid core contract: ${what} — rebuild the wasm core`);
 }
 
 export function parseLayout(json: string): Layout {
   const raw = JSON.parse(json) as RawLayout;
-  if (!Number.isFinite(raw.dt) || raw.dt <= 0)
-    throw new Error('snapshot layout has no valid timestep — rebuild the wasm core');
-  if (!raw.defaults || Object.values(raw.defaults).some((v) => !Number.isFinite(v)))
-    throw new Error('snapshot layout has no valid defaults — rebuild the wasm core');
-  const limits: (keyof Limits)[] = [
-    'version',
-    'header',
-    'perBody',
-    'perClosure',
-    'perElement',
-    'paramsPerBody',
-    'maxBodies',
-    'maxDof',
-    'maxClosures',
-    'maxElements',
-  ];
-  if (limits.some((key) => !Number.isInteger(raw.limits?.[key]) || raw.limits[key] <= 0))
-    throw new Error('snapshot layout has no valid mechanism limits — rebuild the wasm core');
-  const first = (e: [number, number]) => e[0];
+  if (!raw || raw.abiVersion !== ABI_VERSION) invalid('incompatible ABI version');
+  for (const key of ['len', 'maxn', 'slots', 'slotLen'] as const) {
+    if (!Number.isSafeInteger(raw[key]) || raw[key] <= 0) invalid(key);
+  }
+  if (!Number.isFinite(raw.dt) || raw.dt <= 0) invalid('timestep');
+  if (!raw.defaults || DEFAULT_FLAGS.some((key) => !Number.isFinite(raw.defaults[key])))
+    invalid('required defaults');
+  if (Object.values(raw.defaults).some((v) => !Number.isFinite(v))) invalid('defaults');
+  for (const key of Object.keys(LIMITS) as (keyof Limits)[]) {
+    if (raw.limits?.[key] !== LIMITS[key]) invalid(`mechanism limit ${key}`);
+  }
+  if (raw.maxn !== raw.limits.maxDof) invalid('coordinate capacity');
+  const fields = <K extends string>(
+    keys: readonly K[],
+    widths: Record<K, number>,
+    entries: Record<string, [number, number]>,
+    len: number,
+  ): Record<K, number> => {
+    const result = {} as Record<K, number>;
+    const occupied = new Set<number>();
+    for (const key of keys) {
+      const entry = entries?.[key];
+      if (!Array.isArray(entry) || entry.length !== 2) invalid(`field ${key}`);
+      const [offset, width] = entry;
+      if (!Number.isSafeInteger(offset) || offset < 0 || width !== widths[key] || offset + width > len)
+        invalid(`bounds or length of ${key}`);
+      for (let i = offset; i < offset + width; i++) {
+        if (occupied.has(i)) invalid(`overlapping field ${key}`);
+        occupied.add(i);
+      }
+      result[key] = offset;
+    }
+    if (occupied.size !== len) invalid('unmapped snapshot values');
+    return result;
+  };
+  const off = fields(FIELDS, FIELDS_LENGTHS, raw.fields, raw.len);
+  const slot = fields(SLOT_FIELDS, SLOT_FIELDS_LENGTHS, raw.slot, raw.slotLen);
+  if (FIELDS_LENGTHS.SLOT !== raw.slots * raw.slotLen) invalid('slot capacity');
+  const flag = {} as Record<Flag, number>;
+  for (const [id, key] of FLAGS.entries()) {
+    if (raw.flags?.[key] !== id) invalid(`flag ${key}`);
+    flag[key] = id;
+  }
   return {
     len: raw.len,
     maxn: raw.maxn,
@@ -212,9 +121,9 @@ export function parseLayout(json: string): Layout {
     limits: raw.limits,
     slots: raw.slots,
     slotLen: raw.slotLen,
-    off: pick(FIELDS, raw.fields, 'field', first),
-    slot: pick(SLOT_FIELDS, raw.slot, 'slot field', first),
-    flag: pick(FLAGS, raw.flags, 'flag', (v: number) => v),
+    off,
+    slot,
+    flag,
   };
 }
 
