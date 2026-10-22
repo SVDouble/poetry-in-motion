@@ -20,7 +20,7 @@ independent test oracle. Canvas, SVG and TikZ use the same mechanical drawing pa
 A prepared build can commit only while its captured revision is current. Once accepted, its acknowledgment
 installs that captured document even if a later draft is pending. A failed later draft leaves the last
 installed simulation usable. Empty documents clear the installed UI view. Worker failure settles pending
-build/observation requests and disables further commands.
+build, observation, restore and profiling requests and disables further commands.
 
 Experiments own an abort scope and generation. Physical waits advance on simulation time, remain pending
 while paused, and acknowledge preceding commands. Leaving the stage, editing, rebuilding or replacing a
@@ -65,7 +65,10 @@ still come from WASM. `parseLayout` checks compatibility, field widths, bounds, 
 flags and capacities against the compiled browser contract. Real-WASM tests catch a stale binary.
 
 The WASM ABI, worker transport/shared-memory header and authored document format have independent version
-numbers. The shared TypeScript `Core` interface defines scalar exports for runtime and test harnesses.
+numbers (currently 3, 2 and 4). Requested joint targets travel separately from `Q_TARGET`, which reports the
+computed equilibrium. Runtime target controls use this requested-target state rather than mutating the
+authored or installed document. The shared TypeScript `Core` interface defines scalar exports for runtime
+and test harnesses.
 Controller parameters retain compact numeric arrays at the ABI but implementations read keys declared in
 their registry specs.
 
@@ -77,21 +80,44 @@ guided experiment's verification result. The intentionally incomplete Coriolis-o
 complete dynamics after one simulated second on constrained mechanisms, keeping the energy comparison
 bounded; the recovery check remains active for it.
 
-Worker step-cost timing prepares an isolated primary and its initial controller design before the timer.
-It measures integration of that restarted copy, not live-world total tick cost. See [BENCHMARKS.md](BENCHMARKS.md)
-for reproducible native cost breakdowns and their limits. Physics, publication, rendering, equations, plots
-and history retain distinct time bases; profiling is required before changing their cadences.
+Worker step-cost timing clones the ongoing primary, including controller memory, before the timer.
+It measures isolated integration. Opt-in worker profiling (`make e2e-profile`) measures actual ticks and
+separates integration, publication, snapshot transport, checkpoint retention and periodic benchmark work
+for both transports. It excludes UI rendering. See [BENCHMARKS.md](BENCHMARKS.md) for measurements and limits.
+Physics, publication, rendering, equations, plots and history retain distinct time bases; profiling is
+required before changing their cadences.
 
 ## Presentation and history
 
 `DocumentSession` coordinates accepted documents and builds. `model/fields` centralizes physical domains,
-units, authored uniform-rod dependencies and explicit control ranges. Authored parameter edits still rebuild
-so history and reset behavior remain consistent.
+units, authored uniform-rod dependencies and explicit control ranges. Authored physical/default/initial-state
+edits prepare a new model using the installed symbolic structure when compatible. They replace defaults,
+parameter metadata, initial conditions, targets and limits; refold coefficients; and validate initial inertia.
+The same revision-checked commit/reset path applies, so undo, reset and uniform-rod semantics are preserved.
+Changes to topology, mounts, actuators, tool assignment, closures or elements derive a new structure.
+Rejection leaves the installed world and overrides untouched. Shadows clone the valid design and folded
+model, then initialize their own controller and references; pending invalidation remains pending.
 
 `scene/drawing` defines the Pen context, `pens` implements backends/labels, `primitives` draws mechanical
 symbols, `loads` computes force/moment balance, `schematic` assembles a Figure, and `schematic-view` manages
 screen layers and redraws. Colors belong to the Pen, so no active picture changes a module-global palette.
 
-Timeline history consists of observations. Resume here restores the primary joint state, restarts
-controllers/shadows and keeps current simulation time. It is not a full execution checkpoint. Exact replay,
-spatial mechanisms and a UI for arbitrary ordered task lists require separate product/design work.
+The worker retains complete `World` checkpoints: time, joints, physical overrides, targets/settings,
+references, controller memory/designs, shadow assignments, diagnostic counters and energy budgets.
+Immutable tapes, coefficients and optimal-control matrices are shared; mutable execution state remains
+private. Restoring a checkpoint discards its future and does not reset controllers or replay joint setters.
+The UI adopts restored configuration without sending commands that would reset the core. Native and
+real-WASM tests reproduce future snapshots exactly after the same sequence of fixed steps.
+
+History samples at most 30 times per simulated second, retains at most 600 frames, and evicts earlier when
+a conservative 64 MiB retained-size budget is reached. The budget estimates checkpoint storage and may
+count shared allocations repeatedly; it is not a bound on total browser or WASM memory. IDs survive clears;
+reset/rebuild invalidate old IDs. Expired restores preserve the live world. UI history lazily retains the
+transferred double-precision observations, parameters and push position; it follows worker eviction.
+This is in-session branching from saved state; portable command-log replay is a separate feature.
+
+Goals exposes up to 16 additional ordered point/orientation tasks on ground, body or tool frames.
+The core validates and installs the whole list atomically across slots; zero frequency disables a task.
+Built-ins precede this list, with posture/manipulability last. Experiments clear additional tasks as part
+of setup; mechanism replacement clears their body references. Spatial kinematics, Jacobians, constraints
+and expression growth still need a separate design review.

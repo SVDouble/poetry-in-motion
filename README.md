@@ -65,7 +65,8 @@ free, with its joint reactions from Newton's law for the subtree it carries (spl
 force at a prismatic joint), the reactions it passes on, its joint moments and m a as the resultant. Arrows
 use fixed round scales per mechanism, listed in a key, so they compare across time. Per-joint **torque bars** show which of M q̈, C q̇, N makes up τ; an
 **energy gauge** shows what is stored, supplied and lost. Pausing shows a **timeline**: scrub back through
-the last 20 s (the plots mark the moment and read its values), step frame by frame, resume from any moment. Pointing at a formula in the derivation lights up
+about 20 s of retained history (shorter for larger mechanisms), step frame by frame, and resume with time,
+controllers and shadows restored to that checkpoint. The plots mark the selected moment and read its values. Pointing at a formula in the derivation lights up
 what it is about in the figure (a frame, a centre of mass with its Jacobian columns ∂p/∂q_j, a joint's row
 of the equations of motion, gravity, a spring, a loop, the tool); hovering a
 joint or a centre of mass shows its numbers.

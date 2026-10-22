@@ -85,6 +85,10 @@ updating live** while the robot moves in a real simulation.
   Code: shared constrained-dynamics helpers in the core, an export macro, and the web app split into
   `app/*` modules with table-driven editor fields and shared widgets.
 
+- Architecture follow-through (2026-10-22): compatible authored edits reuse compiled expressions; shadow
+  setup reuses valid designs. Ordered frame goals have UI controls. Bounded execution checkpoints restore
+  time, settings, controller memory and shadows; both worker transports have measured phase profiles.
+
 ## Next ideas
 - Contacts and joint limits for revolute joints; an angle constraint (weld) between two bodies.
 - 3D (spatial) mechanisms: twists, the product of exponentials and the body Jacobian in SE(3).

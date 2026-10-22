@@ -52,19 +52,19 @@ for both snapshot transports. Refactoring-pass verification is recorded below.
 | Area | Implemented boundary | Evidence |
 |---|---|---|
 | R1 | One WASM Core interface; Rust-generated field widths, flag names, required defaults and description limits; checked bounds, overlap, capacities and compatibility; controller reads by registry key. | `make gen-check`, real-WASM layout corruption checks, existing controller/physics/experiment tests. |
-| R2 | `DocumentSession` owns drafts, accepted installs, revision checks and scheduled rebuilds. Physical field descriptors separate admissibility, units and presentation ranges; uniform dependencies remain authored-only. | Document ordering/failure/empty-scene tests; field/domain tests; browser transitions. |
-| R3 | Plan has separate Configuration, Design and References. Ordered invalidation preserves stronger cache dependencies. Typed frame point/orientation tasks extend the built-ins, with posture/manipulability below them. Constraint-tangent hierarchies serve VMC, impedance and admittance. | Native leakage/progress/affine-constraint tests, conflicting-goal loop tests, real-WASM feasible/infeasible parallel-platform targets, shadow/rebuild task lifetimes and existing physics checks. |
-| R4 | Separate cost profiler; shared compiled tape tables, shared replaceable parameter coefficients, private evaluation buffers and shared derivation text. Worker timing prepares its isolated simulation before starting the integration timer. | [Measured clone reduction](BENCHMARKS.md), isolation tests and live-world preservation during benchmarking. |
+| R2 | `DocumentSession` owns drafts, accepted installs, revision checks and scheduled rebuilds. Physical field descriptors separate admissibility, units and presentation ranges. Compatible authored edits reuse compiled expressions while replacing defaults and reset metadata. | Document ordering/failure/empty-scene tests; field/domain tests; browser transitions. |
+| R3 | Plan has separate Configuration, Design and References. Ordered invalidation preserves stronger cache dependencies. Ordered point/orientation goals have core and UI support, with posture/manipulability below them. Constraint-tangent hierarchies serve VMC, impedance and admittance. | Native leakage/progress/affine-constraint tests, conflicting-goal loop tests, real-WASM feasible/infeasible parallel-platform targets, shadow/rebuild task lifetimes and existing physics checks. |
+| R4 | Separate cost profiler; shared compiled tape tables, shared replaceable parameter coefficients, private evaluation buffers and shared derivation text. Shadows reuse valid designs. Step timing clones ongoing execution; browser profiles measure actual worker phases. Bounded checkpoints restore complete execution. | [Measured clone reduction](BENCHMARKS.md), isolation tests and live-world preservation during benchmarking. |
 | R5 | Pen/context definitions, backends, mechanical primitives, force balance and view management are separate modules. Pens carry their colors explicitly. Recovery counts, loop retries and last recovery time are published per slot; scopes and the energy gauge expose them. | Force-balance/export regressions, recovery/reset coverage, and guided experiments reject numerical recoveries. |
 
-WASM ABI version is now 2; worker transport remains version 1 and document encoding remains version 4.
+WASM ABI version is now 3; worker transport is version 2 and document encoding remains version 4.
 The maintained responsibilities and lifecycle rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Remaining work is deliberately conditional: authored parameter edits still rederive to preserve history,
-initial/reset behavior and uniform-rod dependencies; browser profiling can guide further design/storage
-optimization; recorder changes and lazy loading need a demonstrated user-visible benefit. Exact rewind
-checkpoints/replay, new UI controls for arbitrary ordered task lists, and spatial/3D support are product
-extensions, not consequences of these refactors. The native typed task API is available now.
+The follow-through pass implements compatible authored-edit compilation reuse, complete in-session
+execution checkpoints, arbitrary ordered goal controls, browser worker profiling and shadow design reuse.
+The code retains separate reset policies for new shadows and restored execution. Conditional recorder
+changes and lazy loading still require a measured user-visible benefit. Spatial/3D simulation and portable
+command-log replay require separate product/design work.
 
 ## Responsibilities to preserve
 
@@ -261,9 +261,11 @@ separate from authored defaults; changing runtime length/mass does not silently 
 commit installation. `App` manages their presentation. Tests cover obsolete candidates, newer edits during
 accepted commits, failed builds and empty scenes.
 
-Authored parameter-only edits still rederive. A future fast path must also update history, initial/reset
-behavior and uniform-rod dependencies; calling `set_param` alone would change those semantics. Mounts and
-topology continue to require recompilation.
+Compatible authored edits now prepare candidates from shared compiled expressions. Candidates update
+physical defaults, derivation parameter metadata, initial/target state and limits and refold coefficients.
+They use the same validated two-phase installation and reset path. Uniform-rod dependencies are resolved
+by document encoding; runtime overrides stay independent. Tests compare against a fresh full derivation
+and verify reset/rejection semantics. Structural changes, including mounts, still recompile.
 
 ### R3. Separate Plan lifetimes and generalize task hierarchies
 
@@ -281,7 +283,9 @@ goals and task lifetimes. A real-WASM parallel-platform test checks both an inde
 frame and a piston frame whose orientation is already determined by its held tool point.
 
 Existing hierarchy controls are enabled on constrained mechanisms with remaining degrees of freedom.
-A UI for arbitrary additional native tasks remains a feature extension. Spatial/3D support still requires a
+The Goals UI now adds, edits, disables, removes and reorders up to 16 point/orientation goals on
+named frames. Lists validate atomically, propagate to shadows and clear on rebuild/experiment setup.
+Additional-task telemetry cannot overwrite the built-in orientation/elbow error fields. Spatial/3D support still requires a
 separate review of kinematics, Jacobians, constraints and expression growth.
 
 ### R4. Measure costs and share reusable model storage
@@ -292,14 +296,20 @@ from about 34 µs to below 1 µs after sharing compiled tape tables and derivati
 can be shared until replaced; evaluation scratch and execution state remain private. Model description and
 small topology arrays remain owned. This preserves the ability for slot parameters to diverge later.
 
-Worker timing now prepares its isolated primary and initial controller design before starting the step
-cost timer. It still measures a restarted copy, not the total live worker tick. Native measurements also
-exclude browser/WASM and transport overhead; they do not justify changing observation cadence or establish
-a stable throughput improvement. Design work remains a larger fork cost than cloning.
+Shadows now reuse the primary's valid plan design and folded model rather than deriving a fresh design
+before replacing its settings. Controller initialization and reference reset remain per-slot; pending
+invalidation and linkage assembly are preserved. Native transition and physics tests cover these lifetimes.
+Worker step timing clones ongoing controller state rather than restarting it. The browser profiler measures
+actual WASM worker ticks with five slots and both transports, separating integration, publication, transport,
+history and periodic isolated timing. [BENCHMARKS.md](BENCHMARKS.md) records these runs and their limits;
+main-thread rendering and plots are outside this measurement.
 
-Rendering, equation refresh, plots, stepping and rewind retention retain different time bases. Timeline is
-observation history: Resume here restores primary joint state, restarts controllers/shadows and retains
-current simulation time. Full checkpoints or deterministic replay remain separate features.
+Rendering, equation refresh, plots, stepping and rewind retention retain different time bases.
+Timeline now uses complete worker-owned execution checkpoints and transferred double-precision observations.
+Resume restores time, all slots, controller/reference memory, parameters, settings and budgets, then discards
+the future. Retention is lazy and bounded by frame count and a conservative memory estimate; IDs expire on
+reset/rebuild. Tests reproduce identical future snapshots and check expiry, branching and acknowledgments
+that arrive after a newer observation. Portable command-log replay remains separate.
 
 ### R5. Rendering boundaries and numerical observability
 
@@ -336,8 +346,7 @@ missing. The focused CI browser job now covers the transition cases above; the b
 useful for interaction coverage. Replace fixed sleeps with observable readiness in new tests. Oracle freshness
 already runs through [`test_generated_files_are_up_to_date`](sym/tests/test_derive.py).
 
-Update [`PROJECT.md`](PROJECT.md) to mark superseded production-SymPy and three.js/WebGPU decisions;
-its historical entries currently sit beside the runtime-CAS/canvas design. Keep current invariants and
+[`PROJECT.md`](PROJECT.md) now marks the superseded production-SymPy and three.js/WebGPU decisions. Keep current invariants and
 transition policies in maintained documentation, with this review serving as the implementation backlog.
 
 ## Refactoring-pass verification (2026-10-22)
@@ -353,3 +362,16 @@ transition policies in maintained documentation, with this review serving as the
 
 The code was held stable during the final browser crawl; documentation records the implementation and
 separates remaining conditional optimizations from delivered refactors.
+
+## Follow-through verification (2026-10-22)
+
+- 89 Rust tests, six Python tests and 136 web tests pass, including all 228 guided runs. The full check
+  passed; the final boundary adjustment also passed lint, a fresh release WASM/production build and the
+  complete web suite.
+- Native and real-WASM checkpoint tests reproduce future observations exactly. Browser smoke checks pass
+  with both transports, covering transactional parameter edits, ordered task controls, checkpoint restore,
+  target-control restoration, timeline branching, paused waits and experiment cancellation.
+- The reproducible browser profiler exercises three mechanisms with five slots and both transports;
+  native and browser measurements, size estimates and limitations are recorded in [BENCHMARKS.md](BENCHMARKS.md).
+- Final Chromium crawl: all 16 presets complete with zero errors. The code stayed stable during the crawl;
+  the final profiling-limit constant extraction also passed focused tests and a production build.
