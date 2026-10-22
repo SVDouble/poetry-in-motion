@@ -1,5 +1,5 @@
 //! Separate costs before changing ownership: cargo run --release --example profile.
-use motion_core::{control::Kind, mech::presets, model::Model, world::World};
+use motion_core::{control::Kind, history::History, mech::presets, model::Model, world::World};
 use std::{hint::black_box, time::Instant};
 
 fn us(mut f: impl FnMut(), n: u32) -> f64 {
@@ -11,7 +11,7 @@ fn us(mut f: impl FnMut(), n: u32) -> f64 {
 }
 fn main() {
     println!(
-        "case | derive ms | model clone us | fork/design us | redesign us | step us | publish us | 5-slot tick us"
+        "case | derive ms | parameter edit us | model clone us | fork/design us | redesign us | step us | publish us | 5-slot tick us | checkpoint us | retained KiB"
     );
     for (name, desc) in
         [("arm2", presets::arm2()), ("arm7", presets::arm7()), ("fourbar", presets::four_bar())]
@@ -22,6 +22,14 @@ fn main() {
         let clone = us(
             || {
                 black_box(model.clone());
+            },
+            100,
+        );
+        let mut changed = desc.clone();
+        changed.bodies[0].values[0] *= 1.05;
+        let edit = us(
+            || {
+                black_box(model.prepare(&changed).unwrap());
             },
             100,
         );
@@ -58,8 +66,16 @@ fn main() {
             },
             1000,
         );
+        let retained = world.retained_bytes() as f64 / 1024.0;
+        let mut history = History::default();
+        let checkpoint = us(
+            || {
+                black_box(history.save(&world));
+            },
+            600,
+        );
         println!(
-            "{name} | {derive:.2} | {clone:.2} | {fork:.2} | {redesign:.2} | {step:.2} | {publish:.2} | {tick:.2}"
+            "{name} | {derive:.2} | {edit:.2} | {clone:.2} | {fork:.2} | {redesign:.2} | {step:.2} | {publish:.2} | {tick:.2} | {checkpoint:.2} | {retained:.1}"
         );
     }
 }

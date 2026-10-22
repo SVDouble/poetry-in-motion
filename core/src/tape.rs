@@ -164,6 +164,15 @@ impl Tape {
         Self { program: Arc::new(tape), coefficients, work }
     }
 
+    /// Evaluation workspace plus conservatively counted replaceable coefficients, excluding shared code.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        self.work.av.len() * 16
+            + (self.work.hv.len() + self.work.sv.len() + self.work.state.len()) * 8
+            + self.coefficients.hot.len() * size_of::<Hot>()
+            + self.coefficients.hot_out.len() * 8
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.program.outputs.len()

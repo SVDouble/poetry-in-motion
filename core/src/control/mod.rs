@@ -34,7 +34,26 @@ pub struct Ctx<'a> {
     pub umax: f64,
 }
 
-pub trait Controller: std::fmt::Debug {
+/// Object-safe cloning preserves controller memory for execution checkpoints.
+pub trait CloneController {
+    fn clone_controller(&self) -> Box<dyn Controller>;
+}
+impl<T: Controller + Clone + 'static> CloneController for T {
+    fn clone_controller(&self) -> Box<dyn Controller> {
+        Box::new(self.clone())
+    }
+}
+impl Clone for Box<dyn Controller> {
+    fn clone(&self) -> Self {
+        self.clone_controller()
+    }
+}
+
+pub trait Controller: std::fmt::Debug + CloneController {
+    /// Conservative retained-size estimate for bounding history; shared data may be counted more than once.
+    fn retained_bytes(&self) -> usize {
+        4096
+    }
     /// Recompute gains after parameters, targets or the model changed.
     fn design(&mut self, _plan: &Plan, _model: &mut Model, _params: &[f64], _dt: f64) {}
     /// Forget internal state (after a reset or a jump of the state).

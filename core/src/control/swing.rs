@@ -13,7 +13,7 @@ const CATCHING: u32 = 2;
 /// Swing-up: choose the actuated acceleration v so that the power fed into the passive coordinates,
 /// −q̇_uᵀ M_ua v, drives the energy towards that of the target; realise v by collocated partial feedback
 /// linearisation (generalised to loops); hand over to an LQR near q*.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SwingUp {
     lqr: Lqr,
     phase: u32,

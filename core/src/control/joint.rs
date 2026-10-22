@@ -17,7 +17,7 @@ fn errors(plan: &Plan, model: &Model, c: &Ctx<'_>) -> (VecN, VecN) {
     (e, ed)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Passive;
 
 impl Controller for Passive {
@@ -28,7 +28,7 @@ impl Controller for Passive {
 
 /// u = K_p e + K_v ė (+ u_g) with constant symmetric gains shaped by the inertia at the target,
 /// `K_p = ω² M(q*)`, `K_v = 2ζω M(q*)`: near q* every mode has the designed ω and ζ.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Pd {
     gravity: bool,
     kp: MatN,
@@ -85,7 +85,7 @@ impl Controller for Pd {
 
 /// Computed torque: the actuated coordinates follow q̈_d + K_v ė + K_p e exactly (the rest follows from the
 /// loops), then `B u − Aᵀλ = M q̈ + C q̇ + N`.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ComputedTorque {
     qdd: VecN,
 }
@@ -119,7 +119,7 @@ impl Controller for ComputedTorque {
 /// Slotine–Li passivity-based tracking: with the reference velocity q̇_r = q̇_d + Λe and the sliding variable
 /// s = q̇ − q̇_r, apply `f = M q̈_r + C q̇_r + N − K_D s`. Uses the skew-symmetry of Ṁ − 2C instead of
 /// cancelling the dynamics: V = ½ sᵀ M s + eᵀ Λ K_D e decreases.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Passivity {
     s: VecN,
     lyap: f64,

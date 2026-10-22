@@ -2,6 +2,15 @@
  * Read memory.buffer only after calls: allocation can grow and detach memory. */
 export interface Core {
   memory: WebAssembly.Memory;
+  build_reused(): number;
+  integrate(steps: number): void;
+  checkpoint_save(): number;
+  checkpoint_oldest(): number;
+  checkpoint_restore(id: number): number;
+  flag_value(id: number): number;
+  set_tasks(len: number): number;
+  tasks(): number;
+  tasks_ptr(): number;
   desc_buffer(len: number): number;
   prepare(len: number): number;
   commit_build(): number;
@@ -19,6 +28,7 @@ export interface Core {
   set_controller(slot: number, kind: number): void;
   set_ctrl_param(kind: number, i: number, v: number): number;
   param_value(i: number): number;
+  target_value(i: number): number;
   sync_shadows(): void;
   controllers(): number;
   controllers_ptr(): number;

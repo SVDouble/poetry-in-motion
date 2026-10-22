@@ -18,7 +18,7 @@ pub use config::{Configuration, Goals, POSTURE, PUSH_K, REF_WN, Tuning};
 pub(crate) use design::Invalidated;
 pub use design::{Design, Lin};
 pub use reference::References;
-pub use tasks::{SubTask, TaskFrame, TaskGoal};
+pub use tasks::{MAX_TASKS, SubTask, TASK_WIDTH, TaskFrame, TaskGoal, TaskRole};
 
 /// Wrap an angle to (−π, π].
 #[must_use]

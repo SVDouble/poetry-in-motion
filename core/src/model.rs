@@ -142,6 +142,57 @@ impl Model {
         Ok(model)
     }
 
+    /// Prepare an authored edit without rederiving expressions when their structure is unchanged.
+    /// The candidate is independent, so rejection cannot modify the installed model or its overrides.
+    /// # Errors
+    /// Invalid description or singular initial effective inertia.
+    pub fn prepare(&self, desc: &Desc) -> Result<(Self, bool), String> {
+        desc.validate()?;
+        let mut structure = desc.clone();
+        structure.g = self.desc.g;
+        if structure.bodies.len() == self.desc.bodies.len() {
+            for (body, old) in structure.bodies.iter_mut().zip(&self.desc.bodies) {
+                body.values = old.values;
+                body.q0 = old.q0;
+                body.q_target = old.q_target;
+                body.limit = old.limit;
+                body.shape = old.shape;
+            }
+        }
+        if structure != self.desc {
+            return Self::try_from_desc(desc).map(|model| (model, false));
+        }
+        let mut model = self.clone();
+        model.defaults = desc.bodies.iter().flat_map(|b| b.values).chain(core::iter::once(desc.g)).collect();
+        for (j, &body) in model.coord_body.iter().enumerate() {
+            model.q0[j] = desc.bodies[body].q0;
+            model.q_target[j] = desc.bodies[body].q_target;
+            model.limit[j] = if model.prismatic[j] { desc.bodies[body].limit } else { 0.0 };
+        }
+        // Both paths use the same generated parameter fragment; symbolic explanation stays identical.
+        model.derivation =
+            self.derivation.replacen(&doc::parameters(&self.desc), &doc::parameters(desc), 1).into();
+        model.desc = desc.clone();
+        model.set_params(&model.defaults.clone());
+        if !model.regular(&model.q0.clone()) {
+            return Err("mechanism must have finite positive effective inertia".into());
+        }
+        Ok((model, true))
+    }
+
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        // Fixed and topology allowance includes the small per-coordinate vectors and frame-angle lists.
+        4096 + self.desc.nb() * 512
+            + [&self.dynamics, &self.aux, &self.gravity, &self.energy, &self.points]
+                .into_iter()
+                .chain(self.tool.iter())
+                .chain(self.constraints.iter())
+                .chain(self.elements.iter())
+                .map(Tape::retained_bytes)
+                .sum::<usize>()
+    }
+
     /// Physical parameter domains, independent of the UI's presentation ranges.
     #[must_use]
     pub fn valid_param(&self, i: usize, v: f64) -> bool {

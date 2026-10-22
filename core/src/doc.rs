@@ -5,7 +5,27 @@ use std::fmt::Write;
 
 use crate::cas::latex::{Names, Printer, angle_const};
 use crate::cas::{Angle, Expr};
-use crate::mech::{ClosureKind, Derived, JointKind};
+use crate::mech::{ClosureKind, Derived, Desc, JointKind, PARAMS_PER_BODY};
+
+/// The only derivation metadata affected by an authored physical-parameter edit.
+pub(crate) fn parameters(desc: &Desc) -> String {
+    let mut params = Vec::new();
+    for (i, body) in desc.bodies.iter().enumerate() {
+        for (k, (id, symbol)) in
+            [("m", "m"), ("l", "l"), ("r", "r"), ("I", "I"), ("beta", r"\beta")].iter().enumerate()
+        {
+            let idx = i * PARAMS_PER_BODY + k;
+            let tex = esc(&format!("{symbol}_{{{}}}", i + 1));
+            params.push(format!("{{\"id\":\"{id}{}\",\"tex\":\"{tex}\",\"body\":{i},\"kind\":\"{id}\",\"index\":{idx},\"value\":{}}}", i + 1, body.values[k]));
+        }
+    }
+    params.push(format!(
+        "{{\"id\":\"g\",\"tex\":\"g\",\"body\":-1,\"kind\":\"g\",\"index\":{},\"value\":{}}}",
+        desc.bodies.len() * PARAMS_PER_BODY,
+        desc.g
+    ));
+    format!("\"params\":[{}],", params.join(","))
+}
 
 /// LaTeX names of every polynomial variable of a derived mechanism.
 #[must_use]
@@ -181,28 +201,7 @@ pub fn json(d: &Derived) -> String {
         .collect();
     let _ = write!(o, "\"coords\":[{}],", coords.join(","));
 
-    // parameters
-    let mut params = Vec::new();
-    for i in 0..d.vars.nb {
-        for (k, (id, idx)) in
-            [("m", v.m(i)), ("l", v.l(i)), ("r", v.r(i)), ("I", v.inertia(i)), ("beta", v.beta(i))]
-                .iter()
-                .enumerate()
-        {
-            params.push(format!(
-                "{{\"id\":\"{id}{}\",\"tex\":\"{}\",\"body\":{i},\"kind\":\"{id}\",\"index\":{idx},\"value\":{}}}",
-                i + 1,
-                esc(&nm.vars[*idx]),
-                d.desc.bodies[i].values[k]
-            ));
-        }
-    }
-    params.push(format!(
-        "{{\"id\":\"g\",\"tex\":\"g\",\"body\":-1,\"kind\":\"g\",\"index\":{},\"value\":{}}}",
-        v.g(),
-        d.desc.g
-    ));
-    let _ = write!(o, "\"params\":[{}],", params.join(","));
+    o.push_str(&parameters(&d.desc));
 
     // bodies
     let s = v.space();

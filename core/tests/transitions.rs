@@ -234,3 +234,69 @@ fn integration_recovery_is_observable_and_reset_starts_new_counters() {
     let o = w.publish();
     assert_eq!(&o[off::RECOVERY..off::RECOVERY + 3], &[0.0, 0.0, -1.0]);
 }
+
+#[test]
+fn authored_parameter_candidates_match_fresh_derivation_and_preserve_old_model() {
+    for desc in [presets::arm2(), presets::arm7(), presets::four_bar(), presets::cartpole()] {
+        let mut original = Model::from_desc(&desc);
+        let old = original.derivation.clone();
+        let mut edited = desc;
+        edited.g = 3.0;
+        for body in &mut edited.bodies {
+            body.values[0] *= 1.2;
+            body.values[1] *= 0.95;
+            body.values[2] = body.values[1] / 2.0;
+            body.values[3] = body.values[0] * body.values[1].powi(2) / 12.0;
+            body.q0 += 0.02;
+            body.q_target += 0.03;
+        }
+        let (mut updated, reused) = original.prepare(&edited).unwrap();
+        assert!(reused);
+        let mut fresh = Model::from_desc(&edited);
+        assert_eq!(updated.derivation, fresh.derivation);
+        assert_eq!(updated.q0, fresh.q0);
+        assert_eq!(updated.q_target, fresh.q_target);
+        assert_eq!(updated.defaults, fresh.defaults);
+        let q = [0.2; motion_core::MAXN];
+        let v = [0.1; motion_core::MAXN];
+        assert_eq!(updated.terms(&q, &v).m, fresh.terms(&q, &v).m);
+        assert_eq!(updated.energies(&q, &v), fresh.energies(&q, &v));
+        assert_eq!(original.derivation, old);
+        assert_ne!(updated.energies(&q, &v), original.energies(&q, &v));
+        edited.bodies[0].mount_angle += 0.1;
+        assert!(!original.prepare(&edited).unwrap().1);
+    }
+}
+
+#[test]
+fn checkpoints_reproduce_controller_memory_settings_and_independent_shadows() {
+    use motion_core::history::History;
+    for kind in Kind::ALL {
+        let mut w = world();
+        if kind.applicable(&w.primary().model, &w.primary().plan).is_err() {
+            continue;
+        }
+        w.set_controller(0, Some(kind));
+        w.set_controller(1, Some(Kind::PdGravity));
+        w.set_flag(Flag::MotorSpeed, 15.0);
+        w.set_param(0, 1.7);
+        w.step(103);
+        w.publish();
+        let mut history = History::default();
+        let id = history.save(&w);
+        assert_ne!(id, 0);
+        w.step(137);
+        let expected = w.publish().to_vec();
+        let future = history.save(&w);
+        w.set_flag(Flag::MotorSpeed, 1.0);
+        w.set_controller(1, None);
+        assert!(history.restore(id, &mut w));
+        assert!(!history.restore(future, &mut w));
+        assert!((w.primary().t - 0.103).abs() < 1e-12);
+        w.step(137);
+        assert_eq!(expected, w.publish(), "{kind:?} checkpoint lost execution state");
+        history.clear();
+        assert!(!history.restore(id, &mut w));
+        assert_ne!(history.save(&w), id);
+    }
+}

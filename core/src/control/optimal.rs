@@ -1,6 +1,8 @@
 //! Optimal control about the equilibrium q*: infinite-horizon LQR and receding-horizon MPC with input bounds.
 //! Both use the plan's linearisation in tangent coordinates x = (ξ, ξ̇), so they work with loops too.
 
+use std::sync::Arc;
+
 use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
 use crate::dynamics::VecN;
@@ -49,9 +51,9 @@ fn jacobi(cols: usize, nx: usize, h: &mut [f64], f: &mut [f64]) -> Vec<f64> {
 }
 
 /// u = u* − K x with K from the discrete Riccati equation at the simulation step.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Lqr {
-    k: Option<DMat>,
+    k: Option<Arc<DMat>>,
     cost: f64,
 }
 
@@ -75,7 +77,8 @@ impl Controller for Lqr {
                 );
                 dlqr(&ad, &bd, &q, &rm)
             })
-            .filter(|k| k.max_abs().is_finite());
+            .filter(|k| k.max_abs().is_finite())
+            .map(Arc::new);
     }
 
     fn update(&mut self, plan: &Plan, model: &mut Model, c: &Ctx<'_>) -> VecN {
@@ -110,26 +113,26 @@ const MAX_VARS: usize = 180;
 /// Linear MPC in condensed form. Over the horizon X = Φ x₀ + Γ U, the cost
 /// `Σ xₖᵀ Q xₖ + uₖᵀ R uₖ + x_Nᵀ P x_N` becomes `½ Uᵀ H U + (F x₀)ᵀ U` with H = Γᵀ Q̄ Γ + R̄, F = Γᵀ Q̄ Φ,
 /// minimised subject to the actuator bounds every Δt; the first input is applied (receding horizon).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Mpc {
     nx: usize,
     nu: usize,
     steps: usize,
     stride: usize,
-    h: Vec<f64>,
-    f: Vec<f64>,
-    phi: Vec<f64>,
-    gamma: Vec<f64>,
+    h: Arc<[f64]>,
+    f: Arc<[f64]>,
+    phi: Arc<[f64]>,
+    gamma: Arc<[f64]>,
     lip: f64,
     /// Jacobi scaling of the input sequence: the QP is solved for v with Δu = D v, D = diag(H)^(−1/2), so its
     /// curvature is near one in every direction (inputs with very different costs — a heavy shoulder and a
     /// light finger — would otherwise leave the gradient method crawling along the cheap ones).
-    scale: Vec<f64>,
+    scale: Arc<[f64]>,
     /// The scaled input sequence v.
     du: Vec<f64>,
     /// −H⁻¹F: the plan without bounds as a map of the state. Each solve starts from it, clipped to the bounds:
     /// exact when no bound is active (MPC is then LQR), and a near start when some are.
-    free: Vec<f64>,
+    free: Arc<[f64]>,
     scratch: Vec<f64>,
     since: usize,
     cost: f64,
@@ -140,6 +143,24 @@ pub struct Mpc {
 }
 
 impl Controller for Mpc {
+    fn retained_bytes(&self) -> usize {
+        4096 + [
+            self.h.len(),
+            self.f.len(),
+            self.phi.len(),
+            self.gamma.len(),
+            self.scale.len(),
+            self.free.len(),
+            self.du.len(),
+            self.scratch.len(),
+            self.plan_u.len(),
+            self.predicted.len(),
+        ]
+        .iter()
+        .sum::<usize>()
+            * 8
+    }
+
     fn regulates(&self) -> bool {
         true
     }
@@ -240,13 +261,13 @@ impl Controller for Mpc {
             nu,
             steps,
             stride: ((step / dt).round() as usize).max(1),
-            h,
-            f,
-            phi,
-            gamma,
+            h: h.into(),
+            f: f.into(),
+            phi: phi.into(),
+            gamma: gamma.into(),
             lip: self.lip,
-            scale,
-            free,
+            scale: scale.into(),
+            free: free.into(),
             du,
             scratch: vec![0.0; 3 * cols],
             since,

@@ -25,9 +25,17 @@ pub enum TaskGoal {
     Point { frame: TaskFrame, target: [f64; 2], wn: f64 },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TaskRole {
+    Orientation,
+    Elbow,
+    Additional,
+}
+
 /// Per-step task: row-major J, J̇q̇, desired acceleration ω²e − 2ωẋ and error.
 #[derive(Clone, Copy, Debug)]
 pub struct SubTask {
+    pub role: TaskRole,
     pub rows: usize,
     pub j: [f64; 2 * MAXN],
     pub jdqd: [f64; 2],
@@ -53,6 +61,7 @@ impl TaskGoal {
                 let e = wrap(target - angle.eval(q));
                 let rate: f64 = (0..n).map(|i| j[i] * qd[i]).sum();
                 Some(SubTask {
+                    role: TaskRole::Additional,
                     rows: 1,
                     j,
                     jdqd: [0.0; 2],
@@ -68,7 +77,7 @@ impl TaskGoal {
                 let v: [f64; 2] = core::array::from_fn(|r| (0..n).map(|c| j[r * n + c] * qd[c]).sum());
                 let e = [target[0] - p[0], target[1] - p[1]];
                 let a = core::array::from_fn(|r| wn * wn * e[r] - 2.0 * wn * v[r]);
-                Some(SubTask { rows: 2, j, jdqd, a, e })
+                Some(SubTask { role: TaskRole::Additional, rows: 2, j, jdqd, a, e })
             }
         }
     }
@@ -84,7 +93,68 @@ impl Plan {
         ]
         .into_iter()
         .chain(self.config.tasks.iter().copied())
-        .filter_map(|goal| goal.evaluate(model, q, qd))
+        .enumerate()
+        .filter_map(|(i, goal)| {
+            goal.evaluate(model, q, qd).map(|mut task| {
+                task.role = match i {
+                    0 => TaskRole::Orientation,
+                    1 => TaskRole::Elbow,
+                    _ => TaskRole::Additional,
+                };
+                task
+            })
+        })
         .collect()
+    }
+}
+
+pub const MAX_TASKS: usize = 16;
+pub const TASK_WIDTH: usize = 5;
+impl TaskGoal {
+    /// Compact runtime codec: [kind (0 angle / 1 point), frame (−2 tool / −1 ground / body), x, y, ω].
+    /// # Errors
+    /// Malformed dimensions, tags, frames, non-finite targets or negative frequencies.
+    pub fn parse(flat: &[f64], model: &Model) -> Result<Vec<Self>, String> {
+        if !flat.len().is_multiple_of(TASK_WIDTH)
+            || flat.len() / TASK_WIDTH > MAX_TASKS
+            || flat.iter().any(|v| !v.is_finite())
+        {
+            return Err("invalid task list length or values".into());
+        }
+        flat.as_chunks::<TASK_WIDTH>()
+            .0
+            .iter()
+            .map(|row| {
+                let frame = match row[1] {
+                    -2.0 if model.has_tool() => TaskFrame::Tool,
+                    -1.0 => TaskFrame::Ground,
+                    body if body >= 0.0 && body.fract() == 0.0 && body < model.desc.nb() as f64 => {
+                        TaskFrame::Body(body as usize)
+                    }
+                    _ => return Err("task frame does not exist".into()),
+                };
+                if row[4] < 0.0 {
+                    return Err("task frequency must be nonnegative".into());
+                }
+                match row[0] {
+                    0.0 => Ok(Self::Orientation { frame, target: row[2], wn: row[4] }),
+                    1.0 => Ok(Self::Point { frame, target: [row[2], row[3]], wn: row[4] }),
+                    _ => Err("unknown task kind".into()),
+                }
+            })
+            .collect()
+    }
+    #[must_use]
+    pub fn values(self) -> [f64; TASK_WIDTH] {
+        let (tag, frame, x, y, wn) = match self {
+            Self::Orientation { frame, target, wn } => (0.0, frame, target, 0.0, wn),
+            Self::Point { frame, target, wn } => (1.0, frame, target[0], target[1], wn),
+        };
+        let frame = match frame {
+            TaskFrame::Ground => -1.0,
+            TaskFrame::Tool => -2.0,
+            TaskFrame::Body(i) => i as f64,
+        };
+        [tag, frame, x, y, wn]
     }
 }

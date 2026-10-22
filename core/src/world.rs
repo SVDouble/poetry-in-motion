@@ -8,7 +8,7 @@ use crate::layout::{Flag, SLOTS, off, slot};
 use crate::model::Model;
 use crate::sim::Sim;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct World {
     primary: Sim,
     /// Slots 1 … SLOTS − 1.
@@ -132,6 +132,13 @@ impl World {
         }
         self.update(|s| s.set_param(i, v))
     }
+    /// Validate the entire list before installing it in any slot.
+    pub fn set_tasks(&mut self, flat: &[f64]) -> bool {
+        let Ok(tasks) = crate::plan::TaskGoal::parse(flat, &self.primary.model) else { return false };
+        self.each(|s| s.plan.config.tasks.clone_from(&tasks));
+        true
+    }
+
     pub fn set_target(&mut self, i: usize, v: f64) -> bool {
         self.update(|s| s.set_target(i, v))
     }
@@ -196,12 +203,21 @@ impl World {
         &self.out
     }
 
-    /// Prepare a throw-away primary for timing. Fork and controller design happen outside the timer.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        std::iter::once(&self.primary)
+            .chain(self.shadows.iter().flatten())
+            .map(Sim::retained_bytes)
+            .sum::<usize>()
+            + self.out.len() * 8
+            + self.params.iter().map(|p| p.len() * 8).sum::<usize>()
+    }
+
+    /// Copy the ongoing primary, including controller memory, before starting the integration timer.
     #[must_use]
     pub fn benchmark(&self) -> Benchmark {
-        let mut sim = self.primary.fork(self.primary.kind);
+        let sim = self.primary.clone();
         let params = self.params[sim.kind as usize].clone();
-        sim.publish_slot(&mut [0.0; slot::LEN], &params);
         Benchmark { sim, params }
     }
 

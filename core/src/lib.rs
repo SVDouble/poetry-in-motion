@@ -29,3 +29,5 @@ pub mod world;
 
 /// Maximum number of joints (generalised coordinates) of a mechanism.
 pub const MAXN: usize = 7;
+
+pub mod history;

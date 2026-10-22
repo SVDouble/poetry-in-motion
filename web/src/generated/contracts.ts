@@ -225,4 +225,7 @@ export const DEFAULT_FLAGS = [
   'Lead',
 ] as const;
 export const LIMITS = {"version":4.0,"header":6,"perBody":18,"perClosure":8,"perElement":9,"paramsPerBody":5,"maxBodies":8,"maxDof":7,"maxClosures":4,"maxElements":8} as const;
-export const ABI_VERSION = 2;
+export const ABI_VERSION = 3;
+export const HISTORY = { hz: 30, frames: 600, bytes: 67108864 } as const;
+export const MAX_TASKS = 16;
+export const TASK_WIDTH = 5;

@@ -6,14 +6,18 @@
 use std::cell::RefCell;
 
 use crate::control::Kind;
+use crate::history::History;
 use crate::layout::{self, Flag};
-use crate::mech::presets;
+use crate::mech::{Desc, presets};
 use crate::model::Model;
 use crate::world::{Benchmark, World};
 
 thread_local! {
     static WORLD: RefCell<World> = RefCell::new(World::new(Model::from_desc(&presets::cartpole())));
+    static HISTORY: RefCell<History> = RefCell::new(History::default());
     static BENCHMARK: RefCell<Option<Benchmark>> = const { RefCell::new(None) };
+    static TASKS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    static REUSED: RefCell<bool> = const { RefCell::new(false) };
     static PREPARED: RefCell<Option<Model>> = const { RefCell::new(None) };
     static DESC: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -82,10 +86,12 @@ exports! {
     fn prepare(len: u32) -> i32 {
         let result = DESC.with_borrow(|d| {
             if len as usize != d.len() { return Err("description length does not match buffer".into()); }
-            Model::build(d)
+            let desc = Desc::parse(d)?;
+            with(|w| w.primary().model.prepare(&desc))
         });
         match result {
-            Ok(model) => {
+            Ok((model, reused)) => {
+                REUSED.with_borrow_mut(|r| *r = reused);
                 PREPARED.with_borrow_mut(|p| *p = Some(model));
                 ERROR.with_borrow_mut(String::clear);
                 0
@@ -97,10 +103,13 @@ exports! {
         }
     }
 
+    fn build_reused() -> u32 { REUSED.with_borrow(|r| u32::from(*r)) }
+
     fn discard_build() { PREPARED.with_borrow_mut(|p| *p = None); }
 
     fn commit_build() -> i32 {
         let Some(model) = PREPARED.with_borrow_mut(Option::take) else { return mutation(false) };
+        HISTORY.with_borrow_mut(History::clear);
         with(|w| { w.rebuild(model); w.publish(); });
         mutation(true)
     }
@@ -112,7 +121,7 @@ exports! {
         CONTROLLERS.with_borrow(|c| c.len() as u32)
     }
 
-    fn reset() { with(World::reset) }
+    fn reset() { HISTORY.with_borrow_mut(History::clear); with(World::reset) }
 
     /// Advance every slot `n` fixed steps and refresh the snapshot.
     fn step(n: u32) {
@@ -121,6 +130,8 @@ exports! {
             w.publish();
         });
     }
+
+    fn integrate(n: u32) { with(|w| w.step(n)); }
 
     fn publish() {
         with(|w| {
@@ -133,8 +144,34 @@ exports! {
     /// Advance the prepared benchmark, leaving the live simulation untouched.
     fn bench(n: u32) { BENCHMARK.with_borrow_mut(|b| { if let Some(b) = b { b.run(n); } }); }
 
+    fn checkpoint_save() -> u32 { HISTORY.with_borrow_mut(|h| with(|w| h.save(w))) }
+    fn checkpoint_oldest() -> u32 { HISTORY.with_borrow(History::oldest) }
+    fn checkpoint_restore(id: u32) -> i32 {
+        mutation(HISTORY.with_borrow_mut(|h| with(|w| h.restore(id, w))))
+    }
+    fn flag_value(id: u32) -> f64 {
+        Flag::from_u32(id).map_or(f64::NAN, |flag| with(|w| w.primary().flag_value(flag)))
+    }
+
+    /// Use desc_buffer for the flat task list; installation is atomic across all slots.
+    fn set_tasks(len: u32) -> i32 {
+        mutation(DESC.with_borrow(|d| d.len() == len as usize && with(|w| w.set_tasks(d))))
+    }
+    fn tasks() -> u32 {
+        let flat = with(|w| w.primary().plan.config.tasks.iter().flat_map(|t| t.values()).collect());
+        TASKS.with_borrow_mut(|out| *out = flat);
+        TASKS.with_borrow(|out| out.len() as u32)
+    }
+    fn tasks_ptr() -> *const f64 { TASKS.with_borrow(Vec::as_ptr) }
+
     fn set_dt(dt: f64) -> i32 { mutation(with(|w| w.set_dt(dt))) }
     fn param_value(i: u32) -> f64 { with(|w| w.primary().p.get(i as usize).copied().unwrap_or(f64::NAN)) }
+    fn target_value(i: u32) -> f64 {
+        with(|w| {
+            let s = w.primary();
+            if (i as usize) < s.n() { s.plan.config.q_target[i as usize] } else { f64::NAN }
+        })
+    }
     fn param_count() -> u32 { with(|w| w.primary().p.len() as u32) }
     fn set_param(i: u32, v: f64) -> i32 { mutation(with(|w| w.set_param(i as usize, v))) }
     /// Run controller `kind` in `slot` (0 primary, 1… shadows); an unknown kind turns a shadow off.

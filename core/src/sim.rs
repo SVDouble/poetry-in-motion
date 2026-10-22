@@ -53,7 +53,7 @@ impl Budget {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Sim {
     pub model: Model,
     pub p: Vec<f64>,
@@ -170,23 +170,36 @@ impl Sim {
         true
     }
 
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.model.retained_bytes()
+            + self.ctrl.retained_bytes()
+            + self.aux.len() * 8
+            + self.p.len() * 8
+            + 4096
+    }
+
     /// An independent copy with the same model, settings and state, running controller `kind`.
     #[must_use]
     pub fn fork(&self, kind: Kind) -> Self {
-        let mut s = Self::new(self.model.clone(), kind);
-        s.apply_settings(self.settings());
-        s.p.clone_from(&self.p);
-        s.model.set_params(&s.p);
-        (s.q, s.qd, s.t, s.steps) = (self.q, self.qd, self.t, self.steps);
-        (s.coriolis, s.umax, s.dt, s.u_manual) = (self.coriolis, self.umax, self.dt, self.u_manual);
-        let plan = &self.plan;
-        s.plan.config = plan.config.clone();
-        // Setpoints are per-slot regulator progress; the new controller restarts from its own state.
-        s.plan.config.setpoint = None;
-        // The requested target also has an assembly mode. Seed the new design from the primary's
-        // equilibrium, not from its possibly distant current pose, then restart references at that pose.
-        s.plan.design.q_star = plan.design.q_star;
-        s.plan.sync(&mut s.model, &plan.design.q_star);
+        // Reuse the primary's already folded model and valid equilibrium/design. Each clone owns
+        // its evaluation workspace; immutable tape tables and coefficients stay shared.
+        let mut s = self.clone();
+        s.kind = kind;
+        s.ctrl = kind.create();
+        s.invalidate(Invalidated::Controller);
+        if s.plan.config.setpoint.take().is_some() {
+            s.invalidate(Invalidated::Plan);
+        }
+        s.diagnostics = IntegrationDiagnostics::default();
+        s.u = [0.0; MAXN];
+        s.tau_u = [0.0; MAXN];
+        s.tau_ext = [0.0; MAXN];
+        s.lambda = [0.0; MAXM];
+        s.aux.fill(0.0);
+        // Seed a pending redesign from the primary's assembly, then restart references at this pose.
+        s.plan.sync(&mut s.model, &self.plan.design.q_star);
         s.refresh_plan();
         s.settle();
         s
@@ -320,6 +333,50 @@ impl Sim {
     /// The controller's design depends on parameters that changed.
     pub fn redesign_controller(&mut self) {
         self.invalidate(Invalidated::Controller);
+    }
+
+    #[must_use]
+    pub fn flag_value(&self, flag: Flag) -> f64 {
+        let p = &self.plan.config;
+        let g = &p.goals;
+        let t = &p.tuning;
+        match flag {
+            Flag::Coriolis => f64::from(self.coriolis),
+            Flag::Umax => self.umax,
+            Flag::TargetX => p.tool_target[0],
+            Flag::TargetY => p.tool_target[1],
+            Flag::UseTool => f64::from(p.use_tool),
+            Flag::RefWn => p.ref_wn,
+            Flag::PushX => p.push.map_or(0.0, |v| v[0]),
+            Flag::PushY => p.push.map_or(0.0, |v| v[1]),
+            Flag::PushOn => f64::from(p.push.is_some()),
+            Flag::PushK => p.push_k,
+            Flag::Posture => g.posture,
+            Flag::Manipulability => g.manipulability,
+            Flag::Orient => g.orient,
+            Flag::OrientTarget => g.orient_target,
+            Flag::Elbow => g.elbow,
+            Flag::ElbowX => g.elbow_target[0],
+            Flag::ElbowY => g.elbow_target[1],
+            Flag::ElbowBody => g.elbow_body as f64,
+            Flag::NullDamping => t.null_damping,
+            Flag::DlsEps => t.dls[0],
+            Flag::DlsMax => t.dls[1],
+            Flag::DlsLowerEps => t.dls_lower[0],
+            Flag::DlsLowerMax => t.dls_lower[1],
+            Flag::FadeLo => t.fade[0],
+            Flag::FadeHi => t.fade[1],
+            Flag::ReachMargin => t.reach_margin,
+            Flag::IkStep => t.ik_step,
+            Flag::IkDamping => t.ik_damping,
+            Flag::PushMax => t.push_max,
+            Flag::StopK => t.stop_k,
+            Flag::StopC => t.stop_c,
+            Flag::StopDepth => t.stop_depth,
+            Flag::Baumgarte => t.baumgarte,
+            Flag::MotorSpeed => t.motor_speed,
+            Flag::Lead => t.lead,
+        }
     }
 
     pub fn set_flag(&mut self, flag: Flag, v: f64) -> bool {

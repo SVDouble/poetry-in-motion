@@ -10,7 +10,7 @@ use crate::MAXN;
 use crate::dynamics::{Constraints, Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
 use crate::model::Model;
-use crate::plan::{Plan, SubTask, Tool, Tuning, manipulability, resolve_accel};
+use crate::plan::{Plan, SubTask, TaskRole, Tool, Tuning, manipulability, resolve_accel};
 
 type MatN = [f64; MAXN * MAXN];
 
@@ -76,7 +76,7 @@ fn keep_weight(r: f64, [lo, hi]: [f64; 2]) -> f64 {
 /// Strict task priorities in the metric of M (Khatib; Siciliano–Slotine): level k acts only in the null
 /// space of levels 1 … k−1, through the motion projector `P_k = P_{k−1} − Ĵ#_k Ĵ_k` (P₀ = I). Torques of
 /// the form Ĵ_kᵀ F or P_kᵀ τ produce no acceleration of any level above k.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Stack {
     n: usize,
     tuning: Tuning,
@@ -307,10 +307,10 @@ impl Secondary {
     fn record(&mut self, tasks: &[SubTask]) {
         *self = Self::default();
         for t in tasks {
-            if t.rows == 1 {
-                self.orient_err = t.e[0];
-            } else {
-                self.elbow_err = t.e;
+            match t.role {
+                TaskRole::Orientation => self.orient_err = t.e[0],
+                TaskRole::Elbow => self.elbow_err = t.e,
+                TaskRole::Additional => {}
             }
         }
     }
@@ -326,7 +326,7 @@ impl Secondary {
 /// target and gravity is compensated,
 /// `τ = Jᵀ(K (x_d − x) − D ẋ) + ∂V/∂q + N τ₀`.
 /// With V_L = T + ½ eᵀ K e (kinetic energy plus spring), V̇_L = −ẋᵀ D ẋ − q̇ᵀ diag(β) q̇ ≤ 0.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Vmc {
     x: [f64; 2],
     xd: [f64; 2],
@@ -545,7 +545,7 @@ fn preference(plan: &Plan, model: &mut Model, c: &Ctx<'_>, gain: f64) -> VecN {
 /// Impedance control (Hogan): make the tool behave like a mass–spring–damper driven by the external force,
 /// `Λ_d ë + D_d ė + K_d e = F_ext` with e = x − x_d. Resolve ẍ_cmd = ẍ_d + Λ_d⁻¹(F_ext − D_d ė − K_d e) into
 /// joint accelerations and cancel the measured F_ext: `B u − Aᵀλ = M q̈ + C q̇ + N − Jᵀ F_ext`.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Impedance {
     x: [f64; 2],
     xd: [f64; 2],
@@ -612,7 +612,7 @@ impl Controller for Impedance {
 
 /// Admittance control: integrate a virtual mass–spring–damper driven by the measured force,
 /// `Λ_d ẍ_v + D_d (ẋ_v − ẋ_d) + K_d (x_v − x_d) = F_ext`, and track x_v with a stiff inner position loop.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Admittance {
     xv: Option<[f64; 2]>,
     xv_dot: [f64; 2],

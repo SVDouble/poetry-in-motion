@@ -31,6 +31,16 @@ fn main() {
     let limits = json.split("\"limits\":").nth(1).unwrap().trim_end_matches('}');
     writeln!(ts, "export const LIMITS = {limits}}} as const;").unwrap();
     writeln!(ts, "export const ABI_VERSION = {};", layout::ABI_VERSION).unwrap();
+    writeln!(
+        ts,
+        "export const HISTORY = {{ hz: {}, frames: {}, bytes: {} }} as const;",
+        motion_core::history::HISTORY_HZ,
+        motion_core::history::HISTORY_FRAMES,
+        motion_core::history::HISTORY_BYTES
+    )
+    .unwrap();
+    writeln!(ts, "export const MAX_TASKS = {};", motion_core::plan::MAX_TASKS).unwrap();
+    writeln!(ts, "export const TASK_WIDTH = {};", motion_core::plan::TASK_WIDTH).unwrap();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/src/generated/contracts.ts");
     if env::args().any(|arg| arg == "--check") {
         assert_eq!(fs::read_to_string(path).unwrap(), ts, "stale browser contracts: run make gen");
