@@ -10,7 +10,10 @@ type Outcome =
 /** Owns authored/installed lifetimes. A prepared revision is accepted before the worker commits it;
  * an accepted reply remains authoritative even if another edit arrives while its commit is in flight. */
 export class DocumentSession {
-  installed: Mechanism | null = null;
+  private runtimeDocument: Mechanism | null = null;
+  get installed(): Mechanism | null {
+    return this.runtimeDocument;
+  }
   private readonly revisions = new Revisions(cloneMechanism);
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -38,12 +41,18 @@ export class DocumentSession {
   async rebuild(): Promise<Outcome> {
     this.cancelScheduled();
     const ticket = this.revisions.capture(this.draft);
-    if (!ticket.document.bodies.length) return { kind: 'empty' };
+    if (!ticket.document.bodies.length) {
+      this.runtimeDocument = null;
+      return { kind: 'empty' };
+    }
     const result = await this.client.build(encode(ticket.document), ticket.current);
     if (!result.ok) return ticket.current() ? { kind: 'error', error: result.error } : { kind: 'stale' };
     this.client.install(result);
-    if (!this.draft.bodies.length) return { kind: 'empty' };
-    this.installed = ticket.document;
+    if (!this.draft.bodies.length) {
+      this.runtimeDocument = null;
+      return { kind: 'empty' };
+    }
+    this.runtimeDocument = ticket.document;
     return { kind: 'installed', document: ticket.document, result };
   }
 }

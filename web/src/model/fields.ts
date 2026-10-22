@@ -23,7 +23,11 @@ const COMPACT = {
   g: {},
 } as const;
 export function physicalControl(key: PhysicalField, surface: 'inspector' | 'slider' | 'runtime') {
-  return { ...PHYSICAL[key], ...(surface === 'inspector' ? {} : COMPACT[key]) };
+  return {
+    ...PHYSICAL[key],
+    ...(surface === 'inspector' ? {} : COMPACT[key]),
+    ...(surface === 'runtime' && key === 'm' ? { min: 0 } : {}),
+  };
 }
 
 /** Uniform-rod dependencies apply to authored documents; runtime overrides remain independent. */

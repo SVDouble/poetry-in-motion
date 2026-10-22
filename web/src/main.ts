@@ -376,7 +376,6 @@ class App {
   private showEmpty(): void {
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = null;
-    this.document.installed = null;
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
     this.robot = new RobotView(this.mech);

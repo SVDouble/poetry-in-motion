@@ -11,6 +11,7 @@ it('keeps valid idealizations independent of slider ranges', () => {
   expect(validPhysical('g', Number.NaN)).toBe(false);
   expect(physicalControl('m', 'slider').min).toBeGreaterThan(0);
   expect(physicalControl('m', 'inspector').min).toBe(0);
+  expect(physicalControl('m', 'runtime').min).toBe(0);
 });
 
 it('updates uniform dependencies together when authoring mass or length', () => {
