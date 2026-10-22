@@ -95,10 +95,20 @@ const passiveLab: LabFn = (c) => {
             {
               title: 'Switch Coriolis off',
               goal: 'What happens if the simulation forgets the C(q, q̇)q̇ term?',
-              actions: [{ do: 'reset' }, { do: 'coriolis', on: false }, { do: 'kick', v: 2 }],
+              actions: [
+                { do: 'reset' },
+                { do: 'coriolis', on: false },
+                { do: 'kick', v: 2 },
+                // Omitting C in a constrained linkage can make the deliberately incomplete ODE diverge.
+                // Show its energy error for one physical second, then restore the complete dynamics.
+                ...(c.loops
+                  ? [{ do: 'wait', ms: 1000 } as const, { do: 'coriolis', on: true } as const]
+                  : []),
+              ],
               plots: [{ ids: ['energy:E', 'energy:Ebal'] }, { ids: ['budget'] }],
-              notice:
-                'With $C\\dot q$ missing the energy is no longer accounted for: the budget residual wanders although nothing does work. Coriolis and centrifugal forces do no work, but they are needed to keep the bookkeeping right. (Switch it back on with the Coriolis toggle.)',
+              notice: c.loops
+                ? 'Coriolis is omitted for one simulated second, then restored. The missing power $\\dot q^T C\\dot q$ breaks the energy balance: the budget residual moves, then keeps that offset once the full dynamics return. Leaving these incomplete dynamics running can cause numerical recovery; the short interval keeps this comparison interpretable.'
+                : 'With $C\\dot q$ missing the energy is no longer accounted for: the budget residual wanders although nothing does work. The power $\\dot q^T C\\dot q$ balances the change in kinetic energy from configuration-dependent inertia. (Switch it back on with the Coriolis toggle.)',
             },
           ] as Experiment[])
         : []),

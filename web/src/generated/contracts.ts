@@ -28,6 +28,7 @@ export const FIELDS = [
   'E0',
   'BUDGET',
   'EIG_M',
+  'RECOVERY',
   'FRAMES',
   'COMS',
   'TOOL_P',
@@ -92,6 +93,7 @@ export const FIELDS_LENGTHS = {
   E0: 1,
   BUDGET: 1,
   EIG_M: 7,
+  RECOVERY: 3,
   FRAMES: 30,
   COMS: 16,
   TOOL_P: 2,
@@ -125,7 +127,7 @@ export const FIELDS_LENGTHS = {
   ALPHA: 8,
   ELEMENT_F: 8,
   JCOM: 112,
-  SLOT: 1070,
+  SLOT: 1085,
 } as const;
 export const SLOT_FIELDS = [
   'KIND',
@@ -134,6 +136,7 @@ export const SLOT_FIELDS = [
   'ERR_X',
   'EFFORT',
   'ENERGY',
+  'RECOVERY',
   'Q',
   'U',
   'FRAMES',
@@ -147,6 +150,7 @@ export const SLOT_FIELDS_LENGTHS = {
   ERR_X: 1,
   EFFORT: 1,
   ENERGY: 3,
+  RECOVERY: 3,
   Q: 7,
   U: 7,
   FRAMES: 30,
@@ -221,4 +225,4 @@ export const DEFAULT_FLAGS = [
   'Lead',
 ] as const;
 export const LIMITS = {"version":4.0,"header":6,"perBody":18,"perClosure":8,"perElement":9,"paramsPerBody":5,"maxBodies":8,"maxDof":7,"maxClosures":4,"maxElements":8} as const;
-export const ABI_VERSION = 1;
+export const ABI_VERSION = 2;

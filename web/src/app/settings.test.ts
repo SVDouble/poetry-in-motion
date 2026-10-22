@@ -40,7 +40,7 @@ describe('core settings metadata', () => {
     const raw = JSON.parse(tc.text(c.layout_ptr(), c.layout_len()));
     for (const dt of [undefined, 0, -0.001, null])
       expect(() => parseLayout(JSON.stringify({ ...raw, dt }))).toThrow(/timestep.*rebuild/);
-    expect(() => parseLayout(JSON.stringify({ ...raw, limits: {} }))).toThrow(/limits.*rebuild/);
+    expect(() => parseLayout(JSON.stringify({ ...raw, limits: {} }))).toThrow(/limit.*rebuild/);
     expect(() => parseLayout(JSON.stringify({ ...raw, defaults: undefined }))).toThrow(/defaults.*rebuild/);
   });
 });

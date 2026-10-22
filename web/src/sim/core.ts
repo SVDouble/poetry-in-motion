@@ -12,6 +12,7 @@ export interface Core {
   derivation_len(): number;
   reset(): void;
   step(n: number): void;
+  bench_prepare(): void;
   bench(n: number): void;
   publish(): void;
   set_param(i: number, v: number): number;

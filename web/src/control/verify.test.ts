@@ -353,8 +353,19 @@ async function play(
   const t: number[] = [];
   const marks: [string, number][] = [];
   let clock = 0;
+  let recoveries = 0;
+  let recoveryAt = 0;
   const sample = () => {
     tc.snapshot(snap);
+    const observedRecoveries = Math.max(
+      recoveries,
+      snap.v('RECOVERY'),
+      ...snap.slots.filter((s) => s.on).map((s) => s.v('RECOVERY')),
+    );
+    if (clock > 0 && observedRecoveries > recoveries) {
+      recoveries = observedRecoveries;
+      recoveryAt = clock;
+    }
     t.push(clock);
     for (const [id, s] of sigs) rec.get(id)!.push(s ? s.get() : Number.NaN);
   };
@@ -391,7 +402,10 @@ async function play(
       );
     },
   };
-  const failure = check.verify(tr, key);
+  const failure =
+    recoveries > 0
+      ? `numerical recovery interrupted the experiment (${recoveries} at ${recoveryAt.toFixed(2)}s)`
+      : check.verify(tr, key);
   if (!failure) return null;
   // say what was observed: the extremes of the signals the check looks at
   const seen = (check.ids?.(key) ?? []).map((id) => `${id} ≤ ${fmt(tr.max(id))}`).join(', ');

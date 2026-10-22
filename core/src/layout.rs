@@ -17,7 +17,7 @@ pub const MAXF: usize = MAXB + 2;
 /// Simulation slots: the primary and up to four shadows.
 pub const SLOTS: usize = 5;
 /// Incompatible snapshot/command ABI changes increment this, independently of document versions.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 macro_rules! layout {
     ($module:ident, $fields:ident; $($(#[$doc:meta])* $name:ident : $len:expr),* $(,)?) => {
@@ -63,6 +63,8 @@ layout! { off, FIELDS;
     /// constraint forces], E₀, and the residual E − E₀ − (net work).
     WORK: 5, E0: 1, BUDGET: 1,
     EIG_M: MAXN,
+    /// Integration recoveries, loop-step retries, most recent recovery time (s, −1 if none).
+    RECOVERY: 3,
     /// (x, y, φ) of the frames s, 1 … nb, t.
     FRAMES: 3 * MAXF,
     COMS: 2 * MAXB,
@@ -105,6 +107,7 @@ layout! { slot, SLOT_FIELDS;
     /// Controller kind (−1 when the slot is off), phase, ‖q − q*‖, ‖x − x_d‖, ‖u‖.
     KIND: 1, PHASE: 1, ERR_Q: 1, ERR_X: 1, EFFORT: 1,
     ENERGY: 3,
+    RECOVERY: 3,
     Q: MAXN,
     U: MAXN,
     FRAMES: 3 * MAXF,

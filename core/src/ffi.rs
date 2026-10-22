@@ -9,10 +9,11 @@ use crate::control::Kind;
 use crate::layout::{self, Flag};
 use crate::mech::presets;
 use crate::model::Model;
-use crate::world::World;
+use crate::world::{Benchmark, World};
 
 thread_local! {
     static WORLD: RefCell<World> = RefCell::new(World::new(Model::from_desc(&presets::cartpole())));
+    static BENCHMARK: RefCell<Option<Benchmark>> = const { RefCell::new(None) };
     static PREPARED: RefCell<Option<Model>> = const { RefCell::new(None) };
     static DESC: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -127,8 +128,10 @@ exports! {
         });
     }
 
-    /// Run `n` steps on a throw-away copy of the primary (for timing; state is untouched).
-    fn bench(n: u32) { with(|w| w.bench(n)) }
+    /// Prepare an isolated copy and controller design before starting an integration timer.
+    fn bench_prepare() { BENCHMARK.with_borrow_mut(|b| *b = Some(with(|w| w.benchmark()))) }
+    /// Advance the prepared benchmark, leaving the live simulation untouched.
+    fn bench(n: u32) { BENCHMARK.with_borrow_mut(|b| { if let Some(b) = b { b.run(n); } }); }
 
     fn set_dt(dt: f64) -> i32 { mutation(with(|w| w.set_dt(dt))) }
     fn param_value(i: u32) -> f64 { with(|w| w.primary().p.get(i as usize).copied().unwrap_or(f64::NAN)) }

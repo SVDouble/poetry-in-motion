@@ -114,6 +114,7 @@ function tick(): void {
   if (now - lastBench > BENCH_EVERY_MS) {
     // a few real-time steps are too short to time with the coarse clock, so time a batch on a copy, sized
     // from the last measurement to take about BENCH_MS
+    c.bench_prepare();
     const t0 = performance.now();
     c.bench(benchSteps);
     const ms = performance.now() - t0;

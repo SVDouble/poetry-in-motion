@@ -55,7 +55,7 @@ export class Gauges {
     const n = d.n;
     const bars = this.settings.torqueBars;
     const energy = this.settings.energyGauge;
-    const height = (bars ? 22 + n * (4 * ROW + 10) : 0) + (energy ? 24 + 6 * 19 + 22 : 0) + 8;
+    const height = (bars ? 22 + n * (4 * ROW + 10) : 0) + (energy ? 24 + 6 * 19 + 42 : 0) + 8;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (this.canvas.height !== Math.round(height * dpr)) {
       this.canvas.width = Math.round(W * dpr);
@@ -166,6 +166,9 @@ export class Gauges {
       c.fillStyle = muted;
       c.font = `italic ${SUB}`;
       c.fillText(`budget residual ${snap.v('BUDGET').toExponential(1)} J`, 8, y + 14);
+      const recoveries = snap.v('RECOVERY');
+      c.fillStyle = ink(recoveries > 0 ? palette.warn : palette.muted);
+      c.fillText(`${recoveries} recoveries · ${snap.v('RECOVERY', 1)} loop retries`, 8, y + 32);
     }
   }
 }

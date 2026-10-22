@@ -100,6 +100,8 @@ impl Constraints {
 
     /// Minimal-norm solution of `A x = r`: `x = Aᵀ (A Aᵀ + εI)⁻¹ r`.
     #[must_use]
+    /// The absolute 1e-12 diagonal regularizer below stabilizes redundant rows of A Aᵀ.
+    /// It is not the relative singular-value damping used by task controllers.
     pub fn min_norm(&self, r: &[f64]) -> VecN {
         let m = self.m;
         let mut aat = [0.0; MAXM * MAXM];

@@ -196,15 +196,13 @@ impl World {
         &self.out
     }
 
-    /// Run `n` steps on a throw-away copy of the primary (for timing; the state is untouched).
-    pub fn bench(&self, n: u32) {
-        let s = &self.primary;
-        let mut copy = s.fork(s.kind);
-        let p = &self.params[s.kind as usize];
-        for _ in 0..n {
-            copy.step(p);
-        }
-        std::hint::black_box(&copy.q);
+    /// Prepare a throw-away primary for timing. Fork and controller design happen outside the timer.
+    #[must_use]
+    pub fn benchmark(&self) -> Benchmark {
+        let mut sim = self.primary.fork(self.primary.kind);
+        let params = self.params[sim.kind as usize].clone();
+        sim.publish_slot(&mut [0.0; slot::LEN], &params);
+        Benchmark { sim, params }
     }
 
     /// `{"specs": […], "applicable": {kind: null | "reason"}, "params": [[…] per kind]}`.
@@ -230,5 +228,20 @@ impl World {
             app.join(","),
             params.join(",")
         )
+    }
+}
+
+/// Isolated ongoing integration measurement; preparing it never changes the live world.
+#[derive(Debug)]
+pub struct Benchmark {
+    sim: Sim,
+    params: Vec<f64>,
+}
+impl Benchmark {
+    pub fn run(&mut self, n: u32) {
+        for _ in 0..n {
+            self.sim.step(&self.params);
+        }
+        std::hint::black_box(&self.sim.q);
     }
 }

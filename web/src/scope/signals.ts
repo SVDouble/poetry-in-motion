@@ -161,6 +161,10 @@ export class Signals {
         if (!t || (a === 'con' && !this.d.closures.length)) return undefined;
         return { id, label: t[0], unit: 'J', get: () => s.v('WORK', t[1]) };
       }
+      case 'recoveries':
+        return { id, label: 'integration recoveries since reset', unit: '', get: () => s.v('RECOVERY') };
+      case 'retries':
+        return { id, label: 'loop integration retries since reset', unit: '', get: () => s.v('RECOVERY', 1) };
       case 'budget':
         return { id, label: 'budget residual E − E₀ − ΣW', unit: 'J', get: () => s.v('BUDGET') };
       case 'detM':
@@ -274,6 +278,8 @@ export class Signals {
     }
     if (what === 'effort')
       return { id, label: `${name} ‖u‖`, unit: 'N·m | N', get: read('EFFORT'), ...style };
+    if (what === 'recoveries')
+      return { id, label: `${name} recoveries`, unit: '', get: read('RECOVERY'), ...style };
     if (what === 'E') return { id, label: `${name} E`, unit: 'J', get: read('ENERGY', 2), ...style };
     const j = Number(what.slice(1));
     if (what[0] === 'q' && j < this.d.n) {
@@ -344,6 +350,7 @@ export class Signals {
         name: 'Energy budget',
         ids: ['work:in', 'work:ext', 'work:stop', 'work:fric', 'work:con', 'budget'],
       },
+      { name: 'Integration', ids: ['recoveries', 'retries'] },
       { name: 'Inertia', ids: ['detM', ...range(n, (i) => `eig:${i}`)] },
     ];
     if (this.d.tool) {

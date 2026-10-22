@@ -142,6 +142,7 @@ async function act(port: Port, a: Action): Promise<void> {
     case 'coriolis':
       settings.coriolis = a.on;
       port.flag('Coriolis', a.on ? 1 : 0);
+      port.settingsChanged?.();
       return;
     case 'reset':
       port.reset();

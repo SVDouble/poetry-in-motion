@@ -18,6 +18,20 @@ const CONTACT_SUBSTEPS: u32 = 20;
 const LOOP_TOLERANCE: f64 = 1e-7;
 const LOOP_SUBSTEPS: u32 = 10;
 
+/// Numerical recovery counters since the last reset. A recovery interrupts the energy budget.
+#[derive(Clone, Copy, Debug)]
+pub struct IntegrationDiagnostics {
+    pub recoveries: u64,
+    pub loop_retries: u64,
+    /// Simulation time of the most recent recovery, or −1 when none has occurred.
+    pub last_recovery: f64,
+}
+impl Default for IntegrationDiagnostics {
+    fn default() -> Self {
+        Self { recoveries: 0, loop_retries: 0, last_recovery: -1.0 }
+    }
+}
+
 /// Energy budget: the work done on the mechanism since the last restart.
 ///
 /// Integrated with the RK4 weights of the motion itself, so that `E − E₀ = W_in + W_ext + W_stop − W_friction + W_constraint` holds to RK4 accuracy.
@@ -65,6 +79,7 @@ pub struct Sim {
     retargeted: f64,
     aux: Vec<f64>,
     pub budget: Budget,
+    pub diagnostics: IntegrationDiagnostics,
 }
 
 /// Configuration that survives mechanism replacement. Targets and body indices belong to a mechanism.
@@ -105,6 +120,7 @@ impl Sim {
             retargeted: f64::NEG_INFINITY,
             aux: Vec::new(),
             budget: Budget::default(),
+            diagnostics: IntegrationDiagnostics::default(),
         };
         sim.aux = vec![0.0; sim.model.aux_off.len];
         sim.reset();
@@ -194,6 +210,7 @@ impl Sim {
         self.q[..self.model.n].copy_from_slice(&self.model.q0);
         self.t = 0.0;
         self.steps = 0;
+        self.diagnostics = IntegrationDiagnostics::default();
         self.settle();
     }
 
@@ -590,6 +607,7 @@ impl Sim {
                 dynamics::constraints(&mut self.model, &self.q, &self.qd).map_or(0.0, |k| k.max_violation());
             let grew = after - before;
             if grew.is_nan() || grew > LOOP_TOLERANCE {
+                self.diagnostics.loop_retries += 1;
                 (self.q, self.qd, self.budget) = (q0, qd0, budget0);
                 for s in 0..LOOP_SUBSTEPS {
                     self.rk4(h / f64::from(LOOP_SUBSTEPS), (s == 0).then_some((&terms, k.as_ref())));
@@ -597,6 +615,8 @@ impl Sim {
             }
         }
         if !self.q.iter().chain(&self.qd).all(|v| v.is_finite() && v.abs() < 1e5) {
+            self.diagnostics.recoveries += 1;
+            self.diagnostics.last_recovery = self.t + h;
             // a diverging controller or integration: fall back to the last good state, at rest
             self.q = q0;
             self.qd = [0.0; MAXN];
@@ -651,6 +671,11 @@ impl Sim {
         (eq, ex)
     }
 
+    fn recovery_values(&self) -> [f64; 3] {
+        let d = &self.diagnostics;
+        [d.recoveries as f64, d.loop_retries as f64, d.last_recovery]
+    }
+
     /// The compact block of this simulation in its slot.
     pub fn publish_slot(&mut self, o: &mut [f64], params: &[f64]) {
         self.redesign(params);
@@ -668,6 +693,7 @@ impl Sim {
         let effort = (0..self.model.nu).map(|i| self.u[i] * self.u[i]).sum::<f64>().sqrt();
         put(slot::KIND, &[f64::from(self.kind as u32), f64::from(self.ctrl.phase()), eq, ex, effort]);
         put(slot::ENERGY, &[ke, pe, ke + pe]);
+        put(slot::RECOVERY, &self.recovery_values());
         put(slot::Q, &q[..n]);
         put(slot::U, &self.u[..self.model.nu]);
         put(slot::TOOL, &a[ao.tool_p..ao.tool_p + 2]);
@@ -772,6 +798,7 @@ impl Sim {
         let b = &self.budget;
         put(off::WORK, &[b.work[0], b.work[1], b.work[2], b.work[3], b.work[4], b.e0, b.residual(ke + pe)]);
         put(off::EIG_M, &eig[..n]);
+        put(off::RECOVERY, &self.recovery_values());
         put(off::COMS, &a[ao.coms..ao.coms + 2 * nb]);
         put(off::TOOL_P, &a[ao.tool_p..ao.tool_p + 2]);
         put(off::JP, &a[ao.jp..ao.jp + 2 * n]);

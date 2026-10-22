@@ -66,6 +66,8 @@ impl Tool {
         }
         let speed = qd[..n].iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         if speed > 1e-12 {
+            // Choose a time displacement whose largest coordinate change is 1e-6 (rad or m).
+            // This directional derivative scale is independent of the physics timestep and DLS damping.
             let h = 1e-6 / speed;
             let qh: VecN = core::array::from_fn(|i| if i < n { q[i] + h * qd[i] } else { 0.0 });
             tape.eval(&qh, &zero, &mut buf);
@@ -636,6 +638,8 @@ pub fn point_kinematics(
     };
     let base: VecN = core::array::from_fn(|i| if i < n { q[i] } else { 0.0 });
     let p = at(model, &base);
+    // Coordinate differences are 1e-6 rad (revolute) or m (prismatic), not seconds.
+    // Central differences cancel first-order truncation; keep this local to position kinematics.
     let h = 1e-6;
     let mut j = [0.0; 2 * MAXN];
     for c in 0..n {

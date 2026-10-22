@@ -204,3 +204,33 @@ fn closed_loop_hierarchies_remain_feasible_with_conflicting_lower_goals() {
         }
     }
 }
+
+#[test]
+fn benchmark_setup_and_steps_leave_the_live_simulation_untouched() {
+    let mut w = world();
+    w.set_controller(0, Some(Kind::ComputedTorque));
+    w.step(100);
+    let before = w.publish().to_vec();
+    let mut bench = w.benchmark();
+    bench.run(1000);
+    assert_eq!(before, w.publish());
+}
+
+#[test]
+fn integration_recovery_is_observable_and_reset_starts_new_counters() {
+    let mut desc = presets::arm2();
+    desc.bodies.truncate(1);
+    desc.tool = Some(0);
+    let mut w = World::new(Model::from_desc(&desc));
+    assert!(w.set_state(0, 0.0, 1e6));
+    w.set_controller(1, Some(Kind::Passive));
+    w.step(1);
+    let o = w.publish();
+    assert!((o[off::RECOVERY] - 1.0).abs() < 1e-12);
+    assert!((o[off::RECOVERY + 2] - o[off::TIME]).abs() < 1e-12);
+    assert!(o[off::QD].abs() < 1e-12);
+    assert!((o[off::SLOT + slot::LEN + slot::RECOVERY] - 1.0).abs() < 1e-12);
+    w.reset();
+    let o = w.publish();
+    assert_eq!(&o[off::RECOVERY..off::RECOVERY + 3], &[0.0, 0.0, -1.0]);
+}
