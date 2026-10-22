@@ -40,10 +40,31 @@ usable. Rebuilds retain persistent gains/tuning and reset mechanism-relative tar
 
 `make e2e-smoke` checks actual workers with shared memory and message fallback, including pausing a push
 past its former wall-clock deadline and canceling it on stage exit. CI runs this target with the core job's
-WASM artifact. R1–R5 remain follow-up proposals; only the small extractions needed for F1–F5 are included.
+WASM artifact. The larger refactoring pass now implements the concrete maintenance work in R1–R5 below.
+Conditional optimizations and separate product features remain explicitly listed as follow-ups.
 
-Verification passed: `make check`, production build, all 121 web tests (including 228 guided-experiment
-runs), the 16-preset browser crawl with zero errors, and smoke checks for both snapshot transports.
+The F1–F5 implementation passed `make check`, production build, all 121 then-current web tests
+(including 228 guided-experiment runs), the 16-preset browser crawl with zero errors, and smoke checks
+for both snapshot transports. Refactoring-pass verification is recorded below.
+
+## Larger refactoring implementation
+
+| Area | Implemented boundary | Evidence |
+|---|---|---|
+| R1 | One WASM Core interface; Rust-generated field widths, flag names, required defaults and description limits; checked bounds, overlap, capacities and compatibility; controller reads by registry key. | `make gen-check`, real-WASM layout corruption checks, existing controller/physics/experiment tests. |
+| R2 | `DocumentSession` owns drafts, accepted installs, revision checks and scheduled rebuilds. Physical field descriptors separate admissibility, units and presentation ranges; uniform dependencies remain authored-only. | Document ordering/failure/empty-scene tests; field/domain tests; browser transitions. |
+| R3 | Plan has separate Configuration, Design and References. Ordered invalidation preserves stronger cache dependencies. Typed frame point/orientation tasks extend the built-ins, with posture/manipulability below them. Constraint-tangent hierarchies serve VMC, impedance and admittance. | Native leakage/progress/affine-constraint tests, conflicting-goal loop tests, real-WASM feasible/infeasible parallel-platform targets, shadow/rebuild task lifetimes and existing physics checks. |
+| R4 | Separate cost profiler; shared compiled tape tables, shared replaceable parameter coefficients, private evaluation buffers and shared derivation text. Worker timing prepares its isolated simulation before starting the integration timer. | [Measured clone reduction](BENCHMARKS.md), isolation tests and live-world preservation during benchmarking. |
+| R5 | Pen/context definitions, backends, mechanical primitives, force balance and view management are separate modules. Pens carry their colors explicitly. Recovery counts, loop retries and last recovery time are published per slot; scopes and the energy gauge expose them. | Force-balance/export regressions, recovery/reset coverage, and guided experiments reject numerical recoveries. |
+
+WASM ABI version is now 2; worker transport remains version 1 and document encoding remains version 4.
+The maintained responsibilities and lifecycle rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+Remaining work is deliberately conditional: authored parameter edits still rederive to preserve history,
+initial/reset behavior and uniform-rod dependencies; browser profiling can guide further design/storage
+optimization; recorder changes and lazy loading need a demonstrated user-visible benefit. Exact rewind
+checkpoints/replay, new UI controls for arbitrary ordered task lists, and spatial/3D support are product
+extensions, not consequences of these refactors. The native typed task API is available now.
 
 ## Responsibilities to preserve
 
@@ -215,84 +236,88 @@ simulated time within stepping/sampling tolerance. Cancel during setup and durin
 run, leave the stage, and rebuild. The obsolete run must neither mutate the new session nor mark itself
 complete, and cancellation must leave no unowned active push.
 
-## Refactoring and generalization after the fixes
+## Larger refactoring rationale and remaining work
 
-### R1. Consolidate contracts in small steps
+### R1. Consolidated contracts
 
-First share one TypeScript WASM `Core` interface between runtime and harnesses. Generate the remaining
-numeric limits and name/type catalogs from explicit Rust metadata, with freshness and real-WASM ABI
-checks. Preserve runtime metadata as the authority for snapshot offsets and defaults. Generated TypeScript
-alone cannot establish compatibility with a stale WASM asset.
+Runtime and test harnesses now share the TypeScript `Core` interface. Rust metadata generates browser
+field names/widths, flag names, required defaults and mechanism limits; freshness is checked locally and
+in CI. Runtime metadata still supplies offsets, defaults and timestep. `parseLayout` rejects incompatible
+versions, missing fields, wrong widths, overlap, out-of-bounds fields and inconsistent capacities. Real-WASM
+tests exercise corruption and stale-contract rejection rather than trusting generated TypeScript alone.
 
-Extend [`parseLayout`](web/src/sim/layout.ts) to check field bounds/lengths and required metadata.
-Use explicit compatibility versions for the WASM layout and worker transport as those contracts change;
-the mechanism description version has a different purpose. Controller parameter indices such as
-`params[4]` are another coordination point: derive named accessors or typed parameter views from their
-specs while retaining the compact numeric ABI. Introduce generation incrementally as a replacement for
-manual duplication; a general-purpose schema framework is unnecessary for the first step.
+WASM ABI and worker transport versions are independent of the description format. Controller implementations
+read parameter keys through their registry rather than duplicating numeric offsets. This retains the
+compact scalar/array ABI without introducing a general schema framework.
 
-### R2. Share editing semantics while retaining distinct lifetimes
+### R2. Shared editing semantics and document ownership
 
-[`Editor.bodyFields`](web/src/builder/editor.ts),
-[`bodyControls`](web/src/builder/inspector.ts), and the
-[`Model` tab](web/src/app/goals.ts) repeat field semantics and use different ranges. Define units,
-admissibility, uniform-rod dependencies, and edit effects once; let each control choose an explicit
-presentation range. Preserve runtime overrides as separate from the authored defaults unless the product
-explicitly gains an Apply-to-document action.
+`model/fields.ts` centralizes units, physical admissibility, uniform-rod dependencies and explicit control
+presentation ranges. Slider minima are not physical validity rules: idealizations such as zero inertia,
+zero friction and zero mass remain subject to the core's effective-inertia check. Runtime overrides stay
+separate from authored defaults; changing runtime length/mass does not silently rewrite rod inertia.
 
-Extract document/build coordination from `App` around the F3 revision contract. Then consider avoiding
-re-derivation for authored parameter-only edits. That fast path must still update the document, history,
-initial/reset behavior, and uniform-rod `r`/`I`; calling `set_param` alone does not preserve those semantics.
-Mount coefficients and topology still require recompilation. Module length identifies places to inspect;
-revision ownership and edit behavior provide the actual extraction boundaries.
+`DocumentSession` now owns drafts, installed documents, revision capture, scheduled rebuilds and accepted
+commit installation. `App` manages their presentation. Tests cover obsolete candidates, newer edits during
+accepted commits, failed builds and empty scenes.
 
-### R3. Make design dependencies explicit before splitting Plan
+Authored parameter-only edits still rederive. A future fast path must also update history, initial/reset
+behavior and uniform-rod dependencies; calling `set_param` alone would change those semantics. Mounts and
+topology continue to require recompilation.
 
-[`Plan`](core/src/plan.rs) mixes goal configuration, reference state, and equilibrium/linearization
-caches. Record which inputs invalidate each cache, including model parameters, targets, timestep-dependent
-controller design, and tuning used in linearization. Apply those rules through setters or explicit revision
-checks. This addresses F1 directly. Extract goal configuration, reference generation, and design results
-when those boundaries make the invalidation rules easier to enforce.
+### R3. Separate Plan lifetimes and generalize task hierarchies
 
-For additional body targets, generalize [`sub_tasks`](core/src/plan.rs) into an ordered list of typed
-point/orientation tasks, keeping posture/manipulability as explicit lower-priority preferences. For
-closed-loop hierarchies, extend [`stacked_accel`](core/src/control/task.rs) to respect constraint
-tangent coordinates. This is a feature extension: the current fallback deliberately resolves only the
-tool task with loops. Require leakage, feasibility, and constraint tests before exposing more goal levels.
-A spatial/3D extension needs a separate review of kinematics, Jacobians, constraints, and expression
-growth; a generalized task interface alone does not establish support for spatial mechanisms.
+`Configuration`, cached `Design` and live `References` are separate Plan state groups. Ordered invalidation
+makes Plan work include controller redesign; controller-only changes cannot clear pending Plan work. The
+cache dependency table is maintained in [ARCHITECTURE.md](ARCHITECTURE.md) and alongside the implementation.
+Validated simulation setters apply those rules; direct native configuration manipulation is not a substitute
+for them when changing cache-dependent inputs.
 
-### R4. Measure before sharing model storage or changing observation cadence
+Typed `TaskGoal` point/orientation targets identify ground, body or tool frames and form an ordered list.
+The existing orientation/elbow controls precede additional native tasks; posture and manipulability remain
+lower preferences. Closed-loop hierarchies now use the constraint tangent metric and an affine curvature
+acceleration. Tests check constraint feasibility, higher-priority leakage, lower-level progress, infeasible
+goals and task lifetimes. A real-WASM parallel-platform test checks both an independently rotating platform
+frame and a piston frame whose orientation is already determined by its held tool point.
 
-[`Model`](core/src/model.rs) and [`Tape`](core/src/tape.rs) combine reusable compiled tables with
-parameter-dependent coefficients and mutable evaluation scratch. Slots deep-clone them, and
-[`World::bench`](core/src/world.rs) forks another simulation for each measurement. The benchmark includes
-fork/setup cost and restarted controller/reference state; it does not measure only an ongoing step.
+Existing hierarchy controls are enabled on constrained mechanisms with remaining degrees of freedom.
+A UI for arbitrary additional native tasks remains a feature extension. Spatial/3D support still requires a
+separate review of kinematics, Jacobians, constraints and expression growth.
 
-Measure derivation, fork/setup, controller redesign, integration, snapshot publication, and complete worker
-tick time separately on the larger presets with shadows. If cloning or memory is material, separate
-read-only compiled data, folded parameter data, and per-slot workspace. Retain independent controller and
-reference state and account for future divergence of slot parameters before sharing folded data.
+### R4. Measure costs and share reusable model storage
 
-Rendering, equation refresh, plot sampling, physics stepping, and rewind retention have different purposes.
-Give each an explicit time basis and reset/model-generation handling; equal frequencies alone do not
-justify one shared constant. [`Timeline`](web/src/app/timeline.ts) is an observation history. Its Resume
-here operation currently restores primary joint state, restarts controllers/shadows, and keeps current
-simulation time; it does not restore a historical checkpoint. Define that behavior before promising exact
-replay. Full checkpoints or deterministic command replay are separate features.
+The new profiler separates derivation, model cloning, fork/design, redesign, integration, publication and
+a five-slot step/publication batch. [Measurements](BENCHMARKS.md) showed the seven-joint model clone fall
+from about 34 µs to below 1 µs after sharing compiled tape tables and derivation text. Parameter coefficients
+can be shared until replaced; evaluation scratch and execution state remain private. Model description and
+small topology arrays remain owned. This preserves the ability for slot parameters to diverge later.
 
-### R5. Split rendering and numerical helpers along existing responsibilities
+Worker timing now prepares its isolated primary and initial controller design before starting the step
+cost timer. It still measures a restarted copy, not the total live worker tick. Native measurements also
+exclude browser/WASM and transport overhead; they do not justify changing observation cadence or establish
+a stable throughput improvement. Design work remains a larger fork cost than cloning.
 
-Extract Pen backends, mechanical primitives, diagnostic/free-body calculations, and view-layer management
-from [`schematic.ts`](web/src/scene/schematic.ts). Pass the drawing context explicitly to remove its
-module-level mutable ink state. Preserve the shared drawing path, force-balance tests, and export parity.
+Rendering, equation refresh, plots, stepping and rewind retention retain different time bases. Timeline is
+observation history: Resume here restores primary joint state, restarts controllers/shadows and retains
+current simulation time. Full checkpoints or deterministic replay remain separate features.
 
-For numerical helpers, document units, scaling, convergence criteria, and regularization where each
-algorithm lives. Consolidate a tolerance only when its mathematical meaning is shared. Add telemetry for
-[`integration recovery`](core/src/sim.rs), which currently restores the old position, zeroes velocity,
-and restarts the energy budget without exposing that event. This helps distinguish a successful experiment
-from one interrupted by numerical recovery. Optimize recorder storage or lazy-load page content when
-profiling shows a user-visible benefit; the existing bundle warning alone does not establish one.
+### R5. Rendering boundaries and numerical observability
+
+Pen/context definitions, backends, mechanical primitives, force/moment balance, Figure composition and
+screen-layer management now have separate modules. Each Pen carries its palette; active pictures no longer
+change module-global inks. Force-balance tests use the pure load calculation boundary directly, and
+canvas/SVG/TikZ retain the shared drawing path.
+
+Recovery telemetry reports per-slot recovery count, loop-step retries and the latest recovery time.
+Counters reset with a simulation reset; recovery still restores the previous position at rest and restarts
+the energy budget. Scope signals and the energy gauge expose these events. Guided verification rejects
+recovery during its sampled run. This revealed an unstable four-bar demonstration with deliberately
+incomplete Coriolis-off dynamics; constrained demonstrations now restore full dynamics after one simulated
+second, preserving the observable energy-budget discrepancy without requiring recovery.
+
+Finite-difference coordinate/time scales and constraint regularization are documented where they are used.
+Similar-looking tolerances with different mathematical meanings remain local. Recorder optimization and
+lazy loading remain conditional on a measured user-visible benefit; the bundle warning alone is insufficient.
 
 ## Delivery and verification
 
@@ -303,14 +328,28 @@ profiling shows a user-visible benefit; the existing bundle warning alone does n
 | 3 | F3 revisions and worker lifecycle | Controlled build-response ordering, mismatched generations, build rejection, and worker failure. |
 | 4 | F4 validation | Import/ABI/mutation rejection plus valid idealizations and preservation of the installed state. |
 | 5 | F5 experiment lifecycle | Controlled waits/cancellation and browser checks across speed, pause, stage exit, and rebuild. |
-| Later | R1–R5 | Choose a bounded change tied to a repeated maintenance cost, measured bottleneck, or requested feature. |
+| Refactoring pass | R1–R5 | Implemented boundaries and evidence are listed above; conditional optimizations remain separate. |
 
 Keep the independent SymPy derivation and existing physics/property/experiment tests as regression gates.
 Add independent branched/prismatic/constrained fixtures and capacity-boundary cases where coverage is
-missing. Add a focused CI browser job for the transition cases above; the broader crawl remains useful
-for interaction coverage. Replace fixed sleeps with observable readiness in new tests. Oracle freshness
+missing. The focused CI browser job now covers the transition cases above; the broader crawl remains
+useful for interaction coverage. Replace fixed sleeps with observable readiness in new tests. Oracle freshness
 already runs through [`test_generated_files_are_up_to_date`](sym/tests/test_derive.py).
 
 Update [`PROJECT.md`](PROJECT.md) to mark superseded production-SymPy and three.js/WebGPU decisions;
 its historical entries currently sit beside the runtime-CAS/canvas design. Keep current invariants and
 transition policies in maintained documentation, with this review serving as the implementation backlog.
+
+## Refactoring-pass verification (2026-10-22)
+
+- Fresh release WASM build, then `make -o wasm check`: 86 Rust tests, six Python tests and 129 web tests
+  pass, including all 228 guided experiment runs with recovery detection. Formatting, lint, types and
+  generated-file freshness pass.
+- Production bundle passes. The existing JavaScript chunk-size warning remains; no loading-policy change
+  is inferred from it.
+- Chromium browser crawl: all 16 presets pass with zero errors.
+- Browser smoke checks exercise shared-memory and message-fallback transports, paused physical-time waits,
+  document transitions and experiment cancellation.
+
+The code was held stable during the final browser crawl; documentation records the implementation and
+separates remaining conditional optimizations from delivered refactors.

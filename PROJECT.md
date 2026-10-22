@@ -44,20 +44,27 @@ updating live** while the robot moves in a real simulation.
 - Students define their own robot and see the equations derived for it.
 - Shareable, embeddable scenes (links or iframes for course pages).
 
-## Decisions (2026-10-20)
+## Current decisions (updated 2026-10-22)
 - **Notation:** Murray, Li & Sastry (MLS). The equation is written M(q)q̈ + C(q,q̇)q̇ + N(q,q̇) = τ, with N for
   gravity + friction, because g is reserved for rigid transforms g_ab ∈ SE(2/3), as in the book. C comes from
   the Christoffel symbols (MLS 4.23), so Ṁ − 2C is skew-symmetric.
-- **Symbolic layer:** SymPy derives every model at build time (`sym/`, Python 3.15 via uv) and generates both the
-  Rust numeric kernels and the LaTeX, so what is displayed and what is simulated cannot drift apart.
+- **Symbolic layer:** the Rust runtime CAS derives each authored planar mechanism in the browser worker.
+  Numeric tapes and the displayed derivation come from that same symbolic representation. SymPy (`sym/`)
+  supplies independent generated oracle kernels for tests; it is no longer the production derivation path.
 - **Compute:** Rust compiled to WebAssembly (`core/`). Plain `extern "C"` exports with scalar arguments and no
   wasm-bindgen; bulk data is read directly from linear memory.
 - **Runtime:** physics runs in a Web Worker at a fixed 1 kHz with RK4. Snapshots go to the UI through a
   SharedArrayBuffer seqlock, with `postMessage` as a fallback.
-- **Rendering:** three.js on WebGPU with a WebGL 2 fallback. Equations use KaTeX, typeset once, with live number
-  slots patched in place. Plots use uPlot.
+- **Rendering:** planar Canvas 2D, SVG and TikZ share one Figure and Pen interface. The earlier three.js /
+  WebGPU proposal was superseded by this implementation. Equations use KaTeX, typeset once, with live
+  number slots patched in place. Plots use uPlot. Spatial simulation/rendering remains a separate design task.
 - **Tooling:** Make orchestrates the three toolchains. rustfmt + clippy, ruff + mypy and Biome + tsc check the code;
   cargo test, pytest and Vitest test it; GitHub Actions runs CI.
+
+- **Ownership and contracts:** document sessions distinguish drafts from installed models; workers commit
+  accepted revisions and tag observations with generations. Rust generates browser catalogs (`make gen`),
+  and startup validates the WASM ABI and worker transport independently of document-format versions.
+  See [ARCHITECTURE.md](ARCHITECTURE.md) for current invariants and [BENCHMARKS.md](BENCHMARKS.md) for measurements.
 
 ## Status
 - v0 (2026-10-20): cart-pole and RR arm with hand-derived (SymPy) kernels and live equations.
