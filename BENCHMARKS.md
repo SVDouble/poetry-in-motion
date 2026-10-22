@@ -58,6 +58,24 @@ evaluation scratch are independent. UI observations use transferred doubles and 
 arrive, replacing the upfront 600-buffer allocation. WASM linear-memory capacity can remain allocated
 after checkpoints are dropped.
 
+## Rust audit: revised storage accounting
+
+The Rust audit replaced fixed allowances and logical lengths with inline type sizes, vector capacities,
+and explicit controller/plan allocations. The same native five-slot impedance fixtures now report:
+
+| Case | Earlier estimate (KiB/checkpoint) | Capacity-based estimate (KiB/checkpoint) |
+|---|---:|---:|
+| arm2 | 118.1 | 66.6 |
+| arm7 | 559.9 | 662.1 |
+| fourbar | 130.2 | 79.9 |
+
+Simple cases no longer pay arbitrary padding. The seven-joint case increases because spare coefficient
+capacity is now counted. LQR matrices, the LQR inside swing-up, MPC allocations, VMC projector storage and
+plan buffers are accounted for explicitly. Shared code and derivation text remain excluded, shared
+coefficients/designs are charged per checkpoint, and allocator bookkeeping is not modeled. These are
+estimates rather than measured heap sizes; the 64 MiB and 600-frame policies are unchanged. This correction
+supports a more faithful eviction estimate, not a throughput claim.
+
 ## Actual browser worker ticks
 
 Reproduce with `CHROMIUM=/path/to/chromium make e2e-profile`. The empty browser fixture starts one actual
@@ -90,5 +108,5 @@ The JSON output preserves all phase distributions for further investigation.
 
 These measurements do not establish a main-thread rendering, scope-recorder or initial-loading problem.
 Observation cadences and loading policy remain unchanged; the bundle warning alone does not justify a
-lazy-loading refactor. The production build is 537,276 bytes of WASM and 562.75 kB of main JavaScript
-(202.58 kB and 189.45 kB gzip respectively).
+lazy-loading refactor. The production build is 537,869 bytes of WASM and 562.75 kB of main JavaScript
+(202.93 kB and 189.45 kB gzip respectively).

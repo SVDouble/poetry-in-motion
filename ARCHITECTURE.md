@@ -91,7 +91,8 @@ required before changing their cadences.
 
 `DocumentSession` coordinates accepted documents and builds. `model/fields` centralizes physical domains,
 units, authored uniform-rod dependencies and explicit control ranges. Authored physical/default/initial-state
-edits prepare a new model using the installed symbolic structure when compatible. They replace defaults,
+edits return a `PreparedModel` containing the independent candidate and its compilation-reuse decision.
+They use the installed symbolic structure when compatible. They replace defaults,
 parameter metadata, initial conditions, targets and limits; refold coefficients; and validate initial inertia.
 The same revision-checked commit/reset path applies, so undo, reset and uniform-rod semantics are preserved.
 Changes to topology, mounts, actuators, tool assignment, closures or elements derive a new structure.
@@ -110,8 +111,10 @@ The UI adopts restored configuration without sending commands that would reset t
 real-WASM tests reproduce future snapshots exactly after the same sequence of fixed steps.
 
 History samples at most 30 times per simulated second, retains at most 600 frames, and evicts earlier when
-a conservative 64 MiB retained-size budget is reached. The budget estimates checkpoint storage and may
-count shared allocations repeatedly; it is not a bound on total browser or WASM memory. IDs survive clears;
+a conservative 64 MiB retained-size budget is reached. Estimates count inline values and vector capacities,
+including plan and controller allocations, with shared coefficients/designs charged in full per checkpoint.
+They exclude immutable compiled code, derivation text and allocator bookkeeping. This is not a bound on
+total browser or WASM memory. IDs survive clears;
 reset/rebuild invalidate old IDs. Expired restores preserve the live world. UI history lazily retains the
 transferred double-precision observations, parameters and push position; it follows worker eviction.
 This is in-session branching from saved state; portable command-log replay is a separate feature.
@@ -121,3 +124,11 @@ The core validates and installs the whole list atomically across slots; zero fre
 Built-ins precede this list, with posture/manipulability last. Experiments clear additional tasks as part
 of setup; mechanism replacement clears their body references. Spatial kinematics, Jacobians, constraints
 and expression growth still need a separate design review.
+
+## Rust compatibility and checks
+
+The core uses Rust 2024 with the minimum toolchain declared in the workspace manifest (currently 1.90).
+CI checks all native targets and the WASM library on that minimum version as well as running tests and
+strict Clippy on stable. Safe Rust is enforced except for the exported-symbol attributes in the scalar
+FFI. Formatting, pedantic/nursery Clippy and warning-free rustdoc were checked during the Rust audit.
+Boolean command flags require exactly 0 or 1; physical tolerances do not apply to protocol tags.

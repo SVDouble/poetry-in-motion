@@ -375,3 +375,24 @@ separates remaining conditional optimizations from delivered refactors.
   native and browser measurements, size estimates and limitations are recorded in [BENCHMARKS.md](BENCHMARKS.md).
 - Final Chromium crawl: all 16 presets complete with zero errors. The code stayed stable during the crawl;
   the final profiling-limit constant extraction also passed focused tests and a production build.
+
+## Rust audit (2026-10-22)
+
+- Reproduced and fixed boolean flags accepting tiny nonzero values through an epsilon comparison.
+  Native and real-WASM regressions check exact boolean domains and preservation of rejected state.
+- Candidate preparation returns a named, must-use `PreparedModel`; FFI metadata uses `Cell` for the scalar
+  reuse flag, keeps the candidate's decision with its model, and clears stale status on failure/discard.
+  Initial-inertia validation is shared and uses stack state; body validation avoids temporary vectors.
+- Checkpoint entries and task roles are explicit. Task codecs destructure fixed-size rows instead of
+  indexing fields, and role assignment no longer depends on a task's numeric position. A regression checks
+  built-in error telemetry with extra tasks and disabled orientation tracking.
+- Storage estimates now use actual types and allocation capacities instead of fixed byte widths and
+  placeholder padding. Plan buffers and VMC, LQR, MPC and embedded swing-up controller allocations are
+  included; mutable state remains independent and shared compiled code stays excluded.
+- Minimum-version checks pass for all native targets and the WASM library on Rust 1.90. CI derives this
+  version from Cargo.toml. Rust 1.99 formatting, strict native/WASM Clippy and warning-free rustdoc pass.
+  All 90 Rust tests and 137 web tests pass, including 228 guided runs. Both browser smoke transports and
+  the production build pass. Checkpoint trajectory coverage now includes cart-pole and closed loops.
+
+The audit adds no dependencies or unsafe blocks. Memory accounting remains an estimate, excluding
+allocator bookkeeping and browser/UI storage; [BENCHMARKS.md](BENCHMARKS.md) records the updated estimates.
