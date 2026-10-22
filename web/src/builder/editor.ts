@@ -24,6 +24,7 @@ import {
   removeBody,
   reparent,
 } from '../model/description';
+import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
 import { initialFrames, poseBounds } from '../scene/kinematics';
 import { drawThumbnail } from '../scene/schematic';
 import { isDark } from '../scene/theme';
@@ -409,7 +410,7 @@ export class Editor {
             label: 'slot direction',
             min: -180,
             max: 180,
-            step: 15,
+            step: SNAP_ANGLE * DEG,
             value: cl.angle * DEG,
             unit: '°',
             format: (v) => v.toFixed(0),
@@ -515,8 +516,8 @@ export class Editor {
     const joint: Field[] =
       b.parent < 0
         ? [
-            { key: 'mountX', label: 'x₀', min: -3, max: 3, step: 0.05, unit: 'm' },
-            { key: 'mountY', label: 'y₀', min: -3, max: 3, step: 0.05, unit: 'm' },
+            { key: 'mountX', label: 'x₀', min: -3, max: 3, step: GRID, unit: 'm' },
+            { key: 'mountY', label: 'y₀', min: -3, max: 3, step: GRID, unit: 'm' },
           ]
         : [
             {
@@ -524,7 +525,7 @@ export class Editor {
               label: 'position s',
               min: 0,
               max: 1,
-              step: 0.05,
+              step: PORT_STEP,
               hint: 'joint position along the parent, as a fraction of its length (kept symbolic: s·l)',
             },
           ];
@@ -533,14 +534,22 @@ export class Editor {
       label: b.joint === 'fixed' ? 'angle' : 'mount angle',
       min: -180,
       max: 180,
-      step: 15,
+      step: SNAP_ANGLE * DEG,
       unit: '°',
       scale: DEG,
       hint: 'rotation of the joint frame relative to the parent frame (0° = along the parent x-axis)',
     });
     if (b.joint === 'prismatic') {
       joint.push(
-        { key: 'axisAngle', label: 'slide axis', min: -180, max: 180, step: 15, unit: '°', scale: DEG },
+        {
+          key: 'axisAngle',
+          label: 'slide axis',
+          min: -180,
+          max: 180,
+          step: SNAP_ANGLE * DEG,
+          unit: '°',
+          scale: DEG,
+        },
         {
           key: 'limit',
           label: 'range ±',
@@ -580,7 +589,7 @@ export class Editor {
         tex: true,
         min: 0,
         max: 2,
-        step: 0.05,
+        step: GRID,
         unit: 'm',
         hint: 'length: children sit at (s·l, 0) in this body frame',
       },

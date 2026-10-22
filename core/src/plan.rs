@@ -17,6 +17,13 @@ pub fn wrap(a: f64) -> f64 {
     if w <= -PI { w + TAU } else { w }
 }
 
+/// Defaults of a fresh plan: reference filter frequency (rad/s), push stiffness (N/m), posture goal (rad/s).
+///
+/// The browser takes its defaults from these too (`layout::Flag::default_value`).
+pub const REF_WN: f64 = 4.0;
+pub const PUSH_K: f64 = 200.0;
+pub const POSTURE: f64 = 4.0;
+
 /// The numbers that shape how the controllers and the simulation behave beyond the physics.
 ///
 /// They are user settings like the goals, the same for every mechanism; the defaults are what the
@@ -229,11 +236,11 @@ impl Plan {
             tool_target: [0.0; 2],
             use_tool: false,
             setpoint: None,
-            ref_wn: 4.0,
+            ref_wn: REF_WN,
             push: None,
-            push_k: 200.0,
+            push_k: PUSH_K,
             goals: Goals {
-                posture: 4.0,
+                posture: POSTURE,
                 manipulability: 0.0,
                 orient: 0.0,
                 orient_target: 0.0,

@@ -3,6 +3,13 @@ import { type BodySpec, type Mechanism, normalise } from '../model/description';
 
 export const BLOCK = { w: 0.36, h: 0.18, d: 0.22 };
 
+/** The builder's grid: lengths and positions snap to it (m), angles to `SNAP_ANGLE`. */
+export const GRID = 0.05;
+export const SNAP_ANGLE = Math.PI / 12;
+/** Where a joint sits along its parent snaps to this fraction of the parent's length. */
+export const PORT_STEP = 0.05;
+export const snap = (v: number, step = GRID) => Math.round(v / step) * step;
+
 export interface Bounds {
   cx: number;
   cy: number;

@@ -64,7 +64,6 @@ export class TestCore {
     const ptr = c.desc_buffer(desc.length);
     new Float64Array(c.memory.buffer, ptr, desc.length).set(desc);
     if (c.build(desc.length) !== 0) throw new Error(this.text(c.error_ptr(), c.error_len()));
-    c.set_dt(1e-3);
     return JSON.parse(this.text(c.derivation_ptr(), c.derivation_len())) as Derivation;
   }
 

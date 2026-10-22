@@ -125,9 +125,28 @@ export type Field = (typeof FIELDS)[number];
 export type SlotField = (typeof SLOT_FIELDS)[number];
 export type Flag = (typeof FLAGS)[number];
 
+/** The limits of a mechanism description, as the core defines them. */
+export interface Limits {
+  version: number;
+  header: number;
+  perBody: number;
+  perClosure: number;
+  perElement: number;
+  paramsPerBody: number;
+  maxBodies: number;
+  maxDof: number;
+  maxClosures: number;
+  maxElements: number;
+}
+
 export interface Layout {
   len: number;
   maxn: number;
+  /** The fixed step of the simulation (s). */
+  dt: number;
+  /** What a fresh simulation starts with, for the flags that mirror a setting. */
+  defaults: Partial<Record<Flag, number>>;
+  limits: Limits;
   /** Simulation slots: the primary (0) and the shadows. */
   slots: number;
   slotLen: number;
@@ -138,6 +157,9 @@ export interface Layout {
 
 interface RawLayout {
   len: number;
+  dt: number;
+  defaults: Partial<Record<Flag, number>>;
+  limits: Limits;
   maxn: number;
   slots: number;
   slotLen: number;
@@ -163,10 +185,31 @@ function pick<K extends string>(
 
 export function parseLayout(json: string): Layout {
   const raw = JSON.parse(json) as RawLayout;
+  if (!Number.isFinite(raw.dt) || raw.dt <= 0)
+    throw new Error('snapshot layout has no valid timestep — rebuild the wasm core');
+  if (!raw.defaults || Object.values(raw.defaults).some((v) => !Number.isFinite(v)))
+    throw new Error('snapshot layout has no valid defaults — rebuild the wasm core');
+  const limits: (keyof Limits)[] = [
+    'version',
+    'header',
+    'perBody',
+    'perClosure',
+    'perElement',
+    'paramsPerBody',
+    'maxBodies',
+    'maxDof',
+    'maxClosures',
+    'maxElements',
+  ];
+  if (limits.some((key) => !Number.isInteger(raw.limits?.[key]) || raw.limits[key] <= 0))
+    throw new Error('snapshot layout has no valid mechanism limits — rebuild the wasm core');
   const first = (e: [number, number]) => e[0];
   return {
     len: raw.len,
     maxn: raw.maxn,
+    dt: raw.dt,
+    defaults: raw.defaults,
+    limits: raw.limits,
     slots: raw.slots,
     slotLen: raw.slotLen,
     off: pick(FIELDS, raw.fields, 'field', first),

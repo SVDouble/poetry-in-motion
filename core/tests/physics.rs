@@ -104,6 +104,22 @@ fn energy_pumping_swings_the_cart_pole_up_and_catches_it() {
 }
 
 #[test]
+fn swing_up_catch_uses_the_configured_position_and_speed_thresholds() {
+    let kind = Kind::SwingUp;
+    let param = |key| kind.spec().params.iter().position(|p| p.key == key).unwrap();
+    for (reach, speed, qd, catching) in
+        [(0.1, 1.0, 0.0, false), (0.3, 1.0, 0.0, true), (0.3, 0.5, 0.8, false), (0.3, 1.0, 0.8, true)]
+    {
+        let mut s = with(&presets::cartpole(), kind);
+        s.set_ctrl_param(kind, param("catch"), reach);
+        s.set_ctrl_param(kind, param("catch_speed"), speed);
+        s.set_state(1, 0.2, qd);
+        s.step(1);
+        assert_eq!(s.publish()[off::PHASE] as u32 == 2, catching, "reach={reach}, speed={speed}, qd={qd}");
+    }
+}
+
+#[test]
 fn lqr_balances_the_acrobot() {
     let mut s = with(&presets::acrobot(), Kind::Lqr);
     // the acrobot's basin of attraction is small: a 0.02 rad shoulder perturbation

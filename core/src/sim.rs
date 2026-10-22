@@ -9,6 +9,9 @@ use crate::mech::MAXM;
 use crate::model::Model;
 use crate::plan::{Plan, Tool, manipulability};
 
+/// Default actuator limit (N·m | N) and fixed step (s).
+pub const UMAX: f64 = 120.0;
+pub const DT: f64 = 1e-3;
 /// RK4 substeps per control step while an end stop is (about to be) in contact.
 const CONTACT_SUBSTEPS: u32 = 20;
 /// A step that opens a loop further by more than this (m) is redone with `LOOP_SUBSTEPS` substeps.
@@ -76,8 +79,8 @@ impl Sim {
             qd: [0.0; MAXN],
             u_manual: [0.0; MAXN],
             coriolis: true,
-            umax: 120.0,
-            dt: 1e-3,
+            umax: UMAX,
+            dt: DT,
             t: 0.0,
             steps: 0,
             kind,

@@ -14,6 +14,7 @@ import {
   normalise,
   removeBody,
 } from '../model/description';
+import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
 import { button, DEG, el, row, segmented, stepper } from '../ui/widgets';
 
 export type Selection = { kind: 'body'; index: number } | { kind: 'element'; index: number };
@@ -107,7 +108,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
       label: `l_{${i + 1}}`,
       tex: true,
       value: b.l,
-      step: 0.05,
+      step: GRID,
       min: 0,
       max: 3,
       unit: 'm',
@@ -143,7 +144,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
         label: `r_{${i + 1}}`,
         tex: true,
         value: b.r,
-        step: 0.05,
+        step: GRID,
         min: -2,
         max: 3,
         unit: 'm',
@@ -167,7 +168,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
     stepper({
       label: b.joint === 'fixed' ? 'angle' : 'mount angle',
       value: b.mountAngle,
-      step: Math.PI / 12,
+      step: SNAP_ANGLE,
       min: -Math.PI,
       max: Math.PI,
       unit: '°',
@@ -182,7 +183,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
       stepper({
         label: 'on the parent at',
         value: b.mountS,
-        step: 0.05,
+        step: PORT_STEP,
         min: 0,
         max: 1,
         unit: 'l',
@@ -196,7 +197,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
       stepper({
         label: 'slide axis',
         value: b.axisAngle,
-        step: Math.PI / 12,
+        step: SNAP_ANGLE,
         min: -Math.PI,
         max: Math.PI,
         unit: '°',
@@ -223,7 +224,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
         label: `${angular ? '\\theta' : 'd'}_{${i + 1}}(0)`,
         tex: true,
         value: b.q0,
-        step: angular ? Math.PI / 36 : 0.05,
+        step: angular ? Math.PI / 36 : GRID,
         min: angular ? -Math.PI : -5,
         max: angular ? Math.PI : 5,
         unit: angular ? '°' : 'm',
@@ -291,7 +292,7 @@ export function elementControls(c: EditContext, k: number): HTMLElement[] {
         label: `\\ell_{0,${k + 1}}`,
         tex: true,
         value: e.l0,
-        step: 0.05,
+        step: GRID,
         min: 0,
         max: 5,
         unit: 'm',
@@ -332,7 +333,7 @@ export function elementControls(c: EditContext, k: number): HTMLElement[] {
         stepper({
           label: 'ground x',
           value: e.gx,
-          step: 0.05,
+          step: GRID,
           min: -10,
           max: 10,
           unit: 'm',
@@ -341,7 +342,7 @@ export function elementControls(c: EditContext, k: number): HTMLElement[] {
         stepper({
           label: 'ground y',
           value: e.gy,
-          step: 0.05,
+          step: GRID,
           min: -10,
           max: 10,
           unit: 'm',
@@ -353,7 +354,7 @@ export function elementControls(c: EditContext, k: number): HTMLElement[] {
       stepper({
         label: `end on body ${body + 1} at`,
         value: which === 'a' ? e.sa : e.sb,
-        step: 0.05,
+        step: PORT_STEP,
         min: 0,
         max: 1,
         unit: 'l',

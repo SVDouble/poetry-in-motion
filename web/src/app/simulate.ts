@@ -23,12 +23,11 @@ import { segmented } from '../ui/widgets';
 import { ControlTab, dock } from './control';
 import { goalsTab, modelTab } from './goals';
 import { ACTUATOR_KEYS, ACTUATOR_LABELS } from './keys';
-import { pushSettings, type Settings, setSetting, toolTargets } from './settings';
+import { GOAL_W, pushSettings, type Settings, setSetting, toolTargets } from './settings';
 
 type SideTab = 'control' | 'goals' | 'eq' | 'model';
 
 const PLOT_HZ = 30;
-const KICK = 1.5;
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
@@ -324,7 +323,7 @@ export class SimulateStage {
       setSetting(client, settings, 'elbowX', x);
       setSetting(client, settings, 'elbowY', y);
       if (!(settings.elbow > 0)) {
-        setSetting(client, settings, 'elbow', 6);
+        setSetting(client, settings, 'elbow', GOAL_W);
         if (this.side === 'goals') this.mountSide();
       }
       return;
@@ -371,7 +370,8 @@ export class SimulateStage {
     }
     if (!down || !d) return;
     if (k === ' ') {
-      for (const i of kickable(d)) client.send({ type: 'kick', i, v: (Math.random() < 0.5 ? -1 : 1) * KICK });
+      for (const i of kickable(d))
+        client.send({ type: 'kick', i, v: (Math.random() < 0.5 ? -1 : 1) * this.s.settings.kick });
       e.preventDefault();
     } else if (k === 'r') this.reset();
     else if (k === 'p') this.s.setRunning(!this.s.running());

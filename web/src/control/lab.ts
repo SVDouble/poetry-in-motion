@@ -270,6 +270,9 @@ const vmcLab: LabFn = (c) => {
 };
 
 const impedanceLab: LabFn = (c) => {
+  // the experiment starts from the defaults: the stiffness and the push limit its claim is about
+  const kd = c.spec.params.find((p) => p.key === 'k')?.default ?? Number.NaN;
+  const push = c.snap.layout.defaults.PushMax ?? Number.NaN;
   const { tool } = common(c);
   if (!tool) return { watch: [], experiments: [] };
   return {
@@ -292,8 +295,7 @@ const impedanceLab: LabFn = (c) => {
                 { ids: [tele('impedance', 'e', 0), tele('impedance', 'e', 1)] },
                 { ids: ['fext:x', 'fext:y'] },
               ],
-              notice:
-                'At rest $K_d e = F_{\\text{ext}}$ in every pose: with $K_d$ = 300 N/m, 30 N give 10 cm. The joint-space stiffness needed for that changes with the pose; the controller computes it.',
+              notice: `At rest $K_d e = F_{\\text{ext}}$ in every pose: with $K_d$ = ${kd} N/m, ${push} N give ${(100 * push) / kd} cm. The joint-space stiffness needed for that changes with the pose; the controller computes it.`,
             },
           ] satisfies Experiment[])),
       {

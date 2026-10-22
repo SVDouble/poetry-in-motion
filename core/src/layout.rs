@@ -6,7 +6,11 @@
 
 use crate::MAXN;
 use crate::control::TELEMETRY_LEN;
-use crate::mech::{MAXB, MAXE, MAXM};
+use crate::mech::{
+    DESC_VERSION, HEADER, MAXB, MAXC, MAXE, MAXM, PARAMS_PER_BODY, PER_BODY, PER_CLOSURE, PER_ELEMENT,
+};
+use crate::plan::{POSTURE, PUSH_K, REF_WN, Tuning};
+use crate::sim::{DT, UMAX};
 
 /// Frames in a snapshot: the spatial frame, one per body and the tool.
 pub const MAXF: usize = MAXB + 2;
@@ -197,6 +201,52 @@ impl Flag {
         Self::Lead,
     ];
 
+    /// The value a fresh simulation starts with, for the flags that mirror a user setting (the browser's
+    /// defaults come from here); `None` for the momentary ones (targets, the push, the elbow's body).
+    #[must_use]
+    pub fn default_value(self) -> Option<f64> {
+        let t = Tuning::default();
+        Some(match self {
+            Self::Coriolis => 1.0,
+            Self::Umax => UMAX,
+            Self::RefWn => REF_WN,
+            Self::PushK => PUSH_K,
+            Self::Posture => POSTURE,
+            Self::Manipulability
+            | Self::Orient
+            | Self::OrientTarget
+            | Self::Elbow
+            | Self::ElbowX
+            | Self::ElbowY => 0.0,
+            Self::NullDamping => t.null_damping,
+            Self::DlsEps => t.dls[0],
+            Self::DlsMax => t.dls[1],
+            Self::DlsLowerEps => t.dls_lower[0],
+            Self::DlsLowerMax => t.dls_lower[1],
+            Self::FadeLo => t.fade[0],
+            Self::FadeHi => t.fade[1],
+            Self::ReachMargin => t.reach_margin,
+            Self::IkStep => t.ik_step,
+            Self::IkDamping => t.ik_damping,
+            Self::PushMax => t.push_max,
+            Self::StopK => t.stop_k,
+            Self::StopC => t.stop_c,
+            Self::StopDepth => t.stop_depth,
+            Self::Baumgarte => t.baumgarte,
+            Self::MotorSpeed => t.motor_speed,
+            Self::Lead => t.lead,
+            Self::TargetX
+            | Self::TargetY
+            | Self::UseTool
+            | Self::PushX
+            | Self::PushY
+            | Self::PushOn
+            | Self::ElbowBody => {
+                return None;
+            }
+        })
+    }
+
     #[must_use]
     pub fn from_u32(v: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|f| *f as u32 == v)
@@ -211,13 +261,20 @@ fn fields_json(fields: &[(&str, usize, usize)]) -> String {
 #[must_use]
 pub fn json() -> String {
     let flags: Vec<String> = Flag::ALL.iter().map(|f| format!("\"{f:?}\":{}", *f as u32)).collect();
+    let defaults: Vec<String> =
+        Flag::ALL.iter().filter_map(|f| f.default_value().map(|v| format!("\"{f:?}\":{v:?}"))).collect();
+    // the limits of the mechanism description, which the browser's builder mirrors
+    let limits = format!(
+        "\"version\":{DESC_VERSION:?},\"header\":{HEADER},\"perBody\":{PER_BODY},\"perClosure\":{PER_CLOSURE},\"perElement\":{PER_ELEMENT},\"paramsPerBody\":{PARAMS_PER_BODY},\"maxBodies\":{MAXB},\"maxDof\":{MAXN},\"maxClosures\":{MAXC},\"maxElements\":{MAXE}"
+    );
     format!(
-        "{{\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"slots\":{SLOTS},\"slotLen\":{},\"fields\":{{{}}},\"slot\":{{{}}},\"flags\":{{{}}}}}",
+        "{{\"len\":{},\"maxn\":{MAXN},\"maxf\":{MAXF},\"slots\":{SLOTS},\"slotLen\":{},\"dt\":{DT:?},\"fields\":{{{}}},\"slot\":{{{}}},\"flags\":{{{}}},\"defaults\":{{{}}},\"limits\":{{{limits}}}}}",
         off::LEN,
         slot::LEN,
         fields_json(FIELDS),
         fields_json(SLOT_FIELDS),
-        flags.join(",")
+        flags.join(","),
+        defaults.join(",")
     )
 }
 

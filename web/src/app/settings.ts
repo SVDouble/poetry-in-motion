@@ -1,12 +1,14 @@
 /** Simulation settings shared by every slot (and the view toggles), with the core flags that mirror them. */
 import type { Derivation } from '../model/derivation';
 import type { SimClient } from '../sim/client';
-import type { Flag } from '../sim/layout';
+import type { Flag, Layout } from '../sim/layout';
 
 export interface Settings {
   umax: number;
   /** Manual input of the keyboard, N·m | N. */
   key: number;
+  /** Size of a Space kick on the joints it goes to (rad/s | m/s). */
+  kick: number;
   refWn: number;
   pushK: number;
   posture: number;
@@ -56,20 +58,14 @@ export interface Settings {
   lead: number;
 }
 
-export const defaultSettings = (): Settings => ({
-  umax: 120,
+/** Stiffness (natural frequency, rad/s) a goal below the tool gets when it is switched on. */
+export const GOAL_W = 6;
+
+/** What only the browser has: the keyboard's input, the kick, and what the figure and gauges show. */
+const VIEW_DEFAULTS = {
   key: 20,
-  refWn: 4,
-  pushK: 200,
-  posture: 4,
-  manipulability: 0,
-  orient: 0,
-  orientTarget: 0,
-  elbow: 0,
-  elbowX: 0,
-  elbowY: 0,
+  kick: 1.5,
   useTool: false,
-  coriolis: true,
   frames: false,
   trail: true,
   ghosts: true,
@@ -81,29 +77,28 @@ export const defaultSettings = (): Settings => ({
   torqueBars: false,
   energyGauge: false,
   keys: false,
-  nullDamping: 8,
-  dlsEps: 0.02,
-  dlsMax: 0.01,
-  dlsLowerEps: 0.1,
-  dlsLowerMax: 0.05,
-  fadeLo: 1e-4,
-  fadeHi: 1e-3,
-  reachMargin: 0.005,
-  ikStep: 0.05,
-  ikDamping: 0.01,
-  pushMax: 30,
-  stopK: 2e4,
-  stopC: 300,
-  stopDepth: 0.01,
-  baumgarte: 20,
-  motorSpeed: 100,
-  lead: 0.1,
-});
+};
+
+/** The defaults: the core's for everything it mirrors (one source: `layout::Flag::default_value`), the
+ * browser's own for the rest. */
+export function defaultSettings(core: Pick<Layout, 'defaults'>): Settings {
+  const from = (flag: Flag) => {
+    const v = core.defaults[flag];
+    if (v === undefined || !Number.isFinite(v))
+      throw new Error(`the core has no default for ${flag} — rebuild the wasm core`);
+    return v;
+  };
+  const mirrored = Object.fromEntries(SETTING_FLAGS.map(([key, flag]) => [key, from(flag)])) as Record<
+    (typeof SETTING_FLAGS)[number][0],
+    number
+  >;
+  return { ...VIEW_DEFAULTS, ...mirrored, coriolis: from('Coriolis') !== 0 };
+}
 
 export type Numeric = { [K in keyof Settings]: Settings[K] extends number ? K : never }[keyof Settings];
 
 /** Settings mirrored by core flags. */
-export const SETTING_FLAGS: [Numeric, Flag][] = [
+export const SETTING_FLAGS = [
   ['umax', 'Umax'],
   ['refWn', 'RefWn'],
   ['pushK', 'PushK'],
@@ -131,7 +126,7 @@ export const SETTING_FLAGS: [Numeric, Flag][] = [
   ['baumgarte', 'Baumgarte'],
   ['motorSpeed', 'MotorSpeed'],
   ['lead', 'Lead'],
-];
+] as const satisfies readonly (readonly [Numeric, Flag])[];
 
 export interface TuningSpec {
   key: Numeric;

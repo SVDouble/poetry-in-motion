@@ -78,7 +78,7 @@ class App {
   private running = false;
   private dragging = false;
   private popover: HTMLElement | null = null;
-  private readonly settings: Settings = defaultSettings();
+  private readonly settings: Settings;
   private readonly history = new History<Mechanism>(cloneMechanism);
   private readonly editor: Editor;
   private readonly gizmos: Gizmos;
@@ -92,6 +92,7 @@ class App {
     private readonly client: SimClient,
     private readonly stage: Stage,
   ) {
+    this.settings = defaultSettings(client.layout);
     this.mech = decodeHash() ?? PRESETS[DEFAULT_PRESET]!();
     this.params = paramVector(this.mech);
     this.sim = new SimulateStage({
@@ -1012,12 +1013,13 @@ class App {
       const s = this.client.stats;
       const khz = s.stepsPerSecond / 1000;
       // the time for everyone; the machinery (frame rate, step rate and cost) on hover
-      const slow = this.running && this.stageName === 'simulate' && khz < 0.95;
+      const realtimeKhz = s.realtime / (this.snap.layout.dt * 1000);
+      const slow = this.running && this.stageName === 'simulate' && khz < 0.95 * realtimeKhz;
       const el = $('stats');
       el.innerHTML =
         `<span><i>t</i> = <b>${this.snap.t.toFixed(1)}</b> s</span>` +
         (slow ? '<span class="slow">slower than real time</span>' : '');
-      el.title = `${fps.toFixed(0)} frames/s · physics ${khz.toFixed(2)} kHz (1 kHz is real time) · ${s.stepUs.toFixed(2)} µs per step${s.shared ? ' · shared memory' : ''}`;
+      el.title = `${fps.toFixed(0)} frames/s · physics ${khz.toFixed(2)} kHz (${realtimeKhz.toFixed(2)} kHz requested) · ${s.stepUs.toFixed(2)} µs per step${s.shared ? ' · shared memory' : ''}`;
     }
   }
 }

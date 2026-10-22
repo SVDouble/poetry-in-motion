@@ -419,7 +419,7 @@ describe('guided experiments', () => {
             results.push({ preset, controller: spec.key, title: e.title, failure: 'no check written' });
             continue;
           }
-          const settings = defaultSettings();
+          const settings = defaultSettings(tc.layout);
           const port: Port = {
             d,
             store,

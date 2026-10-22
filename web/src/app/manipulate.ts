@@ -1,11 +1,9 @@
 /** Direct manipulation in the builder: pure functions from a pointer position to a new document. */
 import { cloneMechanism, type Mechanism, normalise } from '../model/description';
+import { PORT_STEP, SNAP_ANGLE, snap } from '../scene/geometry';
 import type { RobotView } from '../scene/robot';
 import type { Snapshot } from '../sim/layout';
 
-const SNAP_ANGLE = Math.PI / 12;
-const SNAP_LEN = 0.05;
-export const snap = (v: number, step: number) => Math.round(v / step) * step;
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export interface DragContext {
@@ -29,14 +27,14 @@ export function dragJoint(
   const m = cloneMechanism(c.mech);
   const t = m.bodies[i]!;
   if (b.parent < 0) {
-    t.mountX = free ? x : snap(x, SNAP_LEN);
-    t.mountY = free ? y : snap(y, SNAP_LEN);
+    t.mountX = free ? x : snap(x);
+    t.mountY = free ? y : snap(y);
   } else {
     const [px, py, pp] = c.snap.frame(b.parent + 1);
     const l = c.robot.length(b.parent, c.params);
     if (l < 1e-6) return null;
     const along = ((x - px) * Math.cos(pp) + (y - py) * Math.sin(pp)) / l;
-    t.mountS = Math.max(0, Math.min(1, free ? along : snap(along, 0.05)));
+    t.mountS = Math.max(0, Math.min(1, free ? along : snap(along, PORT_STEP)));
   }
   return { ...m, name: 'Custom' };
 }
@@ -69,7 +67,7 @@ export function dragTip(
   t.mountAngle = free ? mount : snap(mount, SNAP_ANGLE);
   if (b.shape !== 'block') {
     const len = Math.hypot(x - ox, y - oy) - c.tipOffset;
-    t.l = Math.max(0.1, Math.min(3, free ? len : snap(len, SNAP_LEN)));
+    t.l = Math.max(0.1, Math.min(3, free ? len : snap(len)));
     m.bodies[i] = normalise(t);
   }
   return { ...m, name: 'Custom' };
@@ -93,8 +91,8 @@ export function closeLoop(
     sa: ground ? 0 : s,
     b: from.body,
     sb: from.s,
-    gx: ground ? snap(x, SNAP_LEN) : 0,
-    gy: ground ? snap(y, SNAP_LEN) : 0,
+    gx: ground ? snap(x) : 0,
+    gy: ground ? snap(y) : 0,
   });
   return { ...m, name: 'Custom' };
 }

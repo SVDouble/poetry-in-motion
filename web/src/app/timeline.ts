@@ -12,7 +12,7 @@ const SECONDS = 20;
 const CAP = HZ * SECONDS;
 
 export interface TimelineEvents {
-  /** Advance the physics by `steps` (1 ms each) while paused. */
+  /** Advance the physics by `steps` of the core’s fixed timestep while paused. */
   advance(steps: number): void;
   /** Continue the simulation from snapshot `s` (its q and q̇). */
   resume(s: Snapshot): void;
@@ -106,7 +106,7 @@ export class Timeline {
   private step(dir: number): void {
     const i = this.at < 0 ? this.count - 1 : this.at;
     if (dir > 0 && this.at < 0) {
-      this.events.advance(1000 / HZ);
+      this.events.advance(Math.max(1, Math.round(1 / (HZ * this.replay.layout.dt))));
       return;
     }
     this.show(Math.max(0, i + dir));

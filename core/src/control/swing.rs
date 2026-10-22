@@ -59,8 +59,10 @@ impl Controller for SwingUp {
 
         let watched: Vec<usize> = if model.closed() { (0..n).collect() } else { un };
         let err = |i: usize| Plan::error(model, i, q[i], plan.q_star[i]).abs();
-        let near = watched.iter().all(|&i| err(i) < 0.35 && qd[i].abs() < 4.0);
-        let far = watched.iter().any(|&i| err(i) > 0.7);
+        // Leave the catch region at twice its entry threshold to avoid chattering.
+        let (reach, speed) = (c.params[4], c.params[5]);
+        let near = watched.iter().all(|&i| err(i) < reach && qd[i].abs() < speed);
+        let far = watched.iter().any(|&i| err(i) > 2.0 * reach);
         if self.phase == CATCHING && far || self.phase != CATCHING && !near {
             self.phase = PUMPING;
         } else if near {

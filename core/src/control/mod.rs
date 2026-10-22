@@ -350,6 +350,8 @@ pub static SPECS: [Spec; 11] = [
             param("kc", "k_{c}", 2.0, 0.0, 10.0),
             param("kv", "k_{v}", 2.5, 0.0, 10.0),
             param("amax", r"a_{\max}", 12.0, 1.0, 40.0),
+            param("catch", r"\Delta q_{\text{catch}}", 0.35, 0.05, 1.5).unit("rad | m"),
+            param("catch_speed", r"\dot q_{\text{catch}}", 4.0, 0.5, 20.0).unit("rad/s | m/s"),
         ],
         telemetry: &[("energy", 1), ("energy_ref", 1)],
     },

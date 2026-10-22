@@ -2,6 +2,7 @@
  * The parts of the builder's palette and how they join a mechanism: pure functions from a document and the
  * point(s) a part was dropped on to a new document (or the reason it cannot go there).
  */
+
 import {
   cloneMechanism,
   dof,
@@ -14,6 +15,7 @@ import {
   type Mechanism,
   spring,
 } from '../model/description';
+import { snap } from '../scene/geometry';
 
 export type PartKind =
   | 'bar'
@@ -62,9 +64,6 @@ export interface Anchor {
 }
 
 export type Placed = { mech: Mechanism; select: { kind: 'body' | 'element'; index: number } } | string;
-
-const SNAP = 0.05;
-const snap = (v: number) => Math.round(v / SNAP) * SNAP;
 
 /** Hang a bar, slider, cart or weld from `at`. */
 export function placeBody(mech: Mechanism, kind: PartKind, at: Anchor): Placed {

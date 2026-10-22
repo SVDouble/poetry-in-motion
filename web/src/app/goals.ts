@@ -23,7 +23,15 @@ import {
   segmented,
   slider,
 } from '../ui/widgets';
-import { defaultSettings, type Numeric, type Settings, setSetting, TUNING, toolTargets } from './settings';
+import {
+  defaultSettings,
+  GOAL_W,
+  type Numeric,
+  type Settings,
+  setSetting,
+  TUNING,
+  toolTargets,
+} from './settings';
 
 type Range = Pick<SliderOpts, 'min' | 'max'> & Partial<Pick<SliderOpts, 'log' | 'unit' | 'hint' | 'format'>>;
 
@@ -47,7 +55,7 @@ function tuningFold(g: GoalsContext, group: keyof typeof TUNING, title: string):
   const sliders = specs.map((t) =>
     settingSlider(client, settings, t.key, t.label, { log: true, format: scale, ...t }),
   );
-  const defaults = defaultSettings();
+  const defaults = defaultSettings(g.snap.layout);
   const reset = button(
     'Defaults',
     () => {
@@ -96,8 +104,6 @@ export function elbowCandidates(mech: Mechanism): number[] {
   }
   return out;
 }
-
-const DEFAULT_GOAL_W = 6;
 
 export function goalsTab(g: GoalsContext): HTMLElement {
   const { d, mech, client, settings } = g;
@@ -190,6 +196,14 @@ export function goalsTab(g: GoalsContext): HTMLElement {
       max: 100,
       log: true,
       unit: 'N·m | N',
+      hint: 'input of the keyboard keys',
+    }),
+    settingSlider(client, settings, 'kick', String.raw`\Delta\dot q_{\text{kick}}`, {
+      min: 0.05,
+      max: 10,
+      log: true,
+      unit: 'rad/s | m/s',
+      hint: 'size of a Space kick (a random sign, on the passive joints, or on all when every joint is driven)',
     }),
     tuningFold(g, 'world', 'Contacts, pushes and loops'),
   );
@@ -231,7 +245,7 @@ function hierarchyCard(g: GoalsContext): HTMLElement {
   if (!open || dof <= 2) return box;
   const set = (key: Numeric, v: number) => setSetting(client, settings, key, v);
   const toggle = (key: 'orient' | 'elbow', on: boolean) => {
-    set(key, on ? DEFAULT_GOAL_W : 0);
+    set(key, on ? GOAL_W : 0);
     g.refresh();
   };
   const nb = mech.bodies.length;

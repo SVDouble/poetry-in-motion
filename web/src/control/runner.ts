@@ -57,9 +57,9 @@ export async function runExperiment(
   store.setPrimary(kind);
   store.clearShadows();
   store.resetParams(kind);
-  const defaults = defaultSettings();
+  const defaults = defaultSettings(port.snap().layout);
   for (const [key] of SETTING_FLAGS) settings[key] = defaults[key];
-  settings.coriolis = true;
+  settings.coriolis = defaults.coriolis;
   pushSettings({ flag: (f, v) => port.flag(f, v) }, settings);
   port.setUseTool(false);
   port.settingsChanged?.();

@@ -5,6 +5,7 @@
  * when cross-origin isolation is missing.
  */
 import wasmUrl from '../wasm/motion_core.wasm?url';
+import { parseLayout } from './layout';
 import { DATA_OFFSET, type FromWorker, STATS, STATS_OFFSET, type ToWorker } from './protocol';
 
 interface Core {
@@ -19,7 +20,6 @@ interface Core {
   step(n: number): void;
   bench(n: number): void;
   publish(): void;
-  set_dt(dt: number): void;
   set_param(i: number, v: number): void;
   set_controller(slot: number, kind: number): void;
   set_ctrl_param(kind: number, i: number, v: number): void;
@@ -40,7 +40,8 @@ interface Core {
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (msg: FromWorker, transfer: Transferable[] = []) => scope.postMessage(msg, transfer);
 
-const DT = 1e-3;
+/** The core's fixed step (s), read from its layout. */
+let dt: number;
 const TICK_MS = 4;
 const MAX_CATCH_UP_S = 0.05;
 const FALLBACK_POST_MS = 16;
@@ -106,8 +107,8 @@ function tick(): void {
   last = now;
   if (running) {
     acc += elapsed * speed;
-    const n = Math.floor(acc / DT);
-    acc -= n * DT;
+    const n = Math.floor(acc / dt);
+    acc -= n * dt;
     if (n > 0) {
       c.step(n);
       stepsThisSecond += n;
@@ -145,7 +146,6 @@ function build(c: Core, id: number, desc: number[]): void {
   const ptr = c.desc_buffer(desc.length);
   new Float64Array(c.memory.buffer, ptr, desc.length).set(desc);
   if (c.build(desc.length) === 0) {
-    c.set_dt(DT);
     const buildMs = performance.now() - t0;
     const derivation = text(c, c.derivation_ptr(), c.derivation_len());
     const len = c.controllers();
@@ -197,9 +197,9 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
 
 load()
   .then((c) => {
-    core = c;
-    c.set_dt(DT);
     const layout = text(c, c.layout_ptr(), c.layout_len());
+    dt = parseLayout(layout).dt;
+    core = c;
     let sab: SharedArrayBuffer | null = null;
     if (scope.crossOriginIsolated) {
       sab = new SharedArrayBuffer(DATA_OFFSET + c.out_len() * 8);
