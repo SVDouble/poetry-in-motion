@@ -10,8 +10,10 @@ use crate::plan::{Plan, resolve_accel};
 /// Tracking error e = q_d − q and ė = q̇_d − q̇ against the smooth joint reference.
 fn errors(plan: &Plan, model: &Model, c: &Ctx<'_>) -> (VecN, VecN) {
     let n = model.n;
-    let e = core::array::from_fn(|i| if i < n { Plan::error(model, i, c.q[i], plan.q_ref[i]) } else { 0.0 });
-    let ed = core::array::from_fn(|i| if i < n { plan.qd_ref[i] - c.qd[i] } else { 0.0 });
+    let e = core::array::from_fn(|i| {
+        if i < n { Plan::error(model, i, c.q[i], plan.reference.q_ref[i]) } else { 0.0 }
+    });
+    let ed = core::array::from_fn(|i| if i < n { plan.reference.qd_ref[i] - c.qd[i] } else { 0.0 });
     (e, ed)
 }
 
@@ -53,8 +55,8 @@ impl Controller for Pd {
             }
         }
         for k in 0..n * n {
-            self.kp[k] = wn * wn * plan.m_star[k];
-            self.kd[k] = 2.0 * zeta * wn * plan.m_star[k];
+            self.kp[k] = wn * wn * plan.design.m_star[k];
+            self.kd[k] = 2.0 * zeta * wn * plan.design.m_star[k];
         }
         let (pe, ve) = (mat_vec(n, &self.kp, &e), mat_vec(n, &self.kd, &ed));
         let f: VecN = core::array::from_fn(|i| pe[i] + ve[i]);
@@ -95,7 +97,7 @@ impl Controller for ComputedTorque {
             (Kind::ComputedTorque.param(c.params, "wn"), Kind::ComputedTorque.param(c.params, "zeta"));
         let (kp, kv) = (wn * wn, 2.0 * zeta * wn);
         let (e, ed) = errors(plan, model, c);
-        let v: VecN = core::array::from_fn(|i| plan.qdd_ref[i] + kv * ed[i] + kp * e[i]);
+        let v: VecN = core::array::from_fn(|i| plan.reference.qdd_ref[i] + kv * ed[i] + kp * e[i]);
         let mut rows = [0.0; MAXN * MAXN];
         let mut b = [0.0; MAXN];
         for (a, &i) in model.actuated.iter().enumerate() {
@@ -130,10 +132,10 @@ impl Controller for Passivity {
         let n = model.n;
         let (lambda, kd) = (Kind::Passivity.param(c.params, "lambda"), Kind::Passivity.param(c.params, "kd"));
         let (e, ed) = errors(plan, model, c);
-        let qd_r: VecN = core::array::from_fn(|i| plan.qd_ref[i] + lambda * e[i]);
-        let qdd_r: VecN = core::array::from_fn(|i| plan.qdd_ref[i] + lambda * ed[i]);
+        let qd_r: VecN = core::array::from_fn(|i| plan.reference.qd_ref[i] + lambda * e[i]);
+        let qdd_r: VecN = core::array::from_fn(|i| plan.reference.qdd_ref[i] + lambda * ed[i]);
         // K_D = k_D M(q*): symmetric positive definite, shaped like the inertia
-        let kd_m: MatN = core::array::from_fn(|k| kd * plan.m_star[k]);
+        let kd_m: MatN = core::array::from_fn(|k| kd * plan.design.m_star[k]);
         self.s = core::array::from_fn(|i| if i < n { c.qd[i] - qd_r[i] } else { 0.0 });
         let mq = mat_vec(n, &c.terms.m, &qdd_r);
         let cq = mat_vec(n, &c.terms.c, &qd_r);

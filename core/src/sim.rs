@@ -7,7 +7,7 @@ use crate::dynamics::{self, MatN, Terms, VecM, VecN, mat_vec, sym_eigenvalues};
 use crate::layout::{Flag, MAXF, off, slot};
 use crate::mech::MAXM;
 use crate::model::Model;
-use crate::plan::{Plan, Tool, Tuning, manipulability};
+use crate::plan::{Invalidated, Plan, Tool, Tuning, manipulability};
 
 /// Default actuator limit (N·m | N) and fixed step (s).
 pub const UMAX: f64 = 120.0;
@@ -60,8 +60,7 @@ pub struct Sim {
     tau_ext: VecN,
     lambda: VecM,
     tool: Option<Tool>,
-    plan_dirty: bool,
-    ctrl_dirty: bool,
+    invalidated: Invalidated,
     /// Simulated time of the last move of a regulating controller's set-point.
     retargeted: f64,
     aux: Vec<f64>,
@@ -102,8 +101,7 @@ impl Sim {
             tau_ext: [0.0; MAXN],
             lambda: [0.0; MAXM],
             tool: None,
-            plan_dirty: true,
-            ctrl_dirty: true,
+            invalidated: Invalidated::Plan,
             retargeted: f64::NEG_INFINITY,
             aux: Vec::new(),
             budget: Budget::default(),
@@ -121,20 +119,30 @@ impl Sim {
             coriolis: self.coriolis,
             umax: self.umax,
             dt: self.dt,
-            ref_wn: p.ref_wn,
-            push_k: p.push_k,
-            weights: [p.goals.posture, p.goals.manipulability, p.goals.orient, p.goals.elbow],
-            tuning: p.tuning,
+            ref_wn: p.config.ref_wn,
+            push_k: p.config.push_k,
+            weights: [
+                p.config.goals.posture,
+                p.config.goals.manipulability,
+                p.config.goals.orient,
+                p.config.goals.elbow,
+            ],
+            tuning: p.config.tuning,
         }
     }
 
     pub fn apply_settings(&mut self, s: Settings) {
         (self.coriolis, self.umax, self.dt) = (s.coriolis, s.umax, s.dt);
         let p = &mut self.plan;
-        (p.ref_wn, p.push_k, p.tuning) = (s.ref_wn, s.push_k, s.tuning);
-        [p.goals.posture, p.goals.manipulability, p.goals.orient, p.goals.elbow] = s.weights;
-        self.plan_dirty = true;
-        self.ctrl_dirty = true;
+        (p.config.ref_wn, p.config.push_k, p.config.tuning) = (s.ref_wn, s.push_k, s.tuning);
+        [
+            p.config.goals.posture,
+            p.config.goals.manipulability,
+            p.config.goals.orient,
+            p.config.goals.elbow,
+        ] = s.weights;
+        self.invalidate(Invalidated::Plan);
+        self.invalidate(Invalidated::Controller);
     }
 
     pub fn set_dt(&mut self, dt: f64) -> bool {
@@ -142,7 +150,7 @@ impl Sim {
             return false;
         }
         self.dt = dt.clamp(1e-5, 1e-2);
-        self.ctrl_dirty = true;
+        self.invalidate(Invalidated::Controller);
         true
     }
 
@@ -156,14 +164,13 @@ impl Sim {
         (s.q, s.qd, s.t, s.steps) = (self.q, self.qd, self.t, self.steps);
         (s.coriolis, s.umax, s.dt, s.u_manual) = (self.coriolis, self.umax, self.dt, self.u_manual);
         let plan = &self.plan;
-        (s.plan.q_target, s.plan.tool_target, s.plan.use_tool) =
-            (plan.q_target, plan.tool_target, plan.use_tool);
-        (s.plan.ref_wn, s.plan.push, s.plan.push_k, s.plan.goals) =
-            (plan.ref_wn, plan.push, plan.push_k, plan.goals);
+        s.plan.config = plan.config.clone();
+        // Setpoints are per-slot regulator progress; the new controller restarts from its own state.
+        s.plan.config.setpoint = None;
         // The requested target also has an assembly mode. Seed the new design from the primary's
         // equilibrium, not from its possibly distant current pose, then restart references at that pose.
-        s.plan.q_star = plan.q_star;
-        s.plan.sync(&mut s.model, &plan.q_star);
+        s.plan.design.q_star = plan.design.q_star;
+        s.plan.sync(&mut s.model, &plan.design.q_star);
         s.refresh_plan();
         s.settle();
         s
@@ -177,7 +184,7 @@ impl Sim {
     pub fn set_controller(&mut self, kind: Kind) {
         self.kind = kind;
         self.ctrl = kind.create();
-        self.ctrl_dirty = true;
+        self.invalidate(Invalidated::Controller);
         self.settle();
     }
 
@@ -194,8 +201,8 @@ impl Sim {
     fn settle(&mut self) {
         // a jump of the state: a regulator on its way somewhere starts afresh from here
         self.retargeted = f64::NEG_INFINITY;
-        if self.plan.setpoint.take().is_some() {
-            self.plan_dirty = true;
+        if self.plan.config.setpoint.take().is_some() {
+            self.invalidate(Invalidated::Plan);
         }
         dynamics::project(&mut self.model, &mut self.q, &mut self.qd);
         self.plan.sync(&mut self.model, &self.q);
@@ -279,15 +286,15 @@ impl Sim {
         }
         self.p[i] = v;
         self.model.set_params(&self.p);
-        self.plan_dirty = true;
+        self.invalidate(Invalidated::Plan);
         self.restart_budget();
         true
     }
 
     pub fn set_target(&mut self, i: usize, v: f64) -> bool {
         if i < self.n() && v.is_finite() {
-            self.plan.q_target[i] = v;
-            self.plan_dirty = true;
+            self.plan.config.q_target[i] = v;
+            self.invalidate(Invalidated::Plan);
             return true;
         }
         false
@@ -295,7 +302,7 @@ impl Sim {
 
     /// The controller's design depends on parameters that changed.
     pub fn redesign_controller(&mut self) {
-        self.ctrl_dirty = true;
+        self.invalidate(Invalidated::Controller);
     }
 
     pub fn set_flag(&mut self, flag: Flag, v: f64) -> bool {
@@ -322,40 +329,40 @@ impl Sim {
         match flag {
             Flag::Coriolis => self.coriolis = v != 0.0,
             Flag::Umax => self.umax = v.max(0.0),
-            Flag::TargetX => pl.tool_target[0] = v,
-            Flag::TargetY => pl.tool_target[1] = v,
+            Flag::TargetX => pl.config.tool_target[0] = v,
+            Flag::TargetY => pl.config.tool_target[1] = v,
             Flag::UseTool => {
-                pl.use_tool = v != 0.0;
-                pl.ik_goal = pl.q_ref;
+                pl.config.use_tool = v != 0.0;
+                pl.reference.ik_goal = pl.reference.q_ref;
             }
-            Flag::RefWn => pl.ref_wn = v.max(0.1),
-            Flag::PushX => pl.push.get_or_insert([0.0; 2])[0] = v,
-            Flag::PushY => pl.push.get_or_insert([0.0; 2])[1] = v,
+            Flag::RefWn => pl.config.ref_wn = v.max(0.1),
+            Flag::PushX => pl.config.push.get_or_insert([0.0; 2])[0] = v,
+            Flag::PushY => pl.config.push.get_or_insert([0.0; 2])[1] = v,
             Flag::PushOn => {
                 if v == 0.0 {
-                    pl.push = None;
+                    pl.config.push = None;
                 }
             }
-            Flag::PushK => pl.push_k = v.max(0.0),
-            Flag::Posture => pl.goals.posture = v.max(0.0),
-            Flag::Manipulability => pl.goals.manipulability = v.max(0.0),
-            Flag::Orient => pl.goals.orient = v.max(0.0),
-            Flag::OrientTarget => pl.goals.orient_target = v,
-            Flag::Elbow => pl.goals.elbow = v.max(0.0),
-            Flag::ElbowX => pl.goals.elbow_target[0] = v,
-            Flag::ElbowY => pl.goals.elbow_target[1] = v,
+            Flag::PushK => pl.config.push_k = v.max(0.0),
+            Flag::Posture => pl.config.goals.posture = v.max(0.0),
+            Flag::Manipulability => pl.config.goals.manipulability = v.max(0.0),
+            Flag::Orient => pl.config.goals.orient = v.max(0.0),
+            Flag::OrientTarget => pl.config.goals.orient_target = v,
+            Flag::Elbow => pl.config.goals.elbow = v.max(0.0),
+            Flag::ElbowX => pl.config.goals.elbow_target[0] = v,
+            Flag::ElbowY => pl.config.goals.elbow_target[1] = v,
             Flag::ElbowBody => {
                 if v < 0.0 || v.fract() != 0.0 || v >= self.model.desc.nb() as f64 {
                     return false;
                 }
-                pl.goals.elbow_body = v as usize;
+                pl.config.goals.elbow_body = v as usize;
             }
             _ => {
                 // tuning: only finite, positive values
                 if !(v.is_finite() && v > 0.0) {
                     return false;
                 }
-                let tu = &mut pl.tuning;
+                let tu = &mut pl.config.tuning;
                 match flag {
                     Flag::NullDamping => tu.null_damping = v,
                     Flag::DlsEps => tu.dls[0] = v,
@@ -372,9 +379,6 @@ impl Sim {
                     Flag::StopC => tu.stop_c = v,
                     Flag::StopDepth => tu.stop_depth = v,
                     Flag::Baumgarte => {
-                        if (tu.baumgarte - v).abs() > 0.0 {
-                            self.plan_dirty = true;
-                        }
                         tu.baumgarte = v;
                     }
                     Flag::MotorSpeed => tu.motor_speed = v,
@@ -382,6 +386,9 @@ impl Sim {
                     _ => {}
                 }
             }
+        }
+        if flag == Flag::Baumgarte {
+            self.invalidate(Invalidated::Plan);
         }
         true
     }
@@ -391,7 +398,7 @@ impl Sim {
     /// would make the force jump and cost RK4 its order); `D = C / δ₀` gives the damping `C` at the typical
     /// penetration δ₀.
     fn stops(&self, q: &[f64], qd: &[f64]) -> VecN {
-        let tu = &self.plan.tuning;
+        let tu = &self.plan.config.tuning;
         let (k, d) = (tu.stop_k, tu.stop_c / tu.stop_depth.max(1e-6));
         core::array::from_fn(|i| {
             let limit = self.model.limit.get(i).copied().unwrap_or(0.0);
@@ -408,11 +415,11 @@ impl Sim {
     /// External force of the push on the tool: a spring–damper from the tool to the pointer, at most
     /// `push_max` newtons.
     fn push_force(&self, tool: &Tool) -> [f64; 2] {
-        let Some(at) = self.plan.push else { return [0.0; 2] };
-        let k = self.plan.push_k;
+        let Some(at) = self.plan.config.push else { return [0.0; 2] };
+        let k = self.plan.config.push_k;
         let d = 2.0 * k.sqrt();
         let f: [f64; 2] = core::array::from_fn(|r| k * (at[r] - tool.p[r]) - d * tool.v[r]);
-        let scale = (self.plan.tuning.push_max / f[0].hypot(f[1]).max(1e-12)).min(1.0);
+        let scale = (self.plan.config.tuning.push_max / f[0].hypot(f[1]).max(1e-12)).min(1.0);
         f.map(|v| v * scale)
     }
 
@@ -450,7 +457,7 @@ impl Sim {
         let n = self.model.n;
         let (stops, tau) = self.applied(q, qd);
         let (qdd, lambda) =
-            dynamics::accel_with(n, t, k, qd, &tau, self.coriolis, self.plan.tuning.baumgarte);
+            dynamics::accel_with(n, t, k, qd, &tau, self.coriolis, self.plan.config.tuning.baumgarte);
         self.lambda = lambda;
         let dot = |f: &VecN| (0..n).map(|i| qd[i] * f[i]).sum::<f64>();
         // joint friction and the dampers
@@ -470,17 +477,17 @@ impl Sim {
     fn retarget(&mut self) {
         const RETARGET: f64 = 0.05;
         const MOVED: f64 = 1e-6;
-        if !(self.ctrl.regulates() && self.plan.ct_ok) || self.t - self.retargeted < RETARGET {
+        if !(self.ctrl.regulates() && self.plan.design.ct_ok) || self.t - self.retargeted < RETARGET {
             return;
         }
         let n = self.model.n;
         let pl = &self.plan;
-        let goal = if pl.follows_ik(&self.model) { pl.ik_goal } else { pl.q_star };
+        let goal = if pl.follows_ik(&self.model) { pl.reference.ik_goal } else { pl.design.q_star };
         let dist = |a: &VecN, b: &VecN| {
             (0..n).map(|i| Plan::error(&self.model, i, a[i], b[i]).abs()).fold(0.0, f64::max)
         };
-        let lead = pl.tuning.lead;
-        match pl.setpoint {
+        let lead = pl.config.tuning.lead;
+        match pl.config.setpoint {
             // arrived: designed at the target itself, it stays there (a disturbance is the regulator's to
             // correct) until the target moves
             Some(at) if dist(&at, &goal) <= MOVED => return,
@@ -495,27 +502,30 @@ impl Sim {
                 0.0
             }
         });
-        if dist(&pl.q_lin, &to) > MOVED {
-            self.plan.setpoint = Some(to);
-            self.plan_dirty = true;
+        if dist(&pl.design.q_lin, &to) > MOVED {
+            self.plan.config.setpoint = Some(to);
+            self.invalidate(Invalidated::Plan);
             self.retargeted = self.t;
         }
     }
 
+    fn invalidate(&mut self, layer: Invalidated) {
+        self.invalidated = self.invalidated.max(layer);
+    }
+
     /// Redesign the plan (equilibrium, linearisation, …) if parameters or targets changed.
     pub fn refresh_plan(&mut self) {
-        if self.plan_dirty {
+        if self.invalidated == Invalidated::Plan {
             self.plan.design(&mut self.model, &self.p);
-            self.plan_dirty = false;
-            self.ctrl_dirty = true;
+            self.invalidated = Invalidated::Controller;
         }
     }
 
     fn redesign(&mut self, params: &[f64]) {
         self.refresh_plan();
-        if self.ctrl_dirty {
+        if self.invalidated == Invalidated::Controller {
             self.ctrl.design(&self.plan, &mut self.model, params, self.dt);
-            self.ctrl_dirty = false;
+            self.invalidated = Invalidated::Clean;
         }
     }
 
@@ -529,10 +539,10 @@ impl Sim {
         let k = dynamics::constraints(&mut self.model, &self.q, &self.qd);
         self.tool = Tool::eval(&mut self.model, &self.q, &self.qd);
         // the push acts through the tool Jacobian: τ_ext = Jᵀ F_ext (held over the step)
-        self.plan.f_ext = self.tool.as_ref().map_or([0.0; 2], |t| self.push_force(t));
+        self.plan.reference.f_ext = self.tool.as_ref().map_or([0.0; 2], |t| self.push_force(t));
         self.tau_ext = self.tool.as_ref().map_or([0.0; MAXN], |t| {
             core::array::from_fn(|i| {
-                if i < n { (0..2).map(|r| t.jp[r * n + i] * self.plan.f_ext[r]).sum() } else { 0.0 }
+                if i < n { (0..2).map(|r| t.jp[r * n + i] * self.plan.reference.f_ext[r]).sum() } else { 0.0 }
             })
         });
         let ctx = Ctx {
@@ -548,7 +558,7 @@ impl Sim {
         let uc = self.ctrl.update(&self.plan, &mut self.model, &ctx);
         // the actuator limit, and the motor's torque–speed line: driving along the motion it delivers less
         // the faster it turns, braking it delivers in full
-        let fade = |v: f64| self.umax * (1.0 - v.abs() / self.plan.tuning.motor_speed).max(0.0);
+        let fade = |v: f64| self.umax * (1.0 - v.abs() / self.plan.config.tuning.motor_speed).max(0.0);
         for a in 0..nu {
             let v: f64 = (0..n).map(|i| self.model.b[i * nu + a] * self.qd[i]).sum();
             let (lo, hi) = if v >= 0.0 { (-self.umax, fade(v)) } else { (-fade(v), self.umax) };
@@ -632,10 +642,11 @@ impl Sim {
     fn errors(&self) -> (f64, f64) {
         let n = self.n();
         let eq = (0..n)
-            .map(|i| Plan::error(&self.model, i, self.q[i], self.plan.q_star[i]).powi(2))
+            .map(|i| Plan::error(&self.model, i, self.q[i], self.plan.design.q_star[i]).powi(2))
             .sum::<f64>()
             .sqrt();
-        let goal = if self.plan.use_tool { self.plan.tool_target } else { self.plan.x_star };
+        let goal =
+            if self.plan.config.use_tool { self.plan.config.tool_target } else { self.plan.design.x_star };
         let ex = self.tool.as_ref().map_or(0.0, |t| (t.p[0] - goal[0]).hypot(t.p[1] - goal[1]));
         (eq, ex)
     }
@@ -667,6 +678,47 @@ impl Sim {
         self.ctrl.telemetry(&mut tele);
     }
 
+    fn publish_plan(&self, o: &mut [f64], w: f64) {
+        let (n, nu) = (self.model.n, self.model.nu);
+        let pl = &self.plan;
+        let flag = |b: bool| f64::from(u8::from(b));
+        let mut put = |at: usize, v: &[f64]| o[at..at + v.len()].copy_from_slice(v);
+        if let Some(l) = &pl.design.lin {
+            put(off::LIN_A, &l.a.data);
+            put(off::LIN_B, &l.b.data);
+        }
+        put(off::U_FF, &pl.design.u_ff[..nu]);
+        put(off::EQ_RESIDUAL, &[pl.design.eq_residual, pl.design.dof as f64, flag(pl.design.ct_ok)]);
+        put(
+            off::TARGET,
+            &[
+                pl.config.tool_target[0],
+                pl.config.tool_target[1],
+                flag(pl.config.use_tool),
+                flag(pl.reference.reachable),
+            ],
+        );
+        put(off::Q_TARGET, &pl.design.q_star[..n]);
+        put(off::Q_REF, &pl.reference.q_ref[..n]);
+        put(off::QD_REF, &pl.reference.qd_ref[..n]);
+        put(
+            off::X_REF,
+            &[
+                pl.reference.x_ref[0],
+                pl.reference.x_ref[1],
+                pl.reference.f_ext[0],
+                pl.reference.f_ext[1],
+                w,
+                self.umax,
+            ],
+        );
+        let g = &pl.config.goals;
+        put(
+            off::GOALS,
+            &[g.orient, g.orient_target, g.elbow, g.elbow_target[0], g.elbow_target[1], g.elbow_body as f64],
+        );
+    }
+
     /// The full snapshot of this simulation (the primary).
     pub fn publish(&mut self, o: &mut [f64], params: &[f64]) {
         self.redesign(params);
@@ -694,8 +746,6 @@ impl Sim {
         let (ke, pe) = (a[ao.energy], a[ao.energy + 1] + elements.energy);
         // ∂V/∂q with the springs (the dampers are on the friction side of N)
         let dv: VecN = core::array::from_fn(|i| if i < n { a[ao.dv + i] - elements.spring[i] } else { 0.0 });
-        let pl = &self.plan;
-        let flag = |b: bool| f64::from(u8::from(b));
         let w = manipulability(n, &a[ao.jp..ao.jp + 2 * n]);
 
         o[..off::SLOT].fill(0.0);
@@ -726,22 +776,6 @@ impl Sim {
         put(off::TOOL_P, &a[ao.tool_p..ao.tool_p + 2]);
         put(off::JP, &a[ao.jp..ao.jp + 2 * n]);
         put(off::JS, &a[ao.js..ao.js + 3 * n]);
-        if let Some(l) = &pl.lin {
-            put(off::LIN_A, &l.a.data);
-            put(off::LIN_B, &l.b.data);
-        }
-        put(off::U_FF, &pl.u_ff[..nu]);
-        put(off::EQ_RESIDUAL, &[pl.eq_residual, pl.dof as f64, flag(pl.ct_ok)]);
-        put(off::TARGET, &[pl.tool_target[0], pl.tool_target[1], flag(pl.use_tool), flag(pl.reachable)]);
-        put(off::Q_TARGET, &pl.q_star[..n]);
-        put(off::Q_REF, &pl.q_ref[..n]);
-        put(off::QD_REF, &pl.qd_ref[..n]);
-        put(off::X_REF, &[pl.x_ref[0], pl.x_ref[1], pl.f_ext[0], pl.f_ext[1], w, self.umax]);
-        let g = &pl.goals;
-        put(
-            off::GOALS,
-            &[g.orient, g.orient_target, g.elbow, g.elbow_target[0], g.elbow_target[1], g.elbow_body as f64],
-        );
         let violation = k.as_ref().map_or(0.0, dynamics::Constraints::max_violation);
         put(off::NC, &[self.model.nc as f64, self.model.ncon as f64, violation]);
         put(off::LAMBDA, &self.lambda[..self.model.ncon]);
@@ -767,5 +801,6 @@ impl Sim {
         put(off::OMEGA, &omega);
         put(off::ALPHA, &alpha);
         put(off::ELEMENT_F, &elements.tension[..self.model.element_values.len()]);
+        self.publish_plan(o, w);
     }
 }

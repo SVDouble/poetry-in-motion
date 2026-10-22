@@ -23,12 +23,12 @@ fn shadow_creation_and_sync_inherit_configuration_and_recompute_equilibrium() {
     for _ in 0..2 {
         let p = w.primary();
         let s = w.slot(1).unwrap();
-        assert!((s.plan.tuning.motor_speed - 1.0).abs() < 1e-12);
-        assert!((s.plan.tuning.null_damping - 13.0).abs() < 1e-12);
+        assert!((s.plan.config.tuning.motor_speed - 1.0).abs() < 1e-12);
+        assert!((s.plan.config.tuning.null_damping - 13.0).abs() < 1e-12);
         assert_eq!(s.p, p.p);
-        assert_eq!(s.plan.q_target, p.plan.q_target);
-        assert_eq!(s.plan.q_star, p.plan.q_star);
-        assert_eq!(s.plan.m_star, p.plan.m_star);
+        assert_eq!(s.plan.config.q_target, p.plan.config.q_target);
+        assert_eq!(s.plan.design.q_star, p.plan.design.q_star);
+        assert_eq!(s.plan.design.m_star, p.plan.design.m_star);
         assert_eq!(s.q, p.q);
         assert_eq!(s.qd, p.qd);
         w.sync_shadows();
@@ -64,16 +64,16 @@ fn rebuild_retains_settings_but_resets_mechanism_relative_targets() {
     w.rebuild(Model::from_desc(&desc));
     for i in 0..2 {
         let s = w.slot(i).unwrap();
-        assert!((s.plan.tuning.motor_speed - 3.0).abs() < 1e-12);
-        assert!((s.plan.ref_wn - 7.0).abs() < 1e-12);
-        assert!((s.plan.push_k - 42.0).abs() < 1e-12);
-        assert!((s.plan.goals.posture - 9.0).abs() < 1e-12);
-        assert!((s.plan.goals.orient - 5.0).abs() < 1e-12);
-        assert!((s.plan.goals.elbow - 6.0).abs() < 1e-12);
-        assert!(s.plan.goals.orient_target.abs() < 1e-12);
-        assert_eq!(s.plan.goals.elbow_body, 0);
-        assert!(s.plan.push.is_none());
-        assert!(s.plan.q_target[0].abs() < 1e-12);
+        assert!((s.plan.config.tuning.motor_speed - 3.0).abs() < 1e-12);
+        assert!((s.plan.config.ref_wn - 7.0).abs() < 1e-12);
+        assert!((s.plan.config.push_k - 42.0).abs() < 1e-12);
+        assert!((s.plan.config.goals.posture - 9.0).abs() < 1e-12);
+        assert!((s.plan.config.goals.orient - 5.0).abs() < 1e-12);
+        assert!((s.plan.config.goals.elbow - 6.0).abs() < 1e-12);
+        assert!(s.plan.config.goals.orient_target.abs() < 1e-12);
+        assert_eq!(s.plan.config.goals.elbow_body, 0);
+        assert!(s.plan.config.push.is_none());
+        assert!(s.plan.config.q_target[0].abs() < 1e-12);
         assert!((s.dt - 0.002).abs() < 1e-12);
     }
 }
@@ -142,18 +142,65 @@ fn point_masses_zero_gravity_and_massless_fixed_bodies_are_valid() {
 fn closed_loop_shadows_keep_the_primary_target_assembly_after_a_disturbance() {
     for desc in [presets::four_bar(), presets::slider_crank()] {
         let mut w = World::new(Model::from_desc(&desc));
-        let target = w.primary().plan.q_star;
+        let target = w.primary().plan.design.q_star;
         assert!(w.set_state(0, -1.5, 0.0));
         assert!(w.set_flag(Flag::Baumgarte, 40.0));
         assert!(w.set_param(0, 1.2));
         w.set_controller(1, Some(Kind::Passive));
         let shadow = w.slot(1).unwrap();
-        for (a, b) in target.iter().zip(shadow.plan.q_star) {
+        for (a, b) in target.iter().zip(shadow.plan.design.q_star) {
             assert!(
                 (a - b).abs() < 1e-7,
                 "different target assembly: {target:?} vs {:?}",
-                shadow.plan.q_star
+                shadow.plan.design.q_star
             );
+        }
+    }
+}
+
+#[test]
+fn ordered_tasks_support_body_frames_and_follow_shadow_lifetimes() {
+    use motion_core::plan::{TaskFrame, TaskGoal};
+    let mut w = world();
+    let task = TaskGoal::Orientation { frame: TaskFrame::Body(0), target: 0.3, wn: 2.0 };
+    w.primary_mut().plan.config.tasks.push(task);
+    w.set_controller(1, Some(Kind::Impedance));
+    assert_eq!(w.slot(1).unwrap().plan.config.tasks.len(), 1);
+    let p = w.primary_mut();
+    let tasks = p.plan.sub_tasks(&mut p.model, &p.q, &p.qd);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].rows, 1);
+    let expected = 4.0 * motion_core::plan::wrap(0.3 - p.model.frame_angles[1].eval(&p.q));
+    assert!((tasks[0].a[0] - expected).abs() < 1e-12);
+    assert!(
+        TaskGoal::Point { frame: TaskFrame::Body(100), target: [0.0; 2], wn: 2.0 }
+            .evaluate(&mut p.model, &p.q, &p.qd)
+            .is_none()
+    );
+    w.rebuild(Model::from_desc(&presets::four_bar()));
+    assert!(w.primary().plan.config.tasks.is_empty());
+    assert!(w.slot(1).unwrap().plan.config.tasks.is_empty());
+}
+
+#[test]
+fn closed_loop_hierarchies_remain_feasible_with_conflicting_lower_goals() {
+    for kind in [Kind::Vmc, Kind::Impedance, Kind::Admittance] {
+        let mut w = World::new(Model::from_desc(&presets::four_bar()));
+        w.set_controller(0, Some(kind));
+        assert_eq!(w.primary().kind, kind);
+        w.set_flag(Flag::Orient, 3.0);
+        w.set_flag(Flag::OrientTarget, 1.0);
+        w.set_flag(Flag::Elbow, 2.0);
+        w.set_flag(Flag::ElbowX, -0.4);
+        w.set_flag(Flag::ElbowY, 0.6);
+        for _ in 0..20 {
+            w.step(100);
+            let o = w.publish();
+            assert!(o[off::CONSTRAINT] < 1e-6, "{kind:?} violated loop");
+            assert!(o[off::U].is_finite() && o[off::U].abs() <= 120.0);
+            if let Some((at, _)) = kind.spec().telemetry_field("leak_sec") {
+                assert!(o[off::SLOT + slot::TELEMETRY + at] < 1e-8, "{kind:?} leaked");
+            }
         }
     }
 }

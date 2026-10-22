@@ -4,10 +4,21 @@
 //! inverse kinematics, the external push on the tool, and the secondary (null-space) goals.
 
 use crate::MAXN;
-use crate::dynamics::{self, Constraints, MAXK, MatN, Terms, VecN, inverse_dynamics, mat_vec};
+use crate::dynamics::{self, Constraints, MAXK, Terms, VecN, inverse_dynamics, mat_vec};
 use crate::lqr::{c2d, dlqr};
 use crate::mat::{DMat, solve_dense};
 use crate::model::Model;
+
+mod config;
+mod design;
+mod reference;
+mod tasks;
+
+pub use config::{Configuration, Goals, POSTURE, PUSH_K, REF_WN, Tuning};
+pub(crate) use design::Invalidated;
+pub use design::{Design, Lin};
+pub use reference::References;
+pub use tasks::{SubTask, TaskFrame, TaskGoal};
 
 /// Wrap an angle to (−π, π].
 #[must_use]
@@ -15,99 +26,6 @@ pub fn wrap(a: f64) -> f64 {
     use core::f64::consts::{PI, TAU};
     let w = (a + PI).rem_euclid(TAU) - PI;
     if w <= -PI { w + TAU } else { w }
-}
-
-/// Defaults of a fresh plan: reference filter frequency (rad/s), push stiffness (N/m), posture goal (rad/s).
-///
-/// The browser takes its defaults from these too (`layout::Flag::default_value`).
-pub const REF_WN: f64 = 4.0;
-pub const PUSH_K: f64 = 200.0;
-pub const POSTURE: f64 = 4.0;
-
-/// The numbers that shape how the controllers and the simulation behave beyond the physics.
-///
-/// They are user settings like the goals, the same for every mechanism; the defaults are what the
-/// experiments are verified with.
-#[derive(Clone, Copy, Debug)]
-pub struct Tuning {
-    /// Joint damping (1/s) in what the tool task does not serve (its null space, and near a singularity
-    /// the directions its damped inverse lets go of).
-    pub null_damping: f64,
-    /// Damped least squares of the tool level: below `eps` (relative to the task's size) the damping grows
-    /// to `max`.
-    pub dls: [f64; 2],
-    /// The same for the levels below the tool.
-    pub dls_lower: [f64; 2],
-    /// Band of relative sizes over which a level fades a used-up direction out of the levels below.
-    pub fade: [f64; 2],
-    /// How far inside the workspace an unreachable target is aimed, as a fraction of the arm's size.
-    pub reach_margin: f64,
-    /// Largest change of one coordinate per IK iteration (rad or m), and the IK's least damping.
-    pub ik_step: f64,
-    pub ik_damping: f64,
-    /// How far ahead of the state a regulator's design point may lead on the way to its target (rad | m).
-    pub lead: f64,
-    /// Largest force of the push on the tool (N): a hand, not a winch.
-    pub push_max: f64,
-    /// No-load speed of the motors (rad/s | m/s): the drive they can deliver falls linearly to zero at it
-    /// (braking is always at full strength), like a DC motor's torque–speed line.
-    pub motor_speed: f64,
-    /// End stops of limited prismatic joints: stiffness (N/m), damping (N s/m) at the typical
-    /// penetration `stop_depth` (m).
-    pub stop_k: f64,
-    pub stop_c: f64,
-    pub stop_depth: f64,
-    /// Baumgarte stabilisation rate of the loop-closure constraints (1/s).
-    pub baumgarte: f64,
-}
-
-impl Default for Tuning {
-    fn default() -> Self {
-        Self {
-            null_damping: 8.0,
-            dls: [0.02, 0.01],
-            dls_lower: [0.1, 0.05],
-            fade: [1e-4, 1e-3],
-            reach_margin: 0.005,
-            ik_step: 0.05,
-            ik_damping: 0.01,
-            lead: 0.1,
-            push_max: 30.0,
-            motor_speed: 100.0,
-            stop_k: 2.0e4,
-            stop_c: 300.0,
-            stop_depth: 0.01,
-            baumgarte: 20.0,
-        }
-    }
-}
-
-/// Secondary goals pursued in the null space of the tool task.
-#[derive(Clone, Copy, Debug)]
-pub struct Goals {
-    /// Posture: natural frequency (rad/s) of the pull towards q* (0 = off).
-    pub posture: f64,
-    /// Manipulability: gain of the gradient ascent on w = √det(J Jᵀ) (0 = off).
-    pub manipulability: f64,
-    /// Priority 2: tool orientation φ_t → `orient_target`, natural frequency (rad/s, 0 = off).
-    pub orient: f64,
-    pub orient_target: f64,
-    /// Priority 3: the elbow (the origin of body `elbow_body`) → `elbow_target`, natural frequency
-    /// (rad/s, 0 = off). The planar counterpart of the arm angle that resolves a 7-DOF arm's redundancy.
-    pub elbow: f64,
-    pub elbow_target: [f64; 2],
-    pub elbow_body: usize,
-}
-
-/// A secondary task for one step: its Jacobian (rows × n, row-major), J̇q̇, the desired task acceleration
-/// a = ω²e − 2ω ẋ and the error e, for `rows` = 1 (orientation) or 2 (a point).
-#[derive(Clone, Copy, Debug)]
-pub struct SubTask {
-    pub rows: usize,
-    pub j: [f64; 2 * MAXN],
-    pub jdqd: [f64; 2],
-    pub a: [f64; 2],
-    pub e: [f64; 2],
 }
 
 /// The body halfway along the chain from the ground to the tool: a natural "elbow".
@@ -120,14 +38,6 @@ fn middle_of_tool_chain(model: &Model) -> usize {
         b = p;
     }
     chain[chain.len() / 2]
-}
-
-/// Linearisation in tangent coordinates x = (ξ, ξ̇) with q ≈ q* + Z ξ (Z = I for open chains).
-#[derive(Clone, Debug)]
-pub struct Lin {
-    pub z: DMat,
-    pub a: DMat,
-    pub b: DMat,
 }
 
 /// Tool point kinematics at the current state.
@@ -168,63 +78,12 @@ impl Tool {
     }
 }
 
+/// Configuration, cached design results and live reference filters have distinct lifetimes.
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)] // independent switches
 pub struct Plan {
-    // ---- inputs
-    pub q_target: VecN,
-    pub tool_target: [f64; 2],
-    /// Follow `tool_target` (task controllers directly, joint controllers through IK) instead of q*.
-    pub use_tool: bool,
-    /// Where a regulating controller (LQR, MPC) is designed while it travels to its target (None: at q*).
-    pub setpoint: Option<VecN>,
-    pub ref_wn: f64,
-    /// Pointer position of a push on the tool, and the push stiffness.
-    pub push: Option<[f64; 2]>,
-    pub push_k: f64,
-    pub goals: Goals,
-    pub tuning: Tuning,
-    // ---- design
-    /// The equilibrium the controllers aim for (the joint targets on the manifold, passive joints settled).
-    pub q_star: VecN,
-    /// Where the linearisation, u* and the gains are made: q*, or on the way there the setpoint.
-    pub q_lin: VecN,
-    /// Tool position at q* (task target when no tool target is set).
-    pub x_star: [f64; 2],
-    pub u_ff: VecN,
-    pub eq_residual: f64,
-    /// [B −Aᵀ] spans ℝⁿ: any generalised force can be produced (full actuation on the manifold).
-    pub ct_ok: bool,
-    /// Degrees of freedom (dimension of the tangent space).
-    pub dof: usize,
-    pub lin: Option<Lin>,
-    /// Can linear feedback hold q*? False when an unstable mode of the linearisation is out of reach of
-    /// every input (e.g. a passive bar standing on a point that the inputs only move along it).
-    pub stabilisable: bool,
-    /// M(q*): shapes joint-space gains (K = ω² M(q*)), so that near q* every closed-loop mode has the
-    /// designed natural frequency and damping.
-    pub m_star: MatN,
-    pub v_star: f64,
-    /// Energy scale of the passive bodies, 2 Σ m g |r| (swing-up).
-    pub e_ref: f64,
-    // ---- references
-    pub q_ref: VecN,
-    pub qd_ref: VecN,
-    pub qdd_ref: VecN,
-    pub ik_goal: VecN,
-    pub reachable: bool,
-    /// Where the IK aims the tool: the target itself when it is reachable, otherwise (just inside) the
-    /// nearest point the mechanism can reach.
-    pub ik_point: [f64; 2],
-    /// The adaptive part of the IK's damping.
-    ik_mu: f64,
-    pub x_ref: [f64; 2],
-    pub xd_ref: [f64; 2],
-    pub xdd_ref: [f64; 2],
-    /// External force on the tool this step (world frame).
-    pub f_ext: [f64; 2],
-    synced: bool,
-    designed_target: Option<VecN>,
+    pub config: Configuration,
+    pub design: Design,
+    pub reference: References,
 }
 
 impl Plan {
@@ -233,48 +92,55 @@ impl Plan {
         let mut q_target = [0.0; MAXN];
         q_target[..model.n].copy_from_slice(&model.q_target);
         Self {
-            q_target,
-            tool_target: [0.0; 2],
-            use_tool: false,
-            setpoint: None,
-            ref_wn: REF_WN,
-            push: None,
-            push_k: PUSH_K,
-            goals: Goals {
-                posture: POSTURE,
-                manipulability: 0.0,
-                orient: 0.0,
-                orient_target: 0.0,
-                elbow: 0.0,
-                elbow_target: [0.0; 2],
-                elbow_body: middle_of_tool_chain(model),
+            config: Configuration {
+                q_target,
+                tool_target: [0.0; 2],
+                use_tool: false,
+                setpoint: None,
+                ref_wn: REF_WN,
+                push: None,
+                push_k: PUSH_K,
+                goals: Goals {
+                    posture: POSTURE,
+                    manipulability: 0.0,
+                    orient: 0.0,
+                    orient_target: 0.0,
+                    elbow: 0.0,
+                    elbow_target: [0.0; 2],
+                    elbow_body: middle_of_tool_chain(model),
+                },
+                tuning: Tuning::default(),
+                tasks: Vec::new(),
             },
-            tuning: Tuning::default(),
-            q_star: q_target,
-            q_lin: q_target,
-            x_star: [0.0; 2],
-            u_ff: [0.0; MAXN],
-            eq_residual: 0.0,
-            ct_ok: false,
-            stabilisable: false,
-            dof: model.n,
-            lin: None,
-            m_star: core::array::from_fn(|k| f64::from(u8::from(k % (MAXN + 1) == 0))),
-            v_star: 0.0,
-            e_ref: 1.0,
-            q_ref: [0.0; MAXN],
-            qd_ref: [0.0; MAXN],
-            qdd_ref: [0.0; MAXN],
-            ik_goal: q_target,
-            reachable: true,
-            ik_point: [0.0; 2],
-            ik_mu: Tuning::default().ik_damping,
-            x_ref: [0.0; 2],
-            xd_ref: [0.0; 2],
-            xdd_ref: [0.0; 2],
-            f_ext: [0.0; 2],
-            synced: false,
-            designed_target: None,
+            design: Design {
+                designed_target: None,
+                q_star: q_target,
+                q_lin: q_target,
+                x_star: [0.0; 2],
+                u_ff: [0.0; MAXN],
+                eq_residual: 0.0,
+                ct_ok: false,
+                stabilisable: false,
+                dof: model.n,
+                lin: None,
+                m_star: core::array::from_fn(|k| f64::from(u8::from(k % (MAXN + 1) == 0))),
+                v_star: 0.0,
+                e_ref: 1.0,
+            },
+            reference: References {
+                q_ref: [0.0; MAXN],
+                qd_ref: [0.0; MAXN],
+                qdd_ref: [0.0; MAXN],
+                ik_goal: q_target,
+                reachable: true,
+                ik_point: [0.0; 2],
+                ik_mu: Tuning::default().ik_damping,
+                x_ref: [0.0; 2],
+                xd_ref: [0.0; 2],
+                xdd_ref: [0.0; 2],
+                f_ext: [0.0; 2],
+                synced: false,
+            },
         }
     }
 
@@ -287,18 +153,18 @@ impl Plan {
     /// Restart the references at the current state (after reset, mode change or a jump).
     pub fn sync(&mut self, model: &mut Model, q: &[f64]) {
         let n = model.n;
-        self.q_ref[..n].copy_from_slice(&q[..n]);
-        self.qd_ref = [0.0; MAXN];
-        self.qdd_ref = [0.0; MAXN];
-        self.ik_goal[..n].copy_from_slice(&q[..n]);
-        self.ik_mu = self.tuning.ik_damping;
+        self.reference.q_ref[..n].copy_from_slice(&q[..n]);
+        self.reference.qd_ref = [0.0; MAXN];
+        self.reference.qdd_ref = [0.0; MAXN];
+        self.reference.ik_goal[..n].copy_from_slice(&q[..n]);
+        self.reference.ik_mu = self.config.tuning.ik_damping;
         if let Some(t) = Tool::eval(model, q, &[0.0; MAXN]) {
-            self.x_ref = t.p;
-            self.ik_point = t.p;
+            self.reference.x_ref = t.p;
+            self.reference.ik_point = t.p;
         }
-        self.xd_ref = [0.0; 2];
-        self.xdd_ref = [0.0; 2];
-        self.synced = true;
+        self.reference.xd_ref = [0.0; 2];
+        self.reference.xdd_ref = [0.0; 2];
+        self.reference.synced = true;
     }
 
     /// The equilibrium nearest to `target`: on the manifold, keeping the actuated coordinates where they are
@@ -309,7 +175,7 @@ impl Plan {
     fn equilibrium(&self, model: &mut Model, target: VecN, reference: &VecN) -> VecN {
         let zero = [0.0; MAXN];
         let mut seed = target;
-        if model.closed() && self.synced {
+        if model.closed() && self.reference.synced {
             for &i in &model.unactuated {
                 seed[i] = reference[i];
             }
@@ -333,37 +199,41 @@ impl Plan {
         // Retuning or changing physical parameters must not choose a different linkage assembly for
         // the same requested target. A genuinely new target is seeded from the current reference.
         let unchanged = self
+            .design
             .designed_target
-            .is_some_and(|t| (0..n).all(|i| t[i].to_bits() == self.q_target[i].to_bits()));
-        let seed = if unchanged { self.q_star } else { self.q_ref };
-        self.q_star = self.equilibrium(model, self.q_target, &seed);
-        self.designed_target = Some(self.q_target);
-        if let Some(t) = Tool::eval(model, &self.q_star, &zero) {
-            self.x_star = t.p;
+            .is_some_and(|t| (0..n).all(|i| t[i].to_bits() == self.config.q_target[i].to_bits()));
+        let seed = if unchanged { self.design.q_star } else { self.reference.q_ref };
+        self.design.q_star = self.equilibrium(model, self.config.q_target, &seed);
+        self.design.designed_target = Some(self.config.q_target);
+        if let Some(t) = Tool::eval(model, &self.design.q_star, &zero) {
+            self.design.x_star = t.p;
         }
-        self.v_star = model.energies(&self.q_star, &zero)[1];
-        let qs = self.setpoint.map_or(self.q_star, |s| self.equilibrium(model, s, &self.q_ref));
-        self.q_lin = qs;
+        self.design.v_star = model.energies(&self.design.q_star, &zero)[1];
+        let qs = self
+            .config
+            .setpoint
+            .map_or(self.design.q_star, |s| self.equilibrium(model, s, &self.reference.q_ref));
+        self.design.q_lin = qs;
         let t = model.terms(&qs, &zero);
         let k = dynamics::constraints(model, &qs, &zero);
         let dv = model.potential_grad(&qs);
-        (self.u_ff, self.eq_residual) = inverse_dynamics(model, k.as_ref(), &dv);
+        (self.design.u_ff, self.design.eq_residual) = inverse_dynamics(model, k.as_ref(), &dv);
         // gains shaped by the full inertia: K = ω² M(q*) puts every linearised mode at ω (a diagonal choice
         // leaves strongly coupled chains with modes hundreds of times stiffer or slower than designed)
-        self.m_star = [0.0; MAXN * MAXN];
-        self.m_star[..n * n].copy_from_slice(&t.m[..n * n]);
-        self.ct_ok = model.nu > 0
+        self.design.m_star = [0.0; MAXN * MAXN];
+        self.design.m_star[..n * n].copy_from_slice(&t.m[..n * n]);
+        self.design.ct_ok = model.nu > 0
             && (0..n).all(|i| {
                 let e: VecN = core::array::from_fn(|j| f64::from(u8::from(i == j)));
                 inverse_dynamics(model, k.as_ref(), &e).1 < 1e-6
             });
         let z = k.map_or_else(|| DMat::identity(n), |k| k.tangent_basis());
-        self.dof = z.cols;
-        self.lin = if model.nu > 0 && z.cols > 0 { Some(self.linearise(model, z)) } else { None };
-        self.stabilisable = self.lin.as_ref().is_some_and(stabilisable);
+        self.design.dof = z.cols;
+        self.design.lin = if model.nu > 0 && z.cols > 0 { Some(self.linearise(model, z)) } else { None };
+        self.design.stabilisable = self.design.lin.as_ref().is_some_and(stabilisable);
         let vars = model.vars;
         let passive: Vec<usize> = if model.closed() { (0..n).collect() } else { model.unactuated.clone() };
-        self.e_ref = passive
+        self.design.e_ref = passive
             .iter()
             .map(|&j| model.coord_body[j])
             .map(|i| 2.0 * p[vars.m(i)] * p[vars.g()] * p[vars.r(i)].abs())
@@ -375,7 +245,7 @@ impl Plan {
     /// differences of the same model the simulator integrates.
     fn linearise(&self, model: &mut Model, z: DMat) -> Lin {
         let (n, nu, r) = (model.n, model.nu, z.cols);
-        let (qs, u_ff) = (self.q_lin, self.u_ff);
+        let (qs, u_ff) = (self.design.q_lin, self.design.u_ff);
         let mut f = |xi: &[f64], xid: &[f64], du: &[f64]| -> Vec<f64> {
             let mut q: VecN = core::array::from_fn(|i| {
                 if i < n { qs[i] + (0..r).map(|c| z[(i, c)] * xi[c]).sum::<f64>() } else { 0.0 }
@@ -386,7 +256,7 @@ impl Plan {
             let tau: VecN = core::array::from_fn(|i| {
                 if i < n { (0..nu).map(|a| model.b[i * nu + a] * (u_ff[a] + du[a])).sum() } else { 0.0 }
             });
-            let (qdd, _) = dynamics::accel(model, &q, &qd, &tau, true, self.tuning.baumgarte);
+            let (qdd, _) = dynamics::accel(model, &q, &qd, &tau, true, self.config.tuning.baumgarte);
             (0..r).map(|c| (0..n).map(|i| z[(i, c)] * qdd[i]).sum()).collect()
         };
         let h = 1e-6;
@@ -415,10 +285,11 @@ impl Plan {
     /// Tangent-coordinate state x = (Zᵀ(q − q*), Zᵀ q̇).
     #[must_use]
     pub fn tangent_state(&self, model: &Model, q: &[f64], qd: &[f64]) -> Vec<f64> {
-        let Some(l) = &self.lin else { return Vec::new() };
+        let Some(l) = &self.design.lin else { return Vec::new() };
         let (n, r) = (model.n, l.z.cols);
-        let dq: VecN =
-            core::array::from_fn(|i| if i < n { -Self::error(model, i, q[i], self.q_lin[i]) } else { 0.0 });
+        let dq: VecN = core::array::from_fn(|i| {
+            if i < n { -Self::error(model, i, q[i], self.design.q_lin[i]) } else { 0.0 }
+        });
         let mut x = vec![0.0; 2 * r];
         for c in 0..r {
             x[c] = (0..n).map(|i| l.z[(i, c)] * dq[i]).sum();
@@ -430,7 +301,7 @@ impl Plan {
     /// Is the tool target followed through the inverse kinematics (a target, a tool, full actuation)?
     #[must_use]
     pub fn follows_ik(&self, model: &Model) -> bool {
-        self.use_tool && model.has_tool() && self.ct_ok
+        self.config.use_tool && model.has_tool() && self.design.ct_ok
     }
 
     /// Advance the references by one step: joint reference (towards q*, or the IK goal when following the
@@ -438,33 +309,35 @@ impl Plan {
     /// of reach — or the tool position at q*).
     pub fn advance(&mut self, model: &mut Model, dt: f64) {
         let n = model.n;
-        if !self.synced {
+        if !self.reference.synced {
             return;
         }
         let ik = self.follows_ik(model);
         if ik {
             self.ik_step(model);
         }
-        let wn = self.ref_wn;
+        let wn = self.config.ref_wn;
         for i in 0..n {
-            let goal = if ik { self.ik_goal[i] } else { self.q_star[i] };
-            let goal = self.q_ref[i] + Self::error(model, i, self.q_ref[i], goal);
-            self.qdd_ref[i] = wn * wn * (goal - self.q_ref[i]) - 2.0 * wn * self.qd_ref[i];
-            self.qd_ref[i] += self.qdd_ref[i] * dt;
-            self.q_ref[i] += self.qd_ref[i] * dt;
+            let goal = if ik { self.reference.ik_goal[i] } else { self.design.q_star[i] };
+            let goal = self.reference.q_ref[i] + Self::error(model, i, self.reference.q_ref[i], goal);
+            self.reference.qdd_ref[i] =
+                wn * wn * (goal - self.reference.q_ref[i]) - 2.0 * wn * self.reference.qd_ref[i];
+            self.reference.qd_ref[i] += self.reference.qdd_ref[i] * dt;
+            self.reference.q_ref[i] += self.reference.qd_ref[i] * dt;
         }
         // a target out of reach is replaced by the nearest point the arm can reach: a task-space spring
         // stretched towards a point it can never get to pulls the arm ever harder against its own
         // singularity (an acceleration that cannot be realised bends a redundant arm back and forth)
-        let goal = match (self.use_tool, ik && !self.reachable) {
-            (true, true) => self.ik_point,
-            (true, false) => self.tool_target,
-            (false, _) => self.x_star,
+        let goal = match (self.config.use_tool, ik && !self.reference.reachable) {
+            (true, true) => self.reference.ik_point,
+            (true, false) => self.config.tool_target,
+            (false, _) => self.design.x_star,
         };
         for r in 0..2 {
-            self.xdd_ref[r] = wn * wn * (goal[r] - self.x_ref[r]) - 2.0 * wn * self.xd_ref[r];
-            self.xd_ref[r] += self.xdd_ref[r] * dt;
-            self.x_ref[r] += self.xd_ref[r] * dt;
+            self.reference.xdd_ref[r] =
+                wn * wn * (goal[r] - self.reference.x_ref[r]) - 2.0 * wn * self.reference.xd_ref[r];
+            self.reference.xd_ref[r] += self.reference.xdd_ref[r] * dt;
+            self.reference.x_ref[r] += self.reference.xd_ref[r] * dt;
         }
     }
 
@@ -472,7 +345,7 @@ impl Plan {
     fn ik_cost(&self, model: &mut Model, q: &[f64]) -> Option<(f64, Tool)> {
         let zero = [0.0; MAXN];
         let tool = Tool::eval(model, q, &zero)?;
-        let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
+        let e = [self.config.tool_target[0] - tool.p[0], self.config.tool_target[1] - tool.p[1]];
         let phi = dynamics::constraints(model, q, &zero)
             .map_or(0.0, |k| (0..k.m).map(|r| k.phi[r] * k.phi[r]).sum());
         Some((e[0].mul_add(e[0], e[1] * e[1]) + phi, tool))
@@ -487,9 +360,9 @@ impl Plan {
         let n = model.n;
         let zero = [0.0; MAXN];
         for _ in 0..2 {
-            let Some((cost, tool)) = self.ik_cost(model, &self.ik_goal) else { return };
-            let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
-            let k = dynamics::constraints(model, &self.ik_goal, &zero);
+            let Some((cost, tool)) = self.ik_cost(model, &self.reference.ik_goal) else { return };
+            let e = [self.config.tool_target[0] - tool.p[0], self.config.tool_target[1] - tool.p[1]];
+            let k = dynamics::constraints(model, &self.reference.ik_goal, &zero);
             let m = k.as_ref().map_or(0, |k| k.m);
             let rows = m + 2;
             let mut s = [0.0; MAXK * MAXN];
@@ -503,7 +376,7 @@ impl Plan {
             s[m * n..(m + 2) * n].copy_from_slice(&tool.jp[..2 * n]);
             rhs[m] = e[0];
             rhs[m + 1] = e[1];
-            let lambda = 0.5 * e[0].mul_add(e[0], e[1] * e[1]) + self.ik_mu;
+            let lambda = 0.5 * e[0].mul_add(e[0], e[1] * e[1]) + self.reference.ik_mu;
             let mut sst = [0.0; MAXK * MAXK];
             for i in 0..rows {
                 for j in 0..rows {
@@ -514,69 +387,38 @@ impl Plan {
             if !solve_dense(rows, &mut sst[..rows * rows], &mut rhs[..rows]) {
                 return;
             }
-            let mut q = self.ik_goal;
+            let mut q = self.reference.ik_goal;
             for c in 0..n {
                 let step: f64 = (0..rows).map(|i| s[i * n + c] * rhs[i]).sum();
-                q[c] += step.clamp(-self.tuning.ik_step, self.tuning.ik_step);
+                q[c] += step.clamp(-self.config.tuning.ik_step, self.config.tuning.ik_step);
             }
             match self.ik_cost(model, &q) {
                 Some((c, _)) if c < cost => {
-                    self.ik_goal = q;
-                    self.ik_mu = (self.ik_mu * 0.5).max(0.1 * self.tuning.ik_damping);
+                    self.reference.ik_goal = q;
+                    self.reference.ik_mu =
+                        (self.reference.ik_mu * 0.5).max(0.1 * self.config.tuning.ik_damping);
                 }
-                _ => self.ik_mu = (self.ik_mu * 4.0).min(1e3),
+                _ => self.reference.ik_mu = (self.reference.ik_mu * 4.0).min(1e3),
             }
         }
-        let Some((_, tool)) = self.ik_cost(model, &self.ik_goal) else { return };
-        let e = [self.tool_target[0] - tool.p[0], self.tool_target[1] - tool.p[1]];
+        let Some((_, tool)) = self.ik_cost(model, &self.reference.ik_goal) else { return };
+        let e = [self.config.tool_target[0] - tool.p[0], self.config.tool_target[1] - tool.p[1]];
         let dist = e[0].hypot(e[1]);
-        self.reachable = dist < 2e-3;
+        self.reference.reachable = dist < 2e-3;
         // out of reach the IK ends on the boundary of the workspace, where the arm is singular: aim a little
         // inside it (a fraction of the arm's size √tr(J Jᵀ), continuous at the boundary) to keep it controllable
         let size = tool.jp[..2 * n].iter().map(|v| v * v).sum::<f64>().sqrt();
-        let back = if dist > 0.0 { (self.tuning.reach_margin * size).min(dist) / dist } else { 0.0 };
-        self.ik_point = [tool.p[0] - back * e[0], tool.p[1] - back * e[1]];
+        let back = if dist > 0.0 { (self.config.tuning.reach_margin * size).min(dist) / dist } else { 0.0 };
+        self.reference.ik_point = [tool.p[0] - back * e[0], tool.p[1] - back * e[1]];
     }
 
     /// Task-space reference at this step: (x_d, ẋ_d, ẍ_d).
     #[must_use]
     pub fn task_ref(&self) -> ([f64; 2], [f64; 2], [f64; 2]) {
-        (self.x_ref, self.xd_ref, self.xdd_ref)
+        (self.reference.x_ref, self.reference.xd_ref, self.reference.xdd_ref)
     }
 
     /// The enabled secondary tasks, highest priority first: tool orientation, then the elbow point.
-    pub fn sub_tasks(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> Vec<SubTask> {
-        let n = model.n;
-        let mut out = Vec::new();
-        let g = self.goals;
-        if g.orient > 0.0 && model.has_tool() {
-            // the tool frame's angle is linear in q: φ = k·q + c, so J = k and J̇ = 0
-            let angle = &model.frame_angles[model.desc.nb() + 1];
-            let mut j = [0.0; 2 * MAXN];
-            for (i, &k) in angle.k.iter().enumerate().take(n) {
-                j[i] = f64::from(k);
-            }
-            let phi = angle.eval(q);
-            let rate: f64 = (0..n).map(|i| j[i] * qd[i]).sum();
-            let e = wrap(g.orient_target - phi);
-            out.push(SubTask {
-                rows: 1,
-                j,
-                jdqd: [0.0; 2],
-                a: [g.orient * g.orient * e - 2.0 * g.orient * rate, 0.0],
-                e: [e, 0.0],
-            });
-        }
-        if g.elbow > 0.0 && g.elbow_body < model.desc.nb() {
-            let (p, j, jdqd) = point_kinematics(model, g.elbow_body + 1, q, qd);
-            let v: [f64; 2] = core::array::from_fn(|r| (0..n).map(|c| j[r * n + c] * qd[c]).sum());
-            let e = [g.elbow_target[0] - p[0], g.elbow_target[1] - p[1]];
-            let a = core::array::from_fn(|r| g.elbow * g.elbow * e[r] - 2.0 * g.elbow * v[r]);
-            out.push(SubTask { rows: 2, j, jdqd, a, e });
-        }
-        out
-    }
-
     /// Secondary-goal torque τ₀ (posture and manipulability), to be projected into the task null space.
     ///
     /// The posture acceleration is shaped by M(q*) along the tool's chain; joints beyond the tool (a
@@ -587,9 +429,9 @@ impl Plan {
         let n = model.n;
         let a = self.secondary_accel(model, q, qd);
         let chain: VecN = core::array::from_fn(|i| if i < n && !model.beyond_tool[i] { a[i] } else { 0.0 });
-        let mut tau = mat_vec(n, &self.m_star, &chain);
+        let mut tau = mat_vec(n, &self.design.m_star, &chain);
         for i in (0..n).filter(|&i| model.beyond_tool[i]) {
-            tau[i] = self.m_star[i * n + i] * a[i];
+            tau[i] = self.design.m_star[i * n + i] * a[i];
         }
         tau
     }
@@ -597,14 +439,18 @@ impl Plan {
     /// The posture spring–damper at ω and the climb along ∇w, as joint accelerations.
     pub fn secondary_accel(&self, model: &mut Model, q: &[f64], qd: &[f64]) -> VecN {
         let n = model.n;
-        let w = self.goals.posture;
+        let w = self.config.goals.posture;
         let mut a: VecN = core::array::from_fn(|i| {
-            if i < n { w * w * Self::error(model, i, q[i], self.q_star[i]) - 2.0 * w * qd[i] } else { 0.0 }
+            if i < n {
+                w * w * Self::error(model, i, q[i], self.design.q_star[i]) - 2.0 * w * qd[i]
+            } else {
+                0.0
+            }
         });
-        if self.goals.manipulability > 0.0 {
+        if self.config.goals.manipulability > 0.0 {
             let grad = manipulability_gradient(model, q);
             for i in 0..n {
-                a[i] += self.goals.manipulability * grad[i];
+                a[i] += self.config.goals.manipulability * grad[i];
             }
         }
         a

@@ -1,13 +1,13 @@
 //! Task-space controllers acting on the tool point: virtual model control (energy shaping), impedance and
 //! admittance.
 //!
-//! On open chains further goals are stacked below the tool position with strict priorities: the tool
+//! Further goals are stacked below the tool position with strict priorities: the tool
 //! orientation, then the elbow, then posture and manipulability. Each level acts only in the null space of
 //! the levels above it, in the metric of M (dynamically consistent), so it cannot disturb them.
 
 use super::{Controller, Ctx, Kind, Telemetry};
 use crate::MAXN;
-use crate::dynamics::{Terms, VecN, inverse_dynamics, mat_vec};
+use crate::dynamics::{Constraints, Terms, VecN, inverse_dynamics, mat_vec};
 use crate::mat::cholesky_solve;
 use crate::model::Model;
 use crate::plan::{Plan, SubTask, Tool, Tuning, manipulability, resolve_accel};
@@ -99,6 +99,39 @@ impl Stack {
             }
         }
         let p = core::array::from_fn(|k| if k < n * n && k % (n + 1) == 0 { 1.0 } else { 0.0 });
+        Some(Self { n, tuning, minv, p, levels: 0 })
+    }
+
+    /// In constraint tangent coordinates Z: M_r = Zᵀ M Z and H = Z M_r⁻¹ Zᵀ.
+    /// H maps torques to feasible accelerations; P = H M projects preferences onto the tangent.
+    /// All later task corrections use H, so A Δq̈ = 0 at every priority level.
+    fn constrained(n: usize, m: &MatN, k: Option<&Constraints>, tuning: Tuning) -> Option<Self> {
+        let Some(k) = k else { return Self::new(n, m, tuning) };
+        let z = k.tangent_basis();
+        let r = z.cols;
+        let mut mr = [0.0; MAXN * MAXN];
+        for i in 0..r {
+            for j in 0..r {
+                mr[i * r + j] = (0..n)
+                    .flat_map(|a| (0..n).map(move |b| (a, b)))
+                    .map(|(a, b)| z[(a, i)] * m[a * n + b] * z[(b, j)])
+                    .sum();
+            }
+        }
+        let reduced = Self::new(r, &mr, tuning)?;
+        let mut minv = [0.0; MAXN * MAXN];
+        for a in 0..n {
+            for b in 0..n {
+                minv[a * n + b] = (0..r)
+                    .flat_map(|i| (0..r).map(move |j| (i, j)))
+                    .map(|(i, j)| z[(a, i)] * reduced.minv[i * r + j] * z[(b, j)])
+                    .sum();
+            }
+        }
+        let p = core::array::from_fn(|ix| {
+            let (i, j) = (ix / n, ix % n);
+            if i < n { (0..n).map(|a| minv[i * n + a] * m[a * n + j]).sum() } else { 0.0 }
+        });
         Some(Self { n, tuning, minv, p, levels: 0 })
     }
 
@@ -339,9 +372,7 @@ impl Controller for Vmc {
         self.tau_soft = [0.0; MAXN];
         self.sec = Secondary::default();
         self.leak = 0.0;
-        if c.k.is_none()
-            && let Some(mut stack) = Stack::new(n, &c.terms.m, plan.tuning)
-        {
+        if let Some(mut stack) = Stack::constrained(n, &c.terms.m, c.k, plan.config.tuning) {
             let tasks = plan.sub_tasks(model, c.q, c.qd);
             self.sec.record(&tasks);
             let primary = stack.push(2, &tool.jp);
@@ -349,10 +380,9 @@ impl Controller for Vmc {
             // semi-definite (Λ̂ ≤ Λ), vanishes along the task and catches the elbow mode at a singular pose
             let qd: VecN = core::array::from_fn(|i| if i < n { c.qd[i] } else { 0.0 });
             let (mq, task) = (mat_vec(n, &c.terms.m, &qd), primary.task_part(n, &tool.jp, &qd));
-            self.tau_soft =
-                core::array::from_fn(
-                    |i| if i < n { -plan.tuning.null_damping * (mq[i] - task[i]) } else { 0.0 },
-                );
+            self.tau_soft = core::array::from_fn(|i| {
+                if i < n { -plan.config.tuning.null_damping * (mq[i] - task[i]) } else { 0.0 }
+            });
             let mut below: Vec<VecN> = Vec::with_capacity(tasks.len() + 1);
             for t in &tasks {
                 let lv = stack.push(t.rows, &t.j);
@@ -407,9 +437,9 @@ fn task_accel(n: usize, c: &Ctx<'_>, tool: &Tool, xdd: [f64; 2], pref: &VecN) ->
     (with, without)
 }
 
-/// The joint accelerations of the full stack (open chains): the tool acceleration `xdd`, then the secondary
+/// The joint accelerations of the full stack in the constraint tangent space: the tool acceleration `xdd`, then the secondary
 /// tasks, then the preference `pref` in what remains. Returns (q̈, q̈ of the tool level alone, report, the
-/// tool's leakage). With loops only the tool level is resolved (closest to `pref`).
+/// tool's leakage). Constraint curvature supplies the affine base acceleration.
 fn stacked_accel(
     plan: &Plan,
     model: &mut Model,
@@ -420,7 +450,7 @@ fn stacked_accel(
 ) -> (VecN, VecN, Secondary, f64) {
     let n = model.n;
     let mut sec = Secondary::default();
-    let stack = if c.k.is_none() { Stack::new(n, &c.terms.m, plan.tuning) } else { None };
+    let stack = Stack::constrained(n, &c.terms.m, c.k, plan.config.tuning);
     let Some(mut stack) = stack else {
         let (with, without) = task_accel(n, c, tool, xdd, pref);
         let dq: VecN = core::array::from_fn(|i| with[i] - without[i]);
@@ -432,13 +462,15 @@ fn stacked_accel(
     };
     let tasks = plan.sub_tasks(model, c.q, c.qd);
     sec.record(&tasks);
-    let mut qdd = [0.0; MAXN];
+    let velocity = mat_vec(n, &stack.p, c.qd);
+    let mut qdd = c.k.map_or([0.0; MAXN], |k| k.consistent(&[0.0; MAXN]));
     let primary = stack.push(2, &tool.jp);
     primary.resolve(n, &tool.jp, [xdd[0] - tool.jdqd[0], xdd[1] - tool.jdqd[1]], &mut qdd);
     let task_only = qdd;
     // damping in what the tool task does not serve: its null space (the levels below override it along
     // their own directions), and near a singularity the directions its damped command lets go of
-    let soft: VecN = core::array::from_fn(|i| if i < n { -plan.tuning.null_damping * c.qd[i] } else { 0.0 });
+    let soft: VecN =
+        core::array::from_fn(|i| if i < n { -plan.config.tuning.null_damping * velocity[i] } else { 0.0 });
     let damp = primary.soft_complement(n, &tool.jp, &soft);
     for i in 0..n {
         qdd[i] += damp[i];
@@ -457,7 +489,7 @@ fn stacked_accel(
     }
     // joints beyond the tool are no part of any task: they take their preference as it is (no task sees
     // them, and the oblique projection would feed them what the chain cannot follow)
-    for i in (0..n).filter(|&i| model.beyond_tool[i]) {
+    for i in (0..n).filter(|&i| c.k.is_none() && model.beyond_tool[i]) {
         qdd[i] = pref[i];
     }
     let moved = |j: &[f64], rows: usize, from: &VecN| {
@@ -540,10 +572,10 @@ impl Controller for Impedance {
         let (xd, xd_dot, xd_ddot) = plan.task_ref();
         self.x = tool.p;
         self.xd = xd;
-        self.fext = plan.f_ext;
+        self.fext = plan.reference.f_ext;
         self.e = [tool.p[0] - xd[0], tool.p[1] - xd[1]];
         self.xdd_cmd = core::array::from_fn(|r| {
-            xd_ddot[r] + (plan.f_ext[r] - d * (tool.v[r] - xd_dot[r]) - k * self.e[r]) / mass
+            xd_ddot[r] + (plan.reference.f_ext[r] - d * (tool.v[r] - xd_dot[r]) - k * self.e[r]) / mass
         });
         let pref = preference(plan, model, c, k_null);
         let (qdd, qdd_task, sec, leak) = stacked_accel(plan, model, c, tool, self.xdd_cmd, &pref);
@@ -552,7 +584,11 @@ impl Controller for Impedance {
         let h = c.terms.h(n, c.qd);
         // M q̈ + C q̇ + N − Jᵀ F_ext: the commanded part M q̈, and what holds the arm and cancels the push
         let bias: VecN = core::array::from_fn(|i| {
-            if i < n { h[i] - (0..2).map(|r| tool.jp[r * n + i] * plan.f_ext[r]).sum::<f64>() } else { 0.0 }
+            if i < n {
+                h[i] - (0..2).map(|r| tool.jp[r * n + i] * plan.reference.f_ext[r]).sum::<f64>()
+            } else {
+                0.0
+            }
         });
         let dq: VecN = core::array::from_fn(|i| qdd[i] - qdd_task[i]);
         self.tau_null = mat_vec(n, &c.terms.m, &dq);
@@ -603,14 +639,14 @@ impl Controller for Admittance {
         let (xd, xd_dot, _) = plan.task_ref();
         let mut xv = self.xv.unwrap_or(tool.p);
         let xv_ddot: [f64; 2] = core::array::from_fn(|r| {
-            (plan.f_ext[r] - d * (self.xv_dot[r] - xd_dot[r]) - k * (xv[r] - xd[r])) / mass
+            (plan.reference.f_ext[r] - d * (self.xv_dot[r] - xd_dot[r]) - k * (xv[r] - xd[r])) / mass
         });
         for r in 0..2 {
             self.xv_dot[r] += xv_ddot[r] * c.dt;
             xv[r] += self.xv_dot[r] * c.dt;
         }
         self.xv = Some(xv);
-        self.fext = plan.f_ext;
+        self.fext = plan.reference.f_ext;
         self.x = tool.p;
         // inner loop: track the virtual trajectory
         let xdd: [f64; 2] = core::array::from_fn(|r| {
@@ -637,6 +673,11 @@ mod tests {
 
     #[test]
     fn lower_levels_never_disturb_higher_ones_and_feasible_levels_are_met() {
+        check_hierarchy(false);
+        check_hierarchy(true);
+    }
+
+    fn check_hierarchy(closed: bool) {
         let n = 5;
         // a symmetric positive definite M = AᵀA + I
         let a: Vec<f64> = (0..n * n).map(|k| ((k * 37 % 11) as f64 - 5.0) / 7.0).collect();
@@ -651,8 +692,19 @@ mod tests {
         let j2: Vec<f64> = (0..n).map(|k| ((k * 5 % 3) as f64) - 1.0 + 0.3).collect();
         let j3: Vec<f64> = (0..2 * n).map(|k| ((k * k * 17 % 7) as f64 - 3.0) / 2.0).collect();
         let (b1, b2, b3) = ([0.7, -1.1], [0.4, 0.0], [-0.3, 0.9]);
-        let mut stack = Stack::new(n, &m, Tuning::default()).unwrap();
-        let mut qdd = [0.0; MAXN];
+        let mut constraint = Constraints {
+            n,
+            m: 1,
+            phi: [0.0; crate::mech::MAXM],
+            a: [0.0; crate::mech::MAXM * MAXN],
+            adq: [0.0; crate::mech::MAXM],
+        };
+        constraint.a[0] = 1.0;
+        constraint.a[n - 1] = 0.3;
+        constraint.adq[0] = 0.25;
+        let k = closed.then_some(&constraint);
+        let mut stack = Stack::constrained(n, &m, k, Tuning::default()).unwrap();
+        let mut qdd = k.map_or([0.0; MAXN], |k| k.consistent(&[0.0; MAXN]));
         stack.push(2, &j1).resolve(n, &j1, b1, &mut qdd);
         let after1 = qdd;
         stack.push(1, &j2).resolve(n, &j2, b2, &mut qdd);
@@ -674,7 +726,10 @@ mod tests {
         };
         assert!(miss(&j2, b2, 1, &after2) < miss(&j2, b2, 1, &after1), "level 2 made no progress");
         assert!(miss(&j3, b3, 2, &qdd) < miss(&j3, b3, 2, &after2), "level 3 made no progress");
-        // all five directions used: nothing left for posture
+        if closed {
+            assert!((constraint.apply(&qdd)[0] + constraint.adq[0]).abs() < 1e-10, "constraint disturbed");
+        }
+        // All available directions used: nothing left for posture.
         assert!(stack.p[..n * n].iter().all(|v| v.abs() < 1e-9));
     }
 }

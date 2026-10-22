@@ -291,7 +291,7 @@ fn crank_target(s: &mut World, v: f64) {
 fn computed_torque_drives_a_four_bar_through_its_crank() {
     let mut s = with(&presets::four_bar(), Kind::ComputedTorque);
     crank_target(&mut s, 1.2);
-    assert!(s.primary().plan.ct_ok, "one actuator must suffice for a 1-DOF loop");
+    assert!(s.primary().plan.design.ct_ok, "one actuator must suffice for a 1-DOF loop");
     s.step(5_000);
     assert!((s.primary().q[0] - 1.2).abs() < 1e-3, "crank at {}", s.primary().q[0]);
     assert!(s.publish()[off::CONSTRAINT] < 1e-6);
@@ -918,8 +918,8 @@ fn tuning_settings_reach_the_simulation() {
     // nonsense values are ignored
     s.set_flag(Flag::PushMax, -1.0);
     s.set_flag(Flag::Baumgarte, f64::NAN);
-    assert!((s.primary().plan.tuning.push_max - 5.0).abs() < 1e-12);
-    assert!((s.primary().plan.tuning.baumgarte - 20.0).abs() < 1e-12);
+    assert!((s.primary().plan.config.tuning.push_max - 5.0).abs() < 1e-12);
+    assert!((s.primary().plan.config.tuning.baumgarte - 20.0).abs() < 1e-12);
 }
 
 #[test]

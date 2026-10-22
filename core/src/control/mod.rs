@@ -135,13 +135,18 @@ impl Kind {
     /// A short human-readable reason.
     pub fn applicable(self, model: &Model, plan: &Plan) -> Result<(), &'static str> {
         let actuated = || if model.nu > 0 { Ok(()) } else { Err("no joint is actuated") };
-        let full =
-            || if plan.ct_ok { Ok(()) } else { Err("needs an independent actuator per degree of freedom") };
+        let full = || {
+            if plan.design.ct_ok {
+                Ok(())
+            } else {
+                Err("needs an independent actuator per degree of freedom")
+            }
+        };
         let tool = || if model.has_tool() { Ok(()) } else { Err("needs a tool point") };
         match self {
             Self::Passive => Ok(()),
             Self::Pd | Self::PdGravity => actuated(),
-            Self::Lqr | Self::Mpc => actuated().and(if plan.stabilisable {
+            Self::Lqr | Self::Mpc => actuated().and(if plan.design.stabilisable {
                 Ok(())
             } else {
                 Err("cannot hold q*: an unstable mode there is out of reach of every input")
@@ -149,7 +154,7 @@ impl Kind {
             Self::ComputedTorque | Self::Passivity => full(),
             // shaping the tool's potential through Jᵀ needs an actuator per degree of freedom
             Self::Vmc | Self::Impedance | Self::Admittance => tool().and_then(|()| full()),
-            Self::SwingUp => actuated().and(if plan.ct_ok {
+            Self::SwingUp => actuated().and(if plan.design.ct_ok {
                 Err("for underactuated systems (this one is fully actuated)")
             } else {
                 Ok(())

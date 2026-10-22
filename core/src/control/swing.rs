@@ -30,7 +30,7 @@ impl Controller for SwingUp {
     fn design(&mut self, plan: &Plan, model: &mut Model, _p: &[f64], dt: f64) {
         // the catch uses the LQR with its default weights
         self.lqr.design(plan, model, &Kind::Lqr.defaults(), dt);
-        self.energy_ref = plan.e_ref;
+        self.energy_ref = plan.design.e_ref;
         self.coupling = 0.0;
     }
 
@@ -48,7 +48,7 @@ impl Controller for SwingUp {
                 .map(|(i, j)| 0.5 * t.m[i * n + j] * qd[i] * qd[j])
                 .sum()
         };
-        self.energy = ke + en[1] - plan.v_star;
+        self.energy = ke + en[1] - plan.design.v_star;
         if self.coupling == 0.0 {
             self.coupling = un
                 .iter()
@@ -58,7 +58,7 @@ impl Controller for SwingUp {
         }
 
         let watched: Vec<usize> = if model.closed() { (0..n).collect() } else { un };
-        let err = |i: usize| Plan::error(model, i, q[i], plan.q_star[i]).abs();
+        let err = |i: usize| Plan::error(model, i, q[i], plan.design.q_star[i]).abs();
         // Leave the catch region at twice its entry threshold to avoid chattering.
         let (reach, speed) =
             (Kind::SwingUp.param(c.params, "catch"), Kind::SwingUp.param(c.params, "catch_speed"));
@@ -103,7 +103,7 @@ impl SwingUp {
         for (a, &i) in act.iter().enumerate() {
             let w: f64 = -un.iter().map(|&k| t.m[k * n + i] * qd[k]).sum::<f64>();
             let pump = ke * (-self.energy / self.energy_ref) * w / self.coupling;
-            let centre = kc * Plan::error(model, i, q[i], plan.q_star[i]) - kv * qd[i];
+            let centre = kc * Plan::error(model, i, q[i], plan.design.q_star[i]) - kv * qd[i];
             let mut va = pump + centre;
             if at_rest && self.energy < -0.5 * self.energy_ref {
                 va += 0.5 * a_max; // break the symmetry when resting at the bottom

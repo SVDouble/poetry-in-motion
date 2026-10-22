@@ -16,7 +16,7 @@ use crate::qp;
 /// K = ω² M(q*) does for the joint-space gains; plain identities would leave a heavy arm feebly held.
 fn weights(plan: &Plan, l: &crate::plan::Lin, (qx, qv, rw): (f64, f64, f64), scale: f64) -> (DMat, DMat) {
     let (r, n, nu) = (l.z.cols, l.z.rows, l.b.cols);
-    let m = &plan.m_star;
+    let m = &plan.design.m_star;
     let mz = DMat::from_fn(r, r, |a, b| {
         (0..n).map(|i| l.z[(i, a)] * (0..n).map(|j| m[i * n + j] * l.z[(j, b)]).sum::<f64>()).sum()
     });
@@ -62,6 +62,7 @@ impl Controller for Lqr {
 
     fn design(&mut self, plan: &Plan, _model: &mut Model, p: &[f64], dt: f64) {
         self.k = plan
+            .design
             .lin
             .as_ref()
             .and_then(|l| {
@@ -83,7 +84,7 @@ impl Controller for Lqr {
         let x = plan.tangent_state(model, c.q, c.qd);
         let r = x.len() / 2;
         for a in 0..model.nu {
-            u[a] = plan.u_ff[a] - (0..x.len()).map(|j| k[(a, j)] * x[j]).sum::<f64>();
+            u[a] = plan.design.u_ff[a] - (0..x.len()).map(|j| k[(a, j)] * x[j]).sum::<f64>();
         }
         let (qx, qv, rw) = (
             Kind::Lqr.param(c.params, "qx"),
@@ -91,7 +92,7 @@ impl Controller for Lqr {
             Kind::Lqr.param(c.params, "r"),
         );
         self.cost = (0..r).map(|i| qx * x[i] * x[i] + qv * x[r + i] * x[r + i]).sum::<f64>()
-            + (0..model.nu).map(|a| rw * (u[a] - plan.u_ff[a]).powi(2)).sum::<f64>();
+            + (0..model.nu).map(|a| rw * (u[a] - plan.design.u_ff[a]).powi(2)).sum::<f64>();
         u
     }
 
@@ -150,7 +151,7 @@ impl Controller for Mpc {
 
     fn design(&mut self, plan: &Plan, model: &mut Model, p: &[f64], dt: f64) {
         let get = |key| Kind::Mpc.param(p, key);
-        let Some(l) = &plan.lin else {
+        let Some(l) = &plan.design.lin else {
             self.steps = 0;
             return;
         };
@@ -266,8 +267,10 @@ impl Controller for Mpc {
             self.since = 0;
             let x0 = plan.tangent_state(model, c.q, c.qd);
             let g: Vec<f64> = (0..cols).map(|a| (0..nx).map(|b| self.f[a * nx + b] * x0[b]).sum()).collect();
-            let lo: Vec<f64> = (0..cols).map(|a| (-c.umax - plan.u_ff[a % nu]) / self.scale[a]).collect();
-            let hi: Vec<f64> = (0..cols).map(|a| (c.umax - plan.u_ff[a % nu]) / self.scale[a]).collect();
+            let lo: Vec<f64> =
+                (0..cols).map(|a| (-c.umax - plan.design.u_ff[a % nu]) / self.scale[a]).collect();
+            let hi: Vec<f64> =
+                (0..cols).map(|a| (c.umax - plan.design.u_ff[a % nu]) / self.scale[a]).collect();
             if self.free.is_empty() {
                 // warm start: shift last solution by one stage
                 self.du.copy_within(nu.., 0);
@@ -291,7 +294,7 @@ impl Controller for Mpc {
             let r = nx / 2;
             let du: Vec<f64> = (0..cols).map(|a| self.scale[a] * self.du[a]).collect();
             for k in 0..self.steps {
-                self.plan_u[k] = plan.u_ff[0] + du[k * nu];
+                self.plan_u[k] = plan.design.u_ff[0] + du[k * nu];
                 let row = |i: usize| {
                     (0..nx).map(|j| self.phi[(k * nx + i) * nx + j] * x0[j]).sum::<f64>()
                         + (0..cols).map(|j| self.gamma[(k * nx + i) * cols + j] * du[j]).sum::<f64>()
@@ -300,7 +303,7 @@ impl Controller for Mpc {
             }
         }
         for a in 0..nu {
-            u[a] = plan.u_ff[a] + self.scale[a] * self.du[a];
+            u[a] = plan.design.u_ff[a] + self.scale[a] * self.du[a];
         }
         u
     }
