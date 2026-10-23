@@ -11,7 +11,9 @@
      along a body, then click an unconnected body. Alternatively, choose Bar/Block after placing the joint
      anchor to draw a new body from it;
    - use the **connection graph** to select bodies and joints separately. Body controls set geometry and
-     mass; joint controls set attachment position, initial coordinate, limits and **motor/passive** actuation;
+     mass; joint controls set attachment position, initial coordinate, limits and **motor/passive** actuation.
+     Ground points have coordinate controls that move their attached joints and connection endpoints together.
+     Spring connections in the graph open their inspector. Delete acts on the highlighted item;
    - unfinished assemblies remain editable drafts. Connect every component to ground and provide at least
      one moving joint before deriving or simulating. Drafts survive undo, JSON export and shared URLs;
    - ground is a fixed reference frame, not a collision floor. A block on a ground translational joint has

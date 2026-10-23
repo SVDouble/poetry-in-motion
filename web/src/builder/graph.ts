@@ -1,11 +1,12 @@
 /** A small, deterministic assembly graph; no layout engine or separate graph state. */
 import type { Mechanism } from '../model/description';
 import { button, el } from '../ui/widgets';
+import type { Selection } from './inspector';
 
 export function connectionGraph(
   mech: Mechanism,
-  selected: number,
-  inspect: (kind: 'body' | 'joint', index: number) => void,
+  selected: Selection | null,
+  inspect: (kind: Selection['kind'], index: number) => void,
 ): HTMLElement {
   const scroll = el('div', 'connection-graph');
   const graph = el('div', 'graph-canvas');
@@ -55,7 +56,10 @@ export function connectionGraph(
     graph.append(n);
     return n;
   };
-  node('Ground · 0 DOF', ...points.get(-1)!, 'graph-node ground-node');
+  const ground = node('Ground · 0 DOF', ...points.get(-1)!, 'graph-node ground-node', () =>
+    inspect('ground', 0),
+  );
+  ground.dataset.graphKind = 'ground';
   mech.bodies.forEach((b, i) => {
     const [x, y] = points.get(i)!;
     if (!b.detached) {
@@ -67,16 +71,20 @@ export function connectionGraph(
         inspect('joint', i),
       );
       joint.dataset.joint = String(i);
+      joint.dataset.graphKind = 'joint';
+      joint.dataset.graphIndex = String(i);
       joint.title = `${b.parent < 0 ? 'Ground' : `Body ${b.parent + 1} at ${Math.round(b.mountS * 100)}% of its length`} → Body ${i + 1}. ${label} relative to its parent.`;
     }
     const n = node(
       `Body ${i + 1} · ${b.shape === 'link' ? 'bar' : 'block'}${b.detached ? '\nUnconnected' : ''}`,
       x,
       y,
-      `graph-node body-node${selected === i ? ' on' : ''}${b.detached ? ' detached' : ''}`,
+      `graph-node body-node${b.detached ? ' detached' : ''}`,
       () => inspect('body', i),
     );
     n.dataset.body = String(i);
+    n.dataset.graphKind = 'body';
+    n.dataset.graphIndex = String(i);
   });
   const connections = el('div', 'graph-connections');
   mech.closures.forEach((c, i) => {
@@ -85,10 +93,27 @@ export function connectionGraph(
     connections.append(el('div', '', label));
   });
   mech.elements.forEach((e, i) => {
-    const label = `Spring/damper ${i + 1}: ${e.a < 0 ? 'Ground' : `Body ${e.a + 1}`} ↔ Body ${e.b + 1}`;
+    const kind = e.k > 0 && e.d > 0 ? 'Spring–damper' : e.k > 0 ? 'Spring' : 'Damper';
+    const label = `${kind} ${i + 1}: ${e.a < 0 ? 'Ground' : `Body ${e.a + 1}`} ↔ Body ${e.b + 1}`;
     edge(e.a, e.b, label);
-    connections.append(el('div', '', label));
+    const link = button(label, () => inspect('element', i), 'btn small');
+    link.dataset.graphKind = 'element';
+    link.dataset.graphIndex = String(i);
+    connections.append(link);
   });
   scroll.append(graph);
-  return el('div', '', scroll, connections);
+  const result = el('div', '', scroll, connections);
+  highlightGraph(result, selected);
+  return result;
+}
+
+/** Selection updates leave the graph's scroll position and keyboard focus intact. */
+export function highlightGraph(host: HTMLElement, selected: Selection | null): void {
+  for (const node of host.querySelectorAll<HTMLElement>('[data-graph-kind]')) {
+    const on =
+      node.dataset.graphKind === selected?.kind &&
+      (node.dataset.graphIndex === undefined || Number(node.dataset.graphIndex) === selected?.index);
+    node.classList.toggle('on', on);
+    node.setAttribute('aria-pressed', String(on));
+  }
 }

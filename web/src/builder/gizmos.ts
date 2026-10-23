@@ -35,7 +35,7 @@ export interface GizmoEvents {
   /** The joint of `body` was dropped onto a port: hang the body there. */
   snapJoint(body: number, to: Anchor): void;
   /** A part from the palette was placed (the second anchor for two-ended parts). */
-  place(kind: PartKind, a: Anchor, b?: Anchor, joint?: { kind: JointKind; from: Anchor }): void;
+  place(kind: PartKind, a: Anchor, b?: Anchor, joint?: { kind: JointKind; from: Anchor }): boolean;
   /** Placing was cancelled, or needs its second end (for the hint line). */
   placing(state: 'first' | 'second' | 'done', kind?: PartKind): void;
 }
@@ -149,8 +149,10 @@ export class Gizmos {
   beginPlace(kind: PartKind): void {
     const previous = this.placing;
     this.pendingJoint =
-      (kind === 'bar' || kind === 'block') && previous?.from && isJoint(previous.kind)
-        ? { kind: previous.kind, from: previous.from }
+      kind === 'bar' || kind === 'block'
+        ? previous?.from && isJoint(previous.kind)
+          ? { kind: previous.kind, from: previous.from }
+          : this.pendingJoint
         : undefined;
     this.placing = { kind, from: null };
     this.connectFrom = null;
@@ -198,7 +200,7 @@ export class Gizmos {
     if (this.placing && !partSpec(this.placing.kind).twoEnded) return null;
     let best: Anchor | null = null;
     let bestD = REACH;
-    if (this.placing)
+    if (this.placing && !(isJoint(this.placing.kind) && this.placing.from))
       for (const [x, y] of groundPoints(sc.mech)) {
         const [sx, sy] = this.stage.toScreen(x, y);
         // The hatching remains a separate ground target when a body shares this origin.
@@ -209,6 +211,12 @@ export class Gizmos {
         }
       }
     sc.mech.bodies.forEach((b, k) => {
+      if (
+        this.placing?.from &&
+        isJoint(this.placing.kind) &&
+        (!b.detached || isDescendant(sc.mech, this.placing.from.body, k))
+      )
+        return;
       if (dragging && this.selected >= 0) {
         // the tip snaps to anything but its own body; the joint only to bodies outside its subtree
         if (k === this.selected) return;
@@ -253,15 +261,10 @@ export class Gizmos {
       this.events.placing('second', p.kind);
       return;
     }
-    const from = p.from;
-    this.placing = null;
-    this.hover = null;
-    this.host.classList.remove('placing');
-    this.signature = '';
-    this.events.placing('done');
-    if (from) this.events.place(p.kind, from, at);
-    else this.events.place(p.kind, at, undefined, this.pendingJoint);
-    this.pendingJoint = undefined;
+    const accepted = p.from
+      ? this.events.place(p.kind, p.from, at)
+      : this.events.place(p.kind, at, undefined, this.pendingJoint);
+    if (accepted) this.cancel();
   }
 
   /** Redraw at the current pose. Cheap: a handful of SVG nodes. */
@@ -291,6 +294,12 @@ export class Gizmos {
     const allPorts = (skip = -1) => {
       mech.bodies.forEach((b, k) => {
         if (k === skip) return;
+        if (
+          this.placing?.from &&
+          isJoint(this.placing.kind) &&
+          (!b.detached || isDescendant(mech, this.placing.from.body, k))
+        )
+          return;
         for (const s of b.l > 1e-3 ? PORTS : [0]) {
           const [px, py] = scr(...robot.port(k, s, snap, params));
           const hot = this.hover?.body === k && this.hover.s === s;

@@ -72,6 +72,11 @@ async def branch(page: Page) -> None:
     body_point = await center(page, ".gizmos .port-group circle")
     await page.locator('[data-part="revolute"]').click()
     await page.mouse.click(*body_point)
+    # Invalid destinations keep the chosen joint anchor for a retry.
+    await page.mouse.click(*body_point)
+    assert "placing" in (await page.locator("#viewport").get_attribute("class") or "")
+    # Switching the new body's shape also preserves the pending anchor.
+    await page.locator('[data-part="block"]').click()
     await page.locator('[data-part="bar"]').click()
     await page.mouse.click(body_point[0] + 100, body_point[1] - 120)
     await settled(page)
@@ -122,8 +127,57 @@ async def persistence(page: Page) -> None:
     await page.keyboard.press("Escape")
 
 
+async def ground_and_graph(page: Page) -> None:
+    await page.locator(".graph-node.ground-node").click()
+    assert "Ground point 1" in await page.locator(".inspector").inner_text()
+    inputs = page.locator(".inspector input")
+    await inputs.nth(0).fill("0.25")
+    await inputs.nth(0).press("Tab")
+    await settled(page)
+    await inputs.nth(1).fill("-0.5")
+    await inputs.nth(1).press("Tab")
+    await settled(page)
+    model = await doc(page)
+    assert model["bodies"][0]["mountX"] == 0.25
+    assert model["bodies"][0]["mountY"] == -0.5
+    assert model["bodies"][1]["parent"] == 0
+    await page.locator('[data-joint="0"]').click()
+    assert await page.locator('[data-joint="0"]').get_attribute("aria-pressed") == "true"
+    assert await page.locator('[data-body="0"]').get_attribute("aria-pressed") == "false"
+    await page.keyboard.press("Escape")
+    await page.locator(".preset-card", has_text="Mass–spring–damper").click()
+    await settled(page)
+    await page.locator(".graph-connections button").click()
+    assert "Spring–damper" in await page.locator(".inspector-head").inner_text()
+    assert await page.locator(".graph-connections button").get_attribute("aria-pressed") == "true"
+    await page.keyboard.press("Escape")
+
+
+async def long_graph(page: Page) -> None:
+    await page.locator(".preset-card", has_text="Seven-joint arm").click()
+    await settled(page)
+    joint = page.locator('[data-joint="6"]')
+    await joint.focus()
+    await joint.press("Enter")
+    assert await joint.evaluate("(e) => document.activeElement === e")
+    await page.locator(".inspector button", has_text="passive").click()
+    await settled(page)
+    assert await page.locator(".connection-graph").evaluate("(e) => e.scrollTop") > 0
+    assert await joint.get_attribute("aria-pressed") == "true"
+    await page.keyboard.press("Escape")
+    await page.keyboard.press("Delete")
+    await settled(page)
+    model = await doc(page)
+    assert len(model["bodies"]) == 7
+    assert model["bodies"][6]["detached"]  # Delete follows the highlighted joint, not its body.
+    await page.locator(".preset-card", has_text="Cart-pole").click()
+    await page.wait_for_function("!document.querySelector('[data-stage=derive]').disabled")
+
+
 async def builder(page: Page) -> None:
     await carriage(page)
     await shared_ground(page)
     await branch(page)
     await persistence(page)
+    await ground_and_graph(page)
+    await long_graph(page)

@@ -7,13 +7,24 @@ import {
   dof,
   emptyMechanism,
   encode,
+  groundPoints,
+  link,
   type Mechanism,
   migrateOrThrow,
   PRESETS,
+  spring,
   validateMechanism,
 } from '../model/description';
 import { initialFrames } from '../scene/kinematics';
-import { type Anchor, connectBody, detachBody, type PartKind, place, placeAtJoint } from './parts';
+import {
+  type Anchor,
+  connectBody,
+  detachBody,
+  moveGroundPoint,
+  type PartKind,
+  place,
+  placeAtJoint,
+} from './parts';
 
 /** Body fields the inspector or the side panel can set (the parent comes from where a part is dropped). */
 const EDITABLE: (keyof BodySpec)[] = [
@@ -149,3 +160,46 @@ function take(result: ReturnType<typeof place>): Mechanism {
   if (typeof result === 'string') throw new Error(result);
   return result.mech;
 }
+
+it('moves a shared ground point with its rooted components, spring and loop ends', () => {
+  const m = PRESETS['Cart-pole']!();
+  m.anchors = [
+    [0, 0],
+    [3, 0],
+  ];
+  m.bodies.push(link(-1, 'fixed', { detached: true, mountX: 0, mountY: 0 }));
+  m.closures = [{ kind: 'pin', a: -1, sa: 0, b: 1, sb: 1, gx: 0, gy: 0, angle: 0 }];
+  m.elements = [spring(-1, 0, 1, 1, { gx: 0, gy: 0 }), spring(-1, 0, 1, 0, { gx: 3, gy: 0 })];
+  const before = initialFrames(m);
+  const moved = moveGroundPoint(m, 0, [1, -2]);
+  if (typeof moved === 'string') throw new Error(moved);
+  expect(m.anchors[0]).toEqual([0, 0]);
+  expect(moved.anchors).toEqual([
+    [1, -2],
+    [3, 0],
+  ]);
+  expect([moved.closures[0]!.gx, moved.closures[0]!.gy]).toEqual([1, -2]);
+  expect([moved.elements[0]!.gx, moved.elements[0]!.gy]).toEqual([1, -2]);
+  expect(moved.elements[1]).toEqual(m.elements[1]);
+  const after = initialFrames(moved);
+  for (const i of [0, 1]) {
+    expect(after[i]![0] - before[i]![0]).toBeCloseTo(1);
+    expect(after[i]![1] - before[i]![1]).toBeCloseTo(-2);
+    expect(after[i]![2]).toBe(before[i]![2]);
+  }
+  expect(after[2]).toEqual(before[2]); // A loose body at the same coordinates is not grounded.
+  expect(validateMechanism(moved)).toBeNull();
+});
+
+it('edits implicit preset supports without adding metadata and rejects merging distinct supports', () => {
+  const m = PRESETS['Four-bar linkage']!();
+  const points = groundPoints(m);
+  expect(moveGroundPoint(m, 0, points[1]!)).toMatch(/already there/);
+  expect(moveGroundPoint(m, 0, [NaN, 0])).toMatch(/finite/);
+  expect(moveGroundPoint(m, -1, [0, 0])).toMatch(/valid/);
+  const moved = moveGroundPoint(m, 0, [-0.25, 0.1]);
+  if (typeof moved === 'string') throw new Error(moved);
+  expect(moved.anchors).toBeUndefined();
+  expect(groundPoints(moved)).toEqual([[-0.25, 0.1], points[1]]);
+  expect(validateMechanism(moved)).toBeNull();
+});

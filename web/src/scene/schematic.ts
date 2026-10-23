@@ -225,8 +225,8 @@ export class Figure {
         const a = b.mountAngle + b.axisAngle;
         const [c, s] = [Math.cos(a), Math.sin(a)];
         const half = (b.limit > 0 ? b.limit : 2) + (b.shape === 'block' ? BLOCK.w / 2 : 0.05);
-        // the rail under the wheels (or through the slider), hatched below
-        const off = b.shape === 'block' ? -(BLOCK.h / 2 + 0.06) : -7 * u;
+        // A carriage encloses its guide; it is not a wheeled body resting on a floor.
+        const off = b.shape === 'block' ? 0 : -7 * u;
         const [ox, oy] = [b.mountX - s * off, b.mountY + c * off];
         hatched(pen, ox + c * half, oy + s * half, ox - c * half, oy - s * half);
         if (b.limit > 0) {
@@ -275,7 +275,7 @@ export class Figure {
       if (raw.parent >= 0 || b.joint !== 'prismatic') continue;
       const a = b.mountAngle + b.axisAngle;
       const half = (b.limit > 0 ? b.limit : 2) + 0.1;
-      const off = b.shape === 'block' ? -(BLOCK.h / 2 + 0.06) : -7 * u;
+      const off = b.shape === 'block' ? 0 : -7 * u;
       strip(b.mountX - Math.sin(a) * off, b.mountY + Math.cos(a) * off, a, half, 7 * u);
     }
     for (const c of this.mech.closures)

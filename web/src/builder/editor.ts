@@ -15,13 +15,13 @@ import { initialFrames, poseBounds } from '../scene/kinematics';
 import { drawThumbnail } from '../scene/schematic';
 import { isDark } from '../scene/theme';
 import { actions, button, card, DEG, heading, note, portLabel, slider } from '../ui/widgets';
-import { connectionGraph } from './graph';
-import { bodyControls, elementControls, jointControls } from './inspector';
+import { connectionGraph, highlightGraph } from './graph';
+import { bodyControls, elementControls, jointControls, type Selection } from './inspector';
 import type { PartKind } from './parts';
 
 export interface EditorEvents {
   change(m: Mechanism, discrete?: boolean): void;
-  inspect(kind: 'body' | 'joint', index: number): void;
+  inspect(kind: Selection['kind'], index: number): void;
   select(i: number): void;
   /** Start a loop closure from the given port (the viewport then asks for the other end). */
   connect(body: number, s: number, kind: 'pin' | 'slot'): void;
@@ -54,12 +54,34 @@ export class Editor {
   private mech!: Mechanism;
   private selected = 0;
   private selectedElement = -1;
+  private graphSelection: Selection | null = { kind: 'body', index: 0 };
 
   constructor(
     readonly host: HTMLElement,
     private readonly events: EditorEvents,
   ) {
     host.className = 'editor';
+  }
+
+  highlight(sel: Selection): void {
+    this.graphSelection = sel;
+    this.events.select(sel.kind === 'body' || sel.kind === 'joint' ? sel.index : -1);
+    this.events.selectElement(sel.kind === 'element' ? sel.index : -1);
+    highlightGraph(this.host, sel);
+    const graph = this.host.querySelector<HTMLElement>('.connection-graph');
+    const node = graph?.querySelector<HTMLElement>('.graph-node.on');
+    if (graph && node) {
+      const bounds = graph.getBoundingClientRect();
+      const target = node.getBoundingClientRect();
+      if (target.top < bounds.top) graph.scrollTop -= bounds.top - target.top + 8;
+      if (target.bottom > bounds.bottom) graph.scrollTop += target.bottom - bounds.bottom + 8;
+      if (target.left < bounds.left) graph.scrollLeft -= bounds.left - target.left + 8;
+      if (target.right > bounds.right) graph.scrollLeft += target.right - bounds.right + 8;
+    }
+  }
+
+  get activeSelection(): Selection | null {
+    return this.graphSelection;
   }
 
   get mechanism(): Mechanism {
@@ -70,23 +92,21 @@ export class Editor {
     return this.selected;
   }
 
-  get elementSelection(): number {
-    return this.selectedElement;
-  }
-
   selectElement(k: number): void {
     const next = k >= 0 && k < this.mech.elements.length ? k : -1;
     if (next !== this.selectedElement) {
       this.selectedElement = next;
       this.render();
     }
-    this.events.selectElement(next);
+    if (next >= 0) this.highlight({ kind: 'element', index: next });
+    else this.events.selectElement(next);
   }
 
   load(mech: Mechanism, selected = this.selected): void {
     this.mech = cloneMechanism(mech);
     this.selected = mech.bodies.length ? Math.max(0, Math.min(selected, mech.bodies.length - 1)) : -1;
     if (this.selectedElement >= mech.elements.length) this.selectedElement = -1;
+    this.graphSelection = this.selected < 0 ? null : { kind: 'body', index: this.selected };
     this.render();
   }
 
@@ -96,7 +116,7 @@ export class Editor {
       this.selected = i;
       this.render();
     }
-    this.events.select(i);
+    this.highlight({ kind: 'body', index: i });
   }
 
   /** Apply a new document (re-rendering the panel) and report it. */
@@ -104,6 +124,7 @@ export class Editor {
     this.mech = m;
     this.selected = m.bodies.length ? Math.max(0, Math.min(selected, m.bodies.length - 1)) : -1;
     if (this.selectedElement >= m.elements.length) this.selectedElement = -1;
+    this.graphSelection = this.selected < 0 ? null : { kind: 'body', index: this.selected };
     this.render();
     this.events.change(cloneMechanism(m), discrete);
     this.events.select(this.selected);
@@ -120,6 +141,14 @@ export class Editor {
   }
 
   private render(): void {
+    const focused =
+      document.activeElement instanceof HTMLElement && this.host.contains(document.activeElement)
+        ? document.activeElement
+        : null;
+    const focusKind = focused?.dataset.graphKind;
+    const focusIndex = focused?.dataset.graphIndex;
+    const previous = this.host.querySelector('.connection-graph');
+    const offset = [previous?.scrollLeft ?? 0, previous?.scrollTop ?? 0];
     this.host.replaceChildren(
       this.graphCard(),
       this.presetsCard(),
@@ -127,6 +156,16 @@ export class Editor {
       this.springsCard(),
       ...(this.mech.bodies[this.selected] ? [this.bodyCard(this.selected)] : []),
     );
+    const graph = this.host.querySelector('.connection-graph');
+    if (graph) {
+      graph.scrollLeft = offset[0]!;
+      graph.scrollTop = offset[1]!;
+    }
+    highlightGraph(this.host, this.graphSelection);
+    if (focusKind)
+      Array.from(this.host.querySelectorAll<HTMLElement>('[data-graph-kind]'))
+        .find((node) => node.dataset.graphKind === focusKind && node.dataset.graphIndex === focusIndex)
+        ?.focus({ preventScroll: true });
   }
 
   private presetsCard(): HTMLElement {
@@ -189,30 +228,22 @@ export class Editor {
   }
 
   private graphCard(): HTMLElement {
-    const anchors = (this.mech.anchors ?? []).map(([x, y], i) => {
-      const used = groundPoints({ ...this.mech, anchors: [] }).some(
-        ([gx, gy]) => Math.hypot(x - gx, y - gy) < 1e-8,
+    const anchors = groundPoints(this.mech).map(([x, y], i) => {
+      const edit = button(
+        `Ground point ${i + 1}: (${x.toFixed(2)}, ${y.toFixed(2)}) m`,
+        () => this.events.inspect('ground', i),
+        'btn small',
+        'Edit this fixed attachment point',
       );
-      const remove = button(
-        '×',
-        () => {
-          const m = cloneMechanism(this.mech);
-          m.anchors!.splice(i, 1);
-          this.commit(m);
-        },
-        'icon-btn',
-        used
-          ? 'Disconnect the joint or connection using this ground point first'
-          : 'Remove this ground point',
-      );
-      remove.disabled = used;
-      return actions(note(`Ground point ${i + 1}: (${x.toFixed(2)}, ${y.toFixed(2)}) m`), remove);
+      edit.dataset.graphKind = 'ground';
+      edit.dataset.graphIndex = String(i);
+      return edit;
     });
     return card(
       'Connection graph',
-      connectionGraph(this.mech, this.selected, (kind, i) => {
-        this.select(i);
-        this.events.inspect(kind, i);
+      connectionGraph(this.mech, this.graphSelection, (kind, i) => {
+        if (kind === 'ground' && !groundPoints(this.mech).length) this.events.startPart('ground');
+        else this.events.inspect(kind, i);
       }),
       actions(
         button('+ Ground', () => this.events.startPart('ground')),
@@ -228,7 +259,7 @@ export class Editor {
       note(
         'Ground is the fixed world frame (0 DOF). Its points are attachment locations, not a collision floor.',
       ),
-      ...anchors,
+      actions(...anchors),
     );
   }
 

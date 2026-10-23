@@ -9,6 +9,7 @@ import {
   cloneMechanism,
   dof,
   type Element,
+  groundPoints,
   MAX_DOF,
   type Mechanism,
   normalise,
@@ -17,9 +18,9 @@ import {
 import { physicalControl } from '../model/fields';
 import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
 import { button, DEG, el, row, segmented, stepper } from '../ui/widgets';
-import { detachBody } from './parts';
+import { detachBody, moveGroundPoint } from './parts';
 
-export type Selection = { kind: 'body' | 'joint'; index: number } | { kind: 'element'; index: number };
+export type Selection = { kind: 'body' | 'joint' | 'element' | 'ground'; index: number };
 
 export interface EditContext {
   mech: Mechanism;
@@ -297,6 +298,33 @@ function poseControls(c: EditContext, i: number, angle = true): HTMLElement[] {
   return out;
 }
 
+/** A ground point moves all joints and connection ends attached there, as one edit. */
+export function groundControls(c: EditContext, i: number): HTMLElement[] {
+  return [
+    el(
+      'p',
+      'note',
+      'Fixed world point · 0 DOF. Moving it also moves every joint, spring and loop endpoint attached here. This is not a collision surface.',
+    ),
+    ...(['x', 'y'] as const).map((axis, k) =>
+      stepper({
+        label: axis,
+        value: groundPoints(c.mech)[i]![k]!,
+        step: GRID,
+        min: -10,
+        max: 10,
+        unit: 'm',
+        onChange: (v) => {
+          const point = groundPoints(c.mech)[i]!;
+          const result = moveGroundPoint(c.mech, i, k === 0 ? [v, point[1]] : [point[0], v]);
+          if (typeof result === 'string') c.refuse(result);
+          else c.commit(result);
+        },
+      }),
+    ),
+  ];
+}
+
 /** Stiffness, rest length, damping and the two ends of spring/damper k. */
 export function elementControls(c: EditContext, k: number): HTMLElement[] {
   const e = c.mech.elements[k]!;
@@ -417,6 +445,7 @@ export function elementControls(c: EditContext, k: number): HTMLElement[] {
 }
 
 export function describe(mech: Mechanism, sel: Selection): string {
+  if (sel.kind === 'ground') return `Ground point ${sel.index + 1}`;
   if (sel.kind === 'element') {
     const e = mech.elements[sel.index]!;
     const kind = e.k > 0 && e.d > 0 ? 'Spring–damper' : e.k > 0 ? 'Spring' : 'Damper';
@@ -430,6 +459,7 @@ export function describe(mech: Mechanism, sel: Selection): string {
 }
 
 export interface InspectorEvents {
+  select(sel: Selection): void;
   context(): EditContext;
   remove(sel: Selection): void;
   /** Make the body the tool, or not. */
@@ -459,6 +489,7 @@ export class Inspector {
   /** Open for `sel`. */
   show(sel: Selection): void {
     this.sel = sel;
+    this.events.select(sel);
     this.render();
   }
 
@@ -474,7 +505,11 @@ export class Inspector {
     const valid =
       sel &&
       sel.index >= 0 &&
-      (sel.kind !== 'element' ? sel.index < c.mech.bodies.length : sel.index < c.mech.elements.length);
+      (sel.kind === 'ground'
+        ? sel.index < groundPoints(c.mech).length
+        : sel.kind !== 'element'
+          ? sel.index < c.mech.bodies.length
+          : sel.index < c.mech.elements.length);
     if (!sel || !valid) {
       this.hide();
       return;
@@ -483,11 +518,13 @@ export class Inspector {
     head.append(button('×', () => this.events.close(), 'icon-btn', 'close (Esc)'));
     const body = el('div', 'inspector-body');
     body.append(
-      ...(sel.kind === 'body'
-        ? bodyControls(c, sel.index)
-        : sel.kind === 'joint'
-          ? jointControls(c, sel.index)
-          : elementControls(c, sel.index)),
+      ...(sel.kind === 'ground'
+        ? groundControls(c, sel.index)
+        : sel.kind === 'body'
+          ? bodyControls(c, sel.index)
+          : sel.kind === 'joint'
+            ? jointControls(c, sel.index)
+            : elementControls(c, sel.index)),
     );
     const foot = el('div', 'inspector-foot');
     if (sel.kind === 'body') {
@@ -518,6 +555,14 @@ export class Inspector {
 
 /** Remove a body (and what hangs from it) or a spring/damper. */
 export function removeSelection(mech: Mechanism, sel: Selection): Mechanism | string {
+  if (sel.kind === 'ground') {
+    const [x, y] = groundPoints(mech)[sel.index]!;
+    if (groundPoints({ ...mech, anchors: [] }).some(([gx, gy]) => Math.hypot(gx - x, gy - y) < 1e-9))
+      return 'Disconnect the joints and connections using this ground point before deleting it.';
+    const m = cloneMechanism(mech);
+    if (m.anchors) m.anchors = m.anchors.filter(([gx, gy]) => Math.hypot(gx - x, gy - y) >= 1e-9);
+    return { ...m, name: 'Custom' };
+  }
   if (sel.kind === 'element') {
     const m = cloneMechanism(mech);
     m.elements.splice(sel.index, 1);

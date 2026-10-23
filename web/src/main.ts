@@ -138,7 +138,10 @@ class App {
       },
     });
     this.editor = new Editor(document.createElement('div'), {
-      change: (m, discrete) => this.edited(m, discrete),
+      change: (m, discrete) => {
+        this.edited(m, discrete);
+        if (discrete) this.inspector.render();
+      },
       inspect: (kind, index) => this.inspector.show({ kind, index }),
       select: (i) => {
         this.schematic?.select(i);
@@ -177,12 +180,13 @@ class App {
             : place(this.mech, kind, a, b);
         if (typeof r === 'string') {
           this.flash(r);
-          return;
+          return false;
         }
         this.adopt(r.mech, r.select.kind !== 'element' ? r.select.index : this.editor.selection);
         if (r.select.kind === 'element') this.editor.selectElement(r.select.index);
         if (r.select.index >= 0) this.inspector.show({ kind: r.select.kind, index: r.select.index });
         else this.inspector.hide();
+        return true;
       },
       placing: (state, kind) => {
         if (state === 'done') return;
@@ -235,6 +239,15 @@ class App {
       this.focus = null;
     });
     this.inspector = new Inspector($('viewport'), {
+      select: (sel) => {
+        this.editor.selectElement(sel.kind === 'element' ? sel.index : -1);
+        if (sel.kind === 'body' || sel.kind === 'joint') this.editor.select(sel.index);
+        else {
+          this.schematic?.select(-1);
+          this.gizmos.select(-1);
+        }
+        this.editor.highlight(sel);
+      },
       context: () => this.editContext(),
       remove: (sel) => this.removeSelected(sel),
       tool: (i, on) => {
@@ -264,6 +277,7 @@ class App {
   /** Take a new document from the view (palette, inspector, snapping): history, panel, rebuild. */
   private adopt(m: Mechanism, selected = this.editor.selection, discrete = true): void {
     this.editor.commit(m, selected, discrete);
+    if (this.inspector.selection) this.editor.highlight(this.inspector.selection);
   }
 
   private editContext(): EditContext {
@@ -276,7 +290,10 @@ class App {
         this.adopt(m, this.editor.selection, structural);
         if (structural) this.inspector.render();
       },
-      refuse: (msg) => this.flash(msg),
+      refuse: (msg) => {
+        this.flash(msg);
+        this.inspector.render();
+      },
       length: (k) => this.elementLength(k),
     };
   }
@@ -431,6 +448,7 @@ class App {
       this.stage.setView(bounds.cx, bounds.cy, bounds.width, bounds.height);
     this.schematic.select(this.editor.selection);
     this.gizmos.select(this.editor.selection);
+    if (this.editor.activeSelection) this.editor.highlight(this.editor.activeSelection);
     this.refreshStage();
   }
 
@@ -489,6 +507,8 @@ class App {
     const sel = this.stageName === 'build' ? this.editor.selection : -1;
     this.schematic.select(sel);
     this.gizmos.select(sel);
+    if (this.stageName === 'build' && this.editor.activeSelection)
+      this.editor.highlight(this.editor.activeSelection);
     // the loop closures are solved numerically from q(0): report when they cannot close
     const generation = this.client.generation;
     window.setTimeout(() => {
@@ -611,7 +631,7 @@ class App {
     const d = this.derivation;
     const head = $('side-head');
     head.replaceChildren();
-    this.panel.clear();
+    this.panel.clear(this.stageName !== 'build');
     for (const b of $('stages').querySelectorAll<HTMLButtonElement>('button')) {
       b.disabled = !d && b.dataset.stage !== 'build';
     }
@@ -629,7 +649,7 @@ class App {
       undo.disabled = !this.history.canUndo;
       redo.disabled = !this.history.canRedo;
       head.append(title, undo, redo);
-      $('side').replaceChildren(this.editor.host);
+      if (!this.editor.host.isConnected) $('side').replaceChildren(this.editor.host);
       $('hint').textContent =
         'Place a Ground point and a Bar or Block. Choose a joint, click its ground or body anchor, then the unconnected body. Click graph nodes to edit bodies and joints separately.';
       this.buildToggles();
@@ -661,7 +681,7 @@ class App {
         ),
         tools,
       );
-      $('side').replaceChildren(this.editor.host);
+      if (!this.editor.host.isConnected) $('side').replaceChildren(this.editor.host);
     } else if (this.stageName === 'derive') {
       head.append(
         title('Derivation', `Lagrange's method for this topology · ${ms}`),
@@ -1066,11 +1086,8 @@ class App {
       $('status').hidden = true;
       return;
     } else if (k === 'delete' || k === 'backspace') {
-      const sel = this.inspector.selection;
+      const sel = this.inspector.selection ?? this.editor.activeSelection;
       if (sel) this.removeSelected(sel);
-      else if (this.editor.elementSelection >= 0)
-        this.removeSelected({ kind: 'element', index: this.editor.elementSelection });
-      else this.editor.remove(this.editor.selection);
     } else {
       return;
     }

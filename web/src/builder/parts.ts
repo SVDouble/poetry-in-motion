@@ -281,3 +281,22 @@ export function place(mech: Mechanism, kind: PartKind, a: Anchor, b?: Anchor): P
   if (kind === 'pin' || kind === 'slot') return placeLoop(mech, kind, a, b);
   return placeElement(mech, kind, a, b);
 }
+
+/** Move a fixed world point and every attachment at that point together. */
+export function moveGroundPoint(mech: Mechanism, index: number, to: [number, number]): Mechanism | string {
+  const points = groundPoints(mech);
+  const from = points[index];
+  if (!from || !to.every(Number.isFinite)) return 'Choose a valid ground point and finite coordinates.';
+  const matches = (x: number, y: number) => Math.hypot(x - from[0], y - from[1]) < 1e-9;
+  if (points.some(([x, y], i) => i !== index && Math.hypot(x - to[0], y - to[1]) < 1e-9))
+    return 'Another ground point is already there. Choose a distinct position.';
+  const m = cloneMechanism(mech);
+  if (m.anchors) m.anchors = m.anchors.map(([x, y]) => (matches(x, y) ? [...to] : [x, y]));
+  for (const b of m.bodies) {
+    if (b.parent < 0 && !b.detached && matches(b.mountX, b.mountY)) [b.mountX, b.mountY] = to;
+  }
+  for (const e of [...m.closures, ...m.elements]) {
+    if (e.a < 0 && matches(e.gx, e.gy)) [e.gx, e.gy] = to;
+  }
+  return { ...m, name: 'Custom' };
+}
