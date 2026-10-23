@@ -59,22 +59,23 @@ class Crawl:
         self.where = f"{preset}/build"
         await self.click(".preset-card", preset)
         await self.wait(400)
-        for label in ["+ revolute", "+ prismatic", "+ fixed"]:
-            self.where = f"{preset}/build {label}"
-            await self.click("button", label)
-            await self.wait(250)
-        self.where = f"{preset}/build remove, undo, redo"
-        await self.click(".tree-item button", "×", last=True)
-        await self.wait(250)
-        for label in ["↶", "↶", "↶", "↶", "↷", "↶"]:
-            await self.click(".head-tools button", label)
-            await self.wait(150)
+        await self.click('[data-joint="0"]')
+        await self.click(".inspector button", "disconnect joint")
         await self.wait(300)
+        if not await self.js("document.querySelector('[data-stage=derive]').disabled"):
+            self.fail("disconnected assembly was allowed to derive")
+        await self.page.keyboard.press("Control+z")
+        await self.wait(300)
+        await self.page.keyboard.press("Escape")
 
     async def palette(self, preset: str) -> None:
         """Drag a spring from the palette onto a port, click the ground for its other end, step a value in
         the inspector, then drop a bar on the ground and close the inspector."""
         self.where = f"{preset}/palette"
+        full = await self.js("""async () => {
+          const {MAX_BODIES} = await import('/src/model/description.ts');
+          return JSON.parse(decodeURIComponent(atob(location.hash.slice(3)))).bodies.length >= MAX_BODIES;
+        }""")
         mouse = self.page.mouse
         box = await self.page.locator("#viewport").bounding_box()
         if not box:
@@ -96,10 +97,14 @@ class Crawl:
                 await mouse.down()
                 await mouse.up()
             await self.wait(400)
-        if not await self.js("!!document.querySelector('.inspector:not([hidden])')"):
-            self.fail("the inspector did not open on the placed part")
-        await self.click(".inspector .stepper-arrow", last=True)
-        await self.wait(200)
+        if full:
+            if "at most" not in (await self.text("#status") or ""):
+                self.fail("full assembly did not report the body limit")
+        else:
+            if not await self.js("!!document.querySelector('.inspector:not([hidden])')"):
+                self.fail("the inspector did not open on the placed part")
+            await self.click(".inspector .stepper-arrow", last=True)
+            await self.wait(200)
         await self.page.keyboard.press("Escape")
         await self.wait(200)
         if await self.js("!!document.querySelector('.inspector:not([hidden])')"):
@@ -312,6 +317,9 @@ class Crawl:
     async def preset(self, preset: str) -> None:
         await self.build(preset)
         await self.palette(preset)
+        # Palette leaves an unconnected draft; reload the preset before checking dynamics.
+        await self.click(".preset-card", preset)
+        await self.wait(400)
         self.where = f"{preset}/derive"
         await self.click("[data-stage=derive]")
         await self.wait(600)

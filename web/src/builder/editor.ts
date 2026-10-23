@@ -1,40 +1,27 @@
-/**
- * Structure editor: the mechanism graph as a tree of bodies (drag to re-hang, × to remove), loop closures
- * (pins and slots), and the settings of the selected joint and body. Every edit produces a new document; the
- * app re-derives it immediately and keeps an undo history.
- */
-import { tex } from '../eq/tex';
 import {
-  type BodySpec,
   CATEGORIES,
   type Category,
   category,
   cloneMechanism,
-  dof,
   emptyMechanism,
-  isDescendant,
-  type JointKind,
-  link,
-  MAX_BODIES,
+  groundPoints,
   MAX_CLOSURES,
-  MAX_DOF,
   type Mechanism,
-  normalise,
   PRESETS,
   removeBody,
-  reparent,
 } from '../model/description';
-import { physicalControl } from '../model/fields';
-import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
+import { SNAP_ANGLE } from '../scene/geometry';
 import { initialFrames, poseBounds } from '../scene/kinematics';
 import { drawThumbnail } from '../scene/schematic';
 import { isDark } from '../scene/theme';
-import { actions, button, card, DEG, heading, note, portLabel, row, segmented, slider } from '../ui/widgets';
-import { elementControls } from './inspector';
+import { actions, button, card, DEG, heading, note, portLabel, slider } from '../ui/widgets';
+import { connectionGraph } from './graph';
+import { bodyControls, elementControls, jointControls } from './inspector';
 import type { PartKind } from './parts';
 
 export interface EditorEvents {
-  change(m: Mechanism): void;
+  change(m: Mechanism, discrete?: boolean): void;
+  inspect(kind: 'body' | 'joint', index: number): void;
   select(i: number): void;
   /** Start a loop closure from the given port (the viewport then asks for the other end). */
   connect(body: number, s: number, kind: 'pin' | 'slot'): void;
@@ -45,21 +32,6 @@ export interface EditorEvents {
   elementLength(k: number): number;
   /** Pick up a part, as if from the palette. */
   startPart(kind: PartKind): void;
-}
-
-/** A numeric body/joint property bound to a slider. `scale` converts stored values to displayed ones. */
-interface Field {
-  key: keyof BodySpec;
-  label: string;
-  tex?: boolean;
-  min: number;
-  max: number;
-  step?: number;
-  unit?: string;
-  log?: boolean;
-  scale?: number;
-  hint?: string;
-  rerender?: boolean;
 }
 
 /** Gallery shelves of the presets. */
@@ -82,7 +54,6 @@ export class Editor {
   private mech!: Mechanism;
   private selected = 0;
   private selectedElement = -1;
-  private dragFrom = -1;
 
   constructor(
     readonly host: HTMLElement,
@@ -114,7 +85,7 @@ export class Editor {
 
   load(mech: Mechanism, selected = this.selected): void {
     this.mech = cloneMechanism(mech);
-    this.selected = Math.max(0, Math.min(selected, mech.bodies.length - 1));
+    this.selected = mech.bodies.length ? Math.max(0, Math.min(selected, mech.bodies.length - 1)) : -1;
     if (this.selectedElement >= mech.elements.length) this.selectedElement = -1;
     this.render();
   }
@@ -129,72 +100,29 @@ export class Editor {
   }
 
   /** Apply a new document (re-rendering the panel) and report it. */
-  commit(m: Mechanism, selected = this.selected): void {
+  commit(m: Mechanism, selected = this.selected, discrete = true): void {
     this.mech = m;
     this.selected = m.bodies.length ? Math.max(0, Math.min(selected, m.bodies.length - 1)) : -1;
     if (this.selectedElement >= m.elements.length) this.selectedElement = -1;
     this.render();
-    this.events.change(cloneMechanism(m));
+    this.events.change(cloneMechanism(m), discrete);
     this.events.select(this.selected);
-  }
-
-  /** Small edits (sliders): no re-render, so the slider keeps the pointer. */
-  private update(i: number, patch: Partial<BodySpec>, rerender = false): void {
-    this.mech.bodies[i] = normalise({ ...this.mech.bodies[i]!, ...patch });
-    if (rerender) this.render();
-    this.events.change(cloneMechanism(this.mech));
   }
 
   private refuse(message: string): void {
     this.events.flash(message);
-    this.render();
-  }
-
-  addChild(parent: number, joint: JointKind, s = 1): void {
-    const m = cloneMechanism(this.mech);
-    if (m.bodies.length >= MAX_BODIES) {
-      this.refuse(`at most ${MAX_BODIES} bodies`);
-      return;
-    }
-    if (joint !== 'fixed' && dof(m) >= MAX_DOF) {
-      this.refuse(`at most ${MAX_DOF} moving joints`);
-      return;
-    }
-    const siblings = m.bodies.filter((b) => b.parent === parent && Math.abs(b.mountS - s) < 1e-9).length;
-    m.bodies.push(
-      link(parent, joint, {
-        mountS: parent >= 0 ? s : 0,
-        mountX: parent < 0 ? 1 : 0,
-        l: joint === 'prismatic' ? 0.5 : 0.8,
-        m: 0.5,
-        limit: joint === 'prismatic' ? 1 : 0,
-        // continue straight from a tip, stand perpendicular elsewhere; fan siblings out so they do not overlap
-        mountAngle:
-          (parent >= 0 && s < 1 ? Math.PI / 2 : 0) + siblings * (Math.PI / 4) * (siblings % 2 ? 1 : -1),
-      }),
-    );
-    if (m.tool < 0 || m.tool === parent) m.tool = m.bodies.length - 1;
-    this.commit({ ...m, name: 'Custom' }, m.bodies.length - 1);
   }
 
   remove(i: number): void {
-    if (this.mech.bodies.length <= 1) {
-      // the last body: back to an empty scene (its springs and loops go with it)
-      this.commit({ ...emptyMechanism(), g: this.mech.g }, -1);
-      return;
-    }
+    if (i < 0 || i >= this.mech.bodies.length) return;
     const m = removeBody(this.mech, i);
-    if (dof(m) === 0) {
-      this.refuse('that would leave nothing that can move');
-      return;
-    }
     this.commit({ ...m, name: 'Custom' }, Math.max(0, Math.min(i - 1, m.bodies.length - 1)));
   }
 
   private render(): void {
     this.host.replaceChildren(
+      this.graphCard(),
       this.presetsCard(),
-      this.treeCard(),
       this.loopsCard(),
       this.springsCard(),
       ...(this.mech.bodies[this.selected] ? [this.bodyCard(this.selected)] : []),
@@ -260,112 +188,47 @@ export class Editor {
     return card('Start from', grid, g);
   }
 
-  private dropTarget(el: HTMLElement, parent: number): void {
-    const ok = () =>
-      this.dragFrom !== parent && (parent < 0 || !isDescendant(this.mech, parent, this.dragFrom));
-    el.addEventListener('dragover', (e) => {
-      if (this.dragFrom < 0) return;
-      if (ok()) e.preventDefault();
-      el.classList.toggle('drop-ok', ok());
-      el.classList.toggle('drop-bad', !ok());
-    });
-    el.addEventListener('dragleave', () => el.classList.remove('drop-ok', 'drop-bad'));
-    el.addEventListener('drop', (e) => {
-      e.preventDefault();
-      el.classList.remove('drop-ok', 'drop-bad');
-      const from = this.dragFrom;
-      this.dragFrom = -1;
-      if (from < 0 || from === parent) return;
-      const res = reparent(this.mech, from, parent);
-      if (!res) {
-        this.refuse('a body cannot hang from its own descendant — close a loop instead');
-        return;
-      }
-      this.commit(res.mech, res.index);
-    });
-  }
-
-  private treeCard(): HTMLElement {
-    const list = document.createElement('div');
-    list.className = 'tree';
-    const ground = document.createElement('div');
-    ground.className = 'tree-ground';
-    ground.innerHTML =
-      '<span class="ground-icon"></span>ground <span class="muted">— drop a body here to hang it from the ground</span>';
-    this.dropTarget(ground, -1);
-    list.append(ground);
-
-    const depth = (i: number): number => {
-      const p = this.mech.bodies[i]!.parent;
-      return p < 0 ? 0 : depth(p) + 1;
-    };
-    this.mech.bodies.forEach((b, i) => {
-      const item = document.createElement('div');
-      item.className = `tree-item${i === this.selected ? ' on' : ''}`;
-      item.style.paddingLeft = `${10 + 16 * depth(i)}px`;
-      item.draggable = true;
-      item.tabIndex = 0;
-      item.title = 'click to select · drag onto another body (or the ground row) to re-hang it';
-      item.addEventListener('dragstart', (e) => {
-        this.dragFrom = i;
-        e.dataTransfer?.setData('text/plain', String(i));
-        item.classList.add('dragging');
-      });
-      item.addEventListener('dragend', () => item.classList.remove('dragging'));
-      this.dropTarget(item, i);
-      item.addEventListener('click', () => this.select(i));
-      item.addEventListener('keydown', (e) => e.key === 'Enter' && this.select(i));
-
-      const icon = document.createElement('span');
-      icon.className = `joint-icon ${b.joint}${b.actuated || b.joint === 'fixed' ? '' : ' passive'}`;
-      const label = document.createElement('span');
-      label.className = 'tree-label';
-      const details = [
-        b.joint,
-        b.joint !== 'fixed' && !b.actuated ? 'passive' : '',
-        b.parent >= 0 ? `@ ${portLabel(b.mountS)}` : '',
-        this.mech.tool === i ? 'tool' : '',
-      ].filter(Boolean);
-      label.innerHTML = `Body ${i + 1} <span class="muted">${details.join(', ')}</span>`;
-      const q = document.createElement('span');
-      q.className = 'tree-q';
-      if (b.joint !== 'fixed') tex(q, b.joint === 'revolute' ? `\\theta_{${i + 1}}` : `d_{${i + 1}}`);
-      const hasChildren = this.mech.bodies.some((x) => x.parent === i);
-      const rm = button(
-        '×',
-        () => this.remove(i),
-        'icon-btn',
-        `remove body ${i + 1}${hasChildren ? ' and everything hanging from it' : ''}`,
+  private graphCard(): HTMLElement {
+    const anchors = (this.mech.anchors ?? []).map(([x, y], i) => {
+      const used = groundPoints({ ...this.mech, anchors: [] }).some(
+        ([gx, gy]) => Math.hypot(x - gx, y - gy) < 1e-8,
       );
-      rm.addEventListener('click', (e) => e.stopPropagation());
-      item.append(icon, label, q, rm);
-      list.append(item);
+      const remove = button(
+        '×',
+        () => {
+          const m = cloneMechanism(this.mech);
+          m.anchors!.splice(i, 1);
+          this.commit(m);
+        },
+        'icon-btn',
+        used
+          ? 'Disconnect the joint or connection using this ground point first'
+          : 'Remove this ground point',
+      );
+      remove.disabled = used;
+      return actions(note(`Ground point ${i + 1}: (${x.toFixed(2)}, ${y.toFixed(2)}) m`), remove);
     });
-
-    const parent = this.selected;
-    const add = actions(
-      ...(['revolute', 'prismatic', 'fixed'] as const).map((kind) =>
-        button(
-          `+ ${kind}`,
-          () => this.addChild(parent, kind),
-          'btn small',
-          `attach at the tip of body ${parent + 1}`,
-        ),
-      ),
-      button(
-        '+ on ground',
-        () => this.addChild(-1, 'revolute'),
-        'btn small',
-        'a new bar hinged to the ground',
-      ),
-    );
     return card(
-      'Structure',
-      list,
-      add,
-      note(
-        'In the view: click a + port on the selected body to attach a child or close a loop there, drag ◆ to move its joint, drag ○ to rotate or stretch it (Shift: set its initial angle instead; Alt: no snapping). Delete removes, Ctrl+Z undoes.',
+      'Connection graph',
+      connectionGraph(this.mech, this.selected, (kind, i) => {
+        this.select(i);
+        this.events.inspect(kind, i);
+      }),
+      actions(
+        button('+ Ground', () => this.events.startPart('ground')),
+        button('+ Bar', () => this.events.startPart('bar')),
+        button('+ Block', () => this.events.startPart('block')),
       ),
+      note(
+        'Bodies are rectangles; joints sit on the connections. Click either to edit. Dashed connections are loop constraints or springs.',
+      ),
+      note(
+        'Place bodies and fixed Ground points first. Choose a rotational, translational or fixed joint, click a ground point or a point along a body, then click an unconnected body.',
+      ),
+      note(
+        'Ground is the fixed world frame (0 DOF). Its points are attachment locations, not a collision floor.',
+      ),
+      ...anchors,
     );
   }
 
@@ -427,7 +290,7 @@ export class Editor {
     const full = this.mech.closures.length >= MAX_CLOSURES;
     const start = (kind: 'pin' | 'slot', label: string) => {
       const b = button(label, () => this.events.connect(this.selected, 1, kind));
-      b.disabled = full;
+      b.disabled = full || this.selected < 0;
       return b;
     };
     c.append(
@@ -471,12 +334,15 @@ export class Editor {
       item.append(rm);
       c.append(item);
       if (k === this.selectedElement) {
+        const editor = this;
         const ctx = {
-          mech: this.mech,
+          get mech() {
+            return editor.mech;
+          },
           commit: (m: Mechanism, structural = false) => {
             this.mech = m;
             if (structural) this.render();
-            this.events.change(cloneMechanism(m));
+            this.events.change(cloneMechanism(m), structural);
           },
           refuse: (msg: string) => this.refuse(msg),
           length: (j: number) => this.events.elementLength(j),
@@ -497,260 +363,23 @@ export class Editor {
     return c;
   }
 
-  /** The numeric settings of joint and body `i`, as a table. */
-  private fields(b: BodySpec): Field[] {
-    const angular = b.joint === 'revolute';
-    const range = angular ? 180 : Math.max(b.limit, 1);
-    const coord = (s: string) => (angular ? `\\theta_{${s}}` : `d_{${s}}`);
-    const i = this.mech.bodies.indexOf(b) + 1;
-    const qField = (key: 'q0' | 'qTarget', label: string, hint: string): Field => ({
-      key,
-      label,
-      tex: true,
-      min: -range,
-      max: range,
-      step: angular ? 1 : 0.01,
-      unit: angular ? '°' : 'm',
-      scale: angular ? DEG : 1,
-      hint,
-    });
-    const joint: Field[] =
-      b.parent < 0
-        ? [
-            { key: 'mountX', label: 'x₀', min: -3, max: 3, step: GRID, unit: 'm' },
-            { key: 'mountY', label: 'y₀', min: -3, max: 3, step: GRID, unit: 'm' },
-          ]
-        : [
-            {
-              key: 'mountS',
-              label: 'position s',
-              min: 0,
-              max: 1,
-              step: PORT_STEP,
-              hint: 'joint position along the parent, as a fraction of its length (kept symbolic: s·l)',
-            },
-          ];
-    joint.push({
-      key: 'mountAngle',
-      label: b.joint === 'fixed' ? 'angle' : 'mount angle',
-      min: -180,
-      max: 180,
-      step: SNAP_ANGLE * DEG,
-      unit: '°',
-      scale: DEG,
-      hint: 'rotation of the joint frame relative to the parent frame (0° = along the parent x-axis)',
-    });
-    if (b.joint === 'prismatic') {
-      joint.push(
-        {
-          key: 'axisAngle',
-          label: 'slide axis',
-          min: -180,
-          max: 180,
-          step: SNAP_ANGLE * DEG,
-          unit: '°',
-          scale: DEG,
-        },
-        {
-          key: 'limit',
-          label: 'range ±',
-          min: 0,
-          max: 3,
-          step: 0.1,
-          unit: 'm',
-          hint: 'end stops (0 = unlimited)',
-        },
-      );
-    }
-    if (b.joint !== 'fixed') {
-      joint.push(
-        qField('q0', `${coord(String(i))}(0)`, 'initial value'),
-        qField('qTarget', `${coord(String(i))}^{*}`, 'target / equilibrium used by the controllers'),
-        {
-          key: 'beta',
-          label: `\\beta_{${i}}`,
-          tex: true,
-          min: 0,
-          max: 2,
-          step: 0.001,
-          unit: angular ? 'N·m·s' : 'N·s/m',
-          hint: 'viscous joint friction',
-        },
-      );
-    }
-    return joint;
-  }
-
-  private bodyFields(b: BodySpec, i: number): Field[] {
-    const f: Field[] = [
-      { key: 'm', label: `m_{${i + 1}}`, tex: true, ...physicalControl('m', 'slider'), log: true },
-      {
-        key: 'l',
-        label: `l_{${i + 1}}`,
-        tex: true,
-        ...physicalControl('l', 'slider'),
-        hint: 'length: children sit at (s·l, 0) in this body frame',
-      },
-    ];
-    if (!b.uniform) {
-      for (const key of ['r', 'I'] as const)
-        f.push({
-          key,
-          label: `${key}_{${i + 1}}`,
-          tex: true,
-          ...physicalControl(key, 'slider'),
-          hint: key === 'r' ? 'centre of mass' : 'inertia',
-        });
-    }
-    return f;
-  }
-
-  private sliderFor(i: number, b: BodySpec, f: Field): HTMLElement {
-    const scale = f.scale ?? 1;
-    const opts = {
-      label: f.label,
-      tex: f.tex ?? false,
-      min: f.min,
-      max: f.max,
-      value: (b[f.key] as number) * scale,
-      log: f.log ?? false,
-      onInput: (v: number) => this.update(i, { [f.key]: v / scale }, f.rerender),
-      ...(f.step === undefined ? {} : { step: f.step }),
-      ...(f.unit === undefined ? {} : { unit: f.unit }),
-      ...(f.hint === undefined ? {} : { hint: f.hint }),
-      ...(scale !== 1 ? { format: (v: number) => v.toFixed(0) } : {}),
-      ...(f.key === 'mountS' ? { format: (v: number) => `${v.toFixed(2)} l` } : {}),
-    };
-    return slider(opts);
-  }
-
   private bodyCard(i: number): HTMLElement {
-    const b = this.mech.bodies[i]!;
-    const c = card(`Joint ${i + 1}`);
-    c.append(
-      row(
-        'type',
-        segmented(
-          [
-            ['revolute', 'revolute'],
-            ['prismatic', 'prismatic'],
-            ['fixed', 'fixed'],
-          ],
-          b.joint,
-          (v) => {
-            if (v !== 'fixed' && b.joint === 'fixed' && dof(this.mech) >= MAX_DOF) {
-              this.refuse(`at most ${MAX_DOF} moving joints`);
-              return;
-            }
-            const m = cloneMechanism(this.mech);
-            m.bodies[i] = normalise({
-              ...b,
-              joint: v,
-              actuated: v !== 'fixed' && (b.actuated || b.joint === 'fixed'),
-              limit: v === 'prismatic' ? Math.max(b.limit, 1) : 0,
-              q0: 0,
-              qTarget: 0,
-            });
-            if (dof(m) === 0) {
-              this.refuse('at least one joint must be able to move');
-              return;
-            }
-            this.commit({ ...m, name: 'Custom' });
-          },
-        ),
-      ),
-    );
-    if (b.joint !== 'fixed') {
-      c.append(
-        row(
-          'drive',
-          segmented(
-            [
-              ['on', 'actuated'],
-              ['off', 'passive'],
-            ],
-            b.actuated ? 'on' : 'off',
-            (v) => this.update(i, { actuated: v === 'on' }, true),
-          ),
-        ),
-      );
-    }
-
-    const parentSel = document.createElement('select');
-    parentSel.className = 'btn small';
-    parentSel.append(new Option('ground', '-1', false, b.parent < 0));
-    this.mech.bodies.forEach((_, k) => {
-      if (k !== i && !isDescendant(this.mech, k, i)) {
-        parentSel.append(new Option(`body ${k + 1}`, String(k), false, b.parent === k));
-      }
-    });
-    parentSel.addEventListener('change', () => {
-      const res = reparent(this.mech, i, Number(parentSel.value));
-      if (res) this.commit(res.mech, res.index);
-    });
-    c.append(row('hangs from', parentSel));
-    if (b.parent >= 0) {
-      const preset = (['0', '0.5', '1'] as const).find((s) => Number(s) === b.mountS) ?? ('' as '0');
-      c.append(
-        row(
-          'on the parent at',
-          segmented(
-            [
-              ['0', 'origin'],
-              ['0.5', 'middle'],
-              ['1', 'tip'],
-            ],
-            preset,
-            (v) => this.update(i, { mountS: Number(v) }, true),
-          ),
-        ),
-      );
-    }
-    for (const f of this.fields(b)) c.append(this.sliderFor(i, b, f));
-
-    c.append(
-      heading(`Body ${i + 1}`),
-      row(
-        'shape',
-        segmented(
-          [
-            ['link', 'link'],
-            ['block', 'block'],
-          ],
-          b.shape,
-          (v) => this.update(i, { shape: v }),
-        ),
-      ),
-    );
-    for (const f of this.bodyFields(b, i)) c.append(this.sliderFor(i, b, f));
-    c.append(
-      row(
-        'mass distribution',
-        segmented(
-          [
-            ['uniform', 'uniform rod'],
-            ['custom', 'custom'],
-          ],
-          b.uniform ? 'uniform' : 'custom',
-          (v) => this.update(i, { uniform: v === 'uniform' }, true),
-        ),
-      ),
-      row(
-        'tool',
-        segmented(
-          [
-            ['yes', 'tool at tip'],
-            ['no', 'no'],
-          ],
-          this.mech.tool === i ? 'yes' : 'no',
-          (v) => {
-            const m = cloneMechanism(this.mech);
-            m.tool = v === 'yes' ? i : m.tool === i ? -1 : m.tool;
-            this.commit(m);
-          },
-        ),
-      ),
-    );
+    const editor = this;
+    const ctx = {
+      get mech() {
+        return editor.mech;
+      },
+      commit: (m: Mechanism, structural = false) => {
+        this.mech = m;
+        if (structural) this.render();
+        this.events.change(cloneMechanism(m), structural);
+      },
+      refuse: (msg: string) => this.refuse(msg),
+      length: (k: number) => this.events.elementLength(k),
+    };
+    const c = card(`Body ${i + 1}`, ...bodyControls(ctx, i));
+    if (!this.mech.bodies[i]!.detached) c.append(heading(`Joint ${i + 1}`), ...jointControls(ctx, i));
+    else c.append(note('Unconnected draft body: add a joint to attach it.'));
     return c;
   }
 }

@@ -12,12 +12,14 @@ import { Editor } from './builder/editor';
 import { Gizmos } from './builder/gizmos';
 import { type EditContext, Inspector, removeSelection, type Selection } from './builder/inspector';
 import { Palette } from './builder/palette';
-import { type Anchor, place, placeLoop } from './builder/parts';
+import { type Anchor, place, placeAtJoint, placeLoop } from './builder/parts';
+import { preview } from './builder/preview';
 import { ControlStore } from './control/store';
 import { derivationSections } from './eq/derivation';
 import { EquationPanel } from './eq/panel';
 import type { Derivation } from './model/derivation';
 import {
+  assemblyIssue,
   cloneMechanism,
   DEFAULT_PRESET,
   type JointKind,
@@ -35,6 +37,7 @@ import { SchematicView } from './scene/schematic-view';
 import { Stage } from './scene/stage';
 import { setDark } from './scene/theme';
 import { SimClient } from './sim/client';
+import type { Snapshot } from './sim/layout';
 import { closePopover, popover } from './ui/popover';
 import { button, portLabel } from './ui/widgets';
 
@@ -76,6 +79,10 @@ class App {
   }
   private get installed(): Mechanism | null {
     return this.document.installed;
+  }
+  private draftPreview: Snapshot | null = null;
+  private get displayed(): Mechanism {
+    return this.robot?.mech ?? this.mech;
   }
   private params: number[];
   private derivation: Derivation | null = null;
@@ -131,7 +138,8 @@ class App {
       },
     });
     this.editor = new Editor(document.createElement('div'), {
-      change: (m) => this.edited(m),
+      change: (m, discrete) => this.edited(m, discrete),
+      inspect: (kind, index) => this.inspector.show({ kind, index }),
       select: (i) => {
         this.schematic?.select(i);
         this.gizmos.select(i);
@@ -162,23 +170,37 @@ class App {
       },
       snapTip: (body, to) => this.snapTip(body, to),
       snapJoint: (body, to) => this.snapJoint(body, to),
-      place: (kind, a, b) => {
-        const r = place(this.mech, kind, a, b);
+      place: (kind, a, b, joint) => {
+        const r =
+          joint && (kind === 'bar' || kind === 'block')
+            ? placeAtJoint(this.mech, kind, joint.kind, joint.from, a)
+            : place(this.mech, kind, a, b);
         if (typeof r === 'string') {
           this.flash(r);
           return;
         }
-        this.adopt(r.mech, r.select.kind === 'body' ? r.select.index : this.editor.selection);
+        this.adopt(r.mech, r.select.kind !== 'element' ? r.select.index : this.editor.selection);
         if (r.select.kind === 'element') this.editor.selectElement(r.select.index);
-        this.inspector.show({ kind: r.select.kind, index: r.select.index });
+        if (r.select.index >= 0) this.inspector.show({ kind: r.select.kind, index: r.select.index });
+        else this.inspector.hide();
       },
-      placing: (state) => {
-        if (state === 'first')
-          this.flash(
-            'Drop it on a lit port to attach it there, or on empty space for the ground. Esc cancels.',
-          );
-        else if (state === 'second')
-          this.flash('Now the other end: a lit port, or empty space for the ground.');
+      placing: (state, kind) => {
+        if (state === 'done') return;
+        this.inspector.hide();
+        const joint = kind === 'revolute' || kind === 'prismatic' || kind === 'fixed';
+        this.flash(
+          joint
+            ? state === 'first'
+              ? 'Choose a Ground point or any point along a body for the joint. Esc cancels.'
+              : 'Click an unconnected body, or choose Bar/Block and place it to complete this joint. Esc cancels.'
+            : kind === 'ground'
+              ? 'Click to place a fixed Ground attachment point. Ground is not a collision floor.'
+              : kind === 'bar' || kind === 'block'
+                ? state === 'second'
+                  ? 'Click to draw the new body from the chosen joint anchor.'
+                  : 'Click to place an unconnected body, then add a joint to attach it.'
+                : 'Choose the two endpoints on bodies or ground. Esc cancels.',
+        );
       },
     });
     this.palette = new Palette({ start: (kind) => this.gizmos.beginPlace(kind) });
@@ -236,19 +258,22 @@ class App {
 
   /** The snapshot to draw: live, or the moment being looked back at. */
   private get view() {
-    return this.timeline.view(this.snap);
+    return this.draftPreview ?? this.timeline.view(this.snap);
   }
 
   /** Take a new document from the view (palette, inspector, snapping): history, panel, rebuild. */
-  private adopt(m: Mechanism, selected = this.editor.selection): void {
-    this.editor.commit(m, selected);
+  private adopt(m: Mechanism, selected = this.editor.selection, discrete = true): void {
+    this.editor.commit(m, selected, discrete);
   }
 
   private editContext(): EditContext {
+    const app = this;
     return {
-      mech: this.mech,
+      get mech() {
+        return app.mech;
+      },
       commit: (m, structural = false) => {
-        this.adopt(m);
+        this.adopt(m, this.editor.selection, structural);
         if (structural) this.inspector.render();
       },
       refuse: (msg) => this.flash(msg),
@@ -297,7 +322,7 @@ class App {
 
   /** Distance between the ends of spring/damper k at the current pose. */
   private elementLength(k: number): number {
-    if (!this.robot || !(this.installed ?? this.mech).elements[k]) return 0;
+    if (!this.robot || !this.displayed.elements[k]) return 0;
     const [[ax, ay], [bx, by]] = this.robot.elementEnds(k, this.snap, this.params);
     return Math.hypot(bx - ax, by - ay);
   }
@@ -334,7 +359,7 @@ class App {
 
   /** The joint of `body` was dropped on a port of another body: hang it there. */
   private snapJoint(body: number, to: Anchor): void {
-    if (to.body < 0) return;
+    if (to.body < 0 || this.mech.bodies[body]?.detached) return;
     const r = reparent(this.mech, body, to.body);
     if (!r) {
       this.flash('a body cannot hang from its own descendant — close a loop instead');
@@ -347,7 +372,7 @@ class App {
   }
 
   private get snap() {
-    return this.client.snap;
+    return this.draftPreview ?? this.client.snap;
   }
 
   async start(): Promise<void> {
@@ -365,8 +390,9 @@ class App {
   // ---------------------------------------------------------------- building & history
 
   /** A new document from the editor or a drag. Drags record history once, at their start. */
-  private edited(m: Mechanism): void {
-    if (!this.dragging) this.history.record(this.mech);
+  private edited(m: Mechanism, discrete = false): void {
+    if (!this.dragging) this.history.record(this.mech, discrete);
+    this.gizmos.cancel();
     this.document.edit(m);
     this.sim.cancelRun();
     this.document.schedule(() => void this.rebuild(), this.dragging ? 10 : 60);
@@ -375,6 +401,7 @@ class App {
   private undo(redo = false): void {
     const m = this.history.step(this.mech, redo);
     if (!m) return;
+    this.gizmos.cancel();
     this.document.edit(m);
     this.sim.cancelRun();
     this.editor.load(m);
@@ -382,20 +409,28 @@ class App {
     void this.rebuild();
   }
 
-  /** An empty scene: the ground to build on, nothing to derive or simulate yet. */
-  private showEmpty(): void {
+  /** Show the authored pose of an empty, incomplete or invalid assembly without stale dynamics. */
+  private showDraft(): void {
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
     this.derivation = null;
+    this.draftPreview = preview(this.mech, this.client.layout);
+    this.timeline.clear();
     this.params = paramVector(this.mech);
     history.replaceState(null, '', encodeHash(this.mech));
     this.robot = new RobotView(this.mech);
     this.schematic?.host.remove();
-    const bounds = { cx: 0, cy: 0, width: 4, height: 3 };
+    const bounds =
+      this.mech.bodies.length || this.mech.anchors?.length
+        ? poseBounds(this.mech)
+        : { cx: 0, cy: 0, width: 4, height: 3 };
     this.schematic = new SchematicView(this.mech, { coords: [] } as unknown as Derivation, bounds);
     $('viewport').prepend(this.schematic.host);
     this.freeBody = -1;
     if (this.stageName !== 'build') this.setStage('build');
-    if (!this.userView) this.stage.setView(bounds.cx, bounds.cy, bounds.width, bounds.height);
+    if (!this.dragging && !this.userView)
+      this.stage.setView(bounds.cx, bounds.cy, bounds.width, bounds.height);
+    this.schematic.select(this.editor.selection);
+    this.gizmos.select(this.editor.selection);
     this.refreshStage();
   }
 
@@ -416,16 +451,18 @@ class App {
   private async rebuild(): Promise<void> {
     const outcome = await this.document.rebuild();
     if (outcome.kind === 'empty') {
-      this.showEmpty();
+      this.showDraft();
       return;
     }
     if (outcome.kind === 'error') {
+      this.showDraft();
       this.status(outcome.error, 'build');
       return;
     }
     if (outcome.kind !== 'installed') return;
     const { document: mech, result: res } = outcome;
     if ($('status').dataset.kind === 'build') $('status').hidden = true;
+    this.draftPreview = null;
     this.derivation = res.derivation;
     this.lastBuildMs = res.ms;
     this.lastBuildReused = res.reused;
@@ -436,6 +473,10 @@ class App {
     this.schematic = new SchematicView(mech, res.derivation, this.robot.bounds());
     $('viewport').prepend(this.schematic.host);
     this.sim.load(res.derivation, res.controllers);
+    if (assemblyIssue(this.mech)) {
+      this.showDraft();
+      return;
+    }
     this.gauges.load(res.derivation);
     this.timeline.clear();
     this.freeBody = -1;
@@ -502,7 +543,10 @@ class App {
       pop.append(b);
     };
     for (const kind of ['revolute', 'prismatic', 'fixed'] as JointKind[]) {
-      act(`+ ${kind} child here`, () => this.editor.addChild(body, kind, s));
+      act(
+        `+ ${kind === 'revolute' ? 'rotational' : kind === 'prismatic' ? 'translational' : 'fixed'} joint here…`,
+        () => this.gizmos.beginJoint(kind, body, s),
+      );
     }
     const full = this.mech.closures.length >= MAX_CLOSURES;
     act('pin a loop from here…', () => this.startConnect(body, s, 'pin'), full);
@@ -575,11 +619,19 @@ class App {
       // an empty scene: the builder alone
       const title = document.createElement('div');
       title.className = 'side-title';
-      title.innerHTML = '<b>Build</b><span>an empty scene · drag parts in from the palette</span>';
-      head.append(title);
+      title.innerHTML = '<b>Build</b>';
+      const sub = document.createElement('span');
+      sub.textContent =
+        assemblyIssue(this.mech) ?? 'Place bodies and ground anchors, then connect them with joints.';
+      title.append(sub);
+      const undo = button('↶', () => this.undo(), 'btn small', 'undo (Ctrl+Z)');
+      const redo = button('↷', () => this.undo(true), 'btn small', 'redo (Ctrl+Shift+Z)');
+      undo.disabled = !this.history.canUndo;
+      redo.disabled = !this.history.canRedo;
+      head.append(title, undo, redo);
       $('side').replaceChildren(this.editor.host);
       $('hint').textContent =
-        'Drop a Cart, Bar or Slider on empty space to stand it on the ground, then attach more parts to its lit ports. A spring dropped on empty space is anchored to a wall there.';
+        'Place a Ground point and a Bar or Block. Choose a joint, click its ground or body anchor, then the unconnected body. Click graph nodes to edit bodies and joints separately.';
       this.buildToggles();
       return;
     }
@@ -622,7 +674,7 @@ class App {
     }
     $('hint').textContent =
       this.stageName === 'build'
-        ? 'Drag parts from the palette onto a lit port, or onto empty space for the ground. Click a part to edit it; drag its ○ onto a port to close a loop, its ◆ onto a port to hang it there. A hinge with a second ring is driven.'
+        ? 'Place bodies and Ground points, then join them with rotational, translational or fixed joints. Click a body or joint in the graph to edit it. Motor/passive is a joint setting. Drag ○ to rotate or stretch a body; ◆ moves its attachment.'
         : this.stageName === 'derive'
           ? 'Every formula on the right was derived symbolically for exactly this structure.'
           : '';
@@ -783,12 +835,12 @@ class App {
   /** Frame the mechanism: its pose while building and deriving, everywhere it can reach while simulating. */
   private fitView(): void {
     if (!this.robot) return;
-    if (!this.mech.bodies.length) {
+    if (!this.mech.bodies.length && !this.mech.anchors?.length) {
       this.stage.setView(0, 0, 4, 3);
       this.userView = false;
       return;
     }
-    const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.installed ?? this.mech);
+    const b = this.stageName === 'simulate' ? this.robot.bounds() : poseBounds(this.displayed);
     this.stage.setView(b.cx, b.cy, b.width, b.height);
     this.userView = false;
   }
@@ -797,7 +849,7 @@ class App {
 
   private schematicFrame(): SchematicFrame {
     const simulating = this.stageName === 'simulate';
-    this.ghostSlots ??= this.snap.slots.slice(1);
+    this.ghostSlots ??= this.client.snap.slots.slice(1);
     return {
       snap: this.view,
       params: this.timeline.viewParams(this.params),
@@ -954,7 +1006,7 @@ class App {
     alt = false,
   ): void {
     const d = this.derivation;
-    if (!d || !this.robot) return;
+    if (!this.robot) return;
     if (this.stageName === 'build') {
       if (kind !== 'down') return;
       // springs and dampers first: they are thin and often lie over bodies
@@ -972,7 +1024,7 @@ class App {
       } else this.closeInspector();
       return;
     }
-    if (this.stageName !== 'simulate') return;
+    if (this.stageName !== 'simulate' || !d) return;
     if (!pressed && kind === 'move') {
       this.hover(x, y);
       return;
@@ -1039,7 +1091,7 @@ class App {
     this.schematic?.draw(this.stage.mapping(), this.schematicFrame());
     if (simulating) this.gauges.draw(this.view, now);
     if (this.stageName === 'build' && this.robot)
-      this.gizmos.update(this.installed ?? this.mech, this.robot, this.snap, this.params);
+      this.gizmos.update(this.displayed, this.robot, this.snap, this.params);
     c.frames++;
     if (refresh) {
       this.panel.update();

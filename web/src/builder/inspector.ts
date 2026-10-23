@@ -17,8 +17,9 @@ import {
 import { physicalControl } from '../model/fields';
 import { GRID, PORT_STEP, SNAP_ANGLE } from '../scene/geometry';
 import { button, DEG, el, row, segmented, stepper } from '../ui/widgets';
+import { detachBody } from './parts';
 
-export type Selection = { kind: 'body'; index: number } | { kind: 'element'; index: number };
+export type Selection = { kind: 'body' | 'joint'; index: number } | { kind: 'element'; index: number };
 
 export interface EditContext {
   mech: Mechanism;
@@ -57,53 +58,7 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
         (v) => patchBody(c, i, { shape: v }, true),
       ),
     ),
-    row(
-      'joint',
-      segmented(
-        [
-          ['revolute', 'hinge'],
-          ['prismatic', 'slider'],
-          ['fixed', 'weld'],
-        ],
-        b.joint,
-        (v) => {
-          if (v !== 'fixed' && b.joint === 'fixed' && dof(c.mech) >= MAX_DOF) {
-            c.refuse(`at most ${MAX_DOF} moving joints`);
-            return;
-          }
-          const m = cloneMechanism(c.mech);
-          m.bodies[i] = normalise({
-            ...b,
-            joint: v,
-            actuated: v !== 'fixed' && (b.actuated || b.joint === 'fixed'),
-            limit: v === 'prismatic' ? Math.max(b.limit, 1) : 0,
-            q0: 0,
-            qTarget: 0,
-          });
-          if (dof(m) === 0) {
-            c.refuse('at least one joint must be able to move');
-            return;
-          }
-          c.commit({ ...m, name: 'Custom' }, true);
-        },
-      ),
-    ),
   );
-  if (b.joint !== 'fixed') {
-    out.push(
-      row(
-        'drive',
-        segmented(
-          [
-            ['on', 'driven'],
-            ['off', 'passive'],
-          ],
-          b.actuated ? 'on' : 'off',
-          (v) => patchBody(c, i, { actuated: v === 'on' }, true),
-        ),
-      ),
-    );
-  }
   out.push(
     stepper({
       label: `l_{${i + 1}}`,
@@ -153,6 +108,70 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
       }),
     );
   }
+  if (b.detached) out.push(...poseControls(c, i));
+  return out;
+}
+
+export function jointControls(c: EditContext, i: number): HTMLElement[] {
+  const b = c.mech.bodies[i]!;
+  if (b.detached) return [el('p', 'note', 'Unconnected body: choose a joint in the palette to attach it.')];
+  const out: HTMLElement[] = [];
+  out.push(
+    row(
+      'joint',
+      segmented(
+        [
+          ['revolute', 'rotational'],
+          ['prismatic', 'translational'],
+          ['fixed', 'fixed'],
+        ],
+        b.joint,
+        (v) => {
+          if (v !== 'fixed' && b.joint === 'fixed' && dof(c.mech) >= MAX_DOF) {
+            c.refuse(`at most ${MAX_DOF} moving joints`);
+            return;
+          }
+          const m = cloneMechanism(c.mech);
+          m.bodies[i] = normalise({
+            ...b,
+            joint: v,
+            actuated: v !== 'fixed' && (b.actuated || b.joint === 'fixed'),
+            limit: v === 'prismatic' ? Math.max(b.limit, 1) : 0,
+            q0: 0,
+            qTarget: 0,
+          });
+          c.commit({ ...m, name: 'Custom' }, true);
+        },
+      ),
+    ),
+  );
+  if (b.joint !== 'fixed') {
+    out.push(
+      row(
+        'actuation',
+        segmented(
+          [
+            ['on', 'motor'],
+            ['off', 'passive'],
+          ],
+          b.actuated ? 'on' : 'off',
+          (v) => patchBody(c, i, { actuated: v === 'on' }, true),
+        ),
+      ),
+    );
+  }
+  out.push(
+    el(
+      'p',
+      'note',
+      b.joint === 'prismatic'
+        ? '1 relative DOF along the slide axis. The guide prevents transverse motion and rotation; a horizontal ground guide cannot lift off. Passive joints can still move under forces.'
+        : b.joint === 'revolute'
+          ? '1 relative angular DOF. A motor applies torque; a passive joint can still turn under forces.'
+          : '0 relative DOF. The two frames move rigidly together.',
+    ),
+  );
+  if (b.parent < 0) out.push(...poseControls(c, i, false));
   out.push(
     stepper({
       label: b.joint === 'fixed' ? 'angle' : 'mount angle',
@@ -222,6 +241,17 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
         onChange: (v) => patchBody(c, i, { q0: v }),
       }),
       stepper({
+        label: 'target',
+        value: b.qTarget,
+        step: angular ? Math.PI / 36 : GRID,
+        min: angular ? -Math.PI : -5,
+        max: angular ? Math.PI : 5,
+        unit: angular ? '°' : 'm',
+        ...(angular ? { scale: DEG, digits: 0 } : {}),
+        hint: 'joint target used by position control',
+        onChange: (v) => patchBody(c, i, { qTarget: v }),
+      }),
+      stepper({
         label: `\\beta_{${i + 1}}`,
         tex: true,
         value: b.beta,
@@ -234,6 +264,36 @@ export function bodyControls(c: EditContext, i: number): HTMLElement[] {
       }),
     );
   }
+  return out;
+}
+
+function poseControls(c: EditContext, i: number, angle = true): HTMLElement[] {
+  const b = c.mech.bodies[i]!;
+  const out = (['mountX', 'mountY'] as const).map((key) =>
+    stepper({
+      label: `${b.detached ? 'position' : 'ground'} ${key === 'mountX' ? 'x' : 'y'}`,
+      value: b[key],
+      step: GRID,
+      min: -10,
+      max: 10,
+      unit: 'm',
+      onChange: (v) => patchBody(c, i, { [key]: v }),
+    }),
+  );
+  if (angle)
+    out.push(
+      stepper({
+        label: 'orientation',
+        value: b.mountAngle,
+        step: SNAP_ANGLE,
+        min: -Math.PI,
+        max: Math.PI,
+        unit: '°',
+        scale: DEG,
+        digits: 0,
+        onChange: (v) => patchBody(c, i, { mountAngle: v }),
+      }),
+    );
   return out;
 }
 
@@ -364,8 +424,9 @@ export function describe(mech: Mechanism, sel: Selection): string {
     return `${kind} ${sel.index + 1} · ${a} ↔ body ${e.b + 1}`;
   }
   const b = mech.bodies[sel.index]!;
-  const joint = b.joint === 'revolute' ? 'hinge' : b.joint === 'prismatic' ? 'slider' : 'weld';
-  return `Body ${sel.index + 1} · ${joint}${b.joint !== 'fixed' ? (b.actuated ? ', driven' : ', passive') : ''}`;
+  if (sel.kind === 'body')
+    return `Body ${sel.index + 1} · ${b.shape === 'link' ? 'bar' : 'block'}${b.detached ? ' · unconnected' : ''}`;
+  return `Joint ${sel.index + 1} · ${b.joint === 'revolute' ? 'rotational' : b.joint === 'prismatic' ? 'translational' : 'fixed'}`;
 }
 
 export interface InspectorEvents {
@@ -411,7 +472,9 @@ export class Inspector {
     const sel = this.sel;
     const c = this.events.context();
     const valid =
-      sel && (sel.kind === 'body' ? sel.index < c.mech.bodies.length : sel.index < c.mech.elements.length);
+      sel &&
+      sel.index >= 0 &&
+      (sel.kind !== 'element' ? sel.index < c.mech.bodies.length : sel.index < c.mech.elements.length);
     if (!sel || !valid) {
       this.hide();
       return;
@@ -419,17 +482,27 @@ export class Inspector {
     const head = el('div', 'inspector-head', el('b', '', describe(c.mech, sel)));
     head.append(button('×', () => this.events.close(), 'icon-btn', 'close (Esc)'));
     const body = el('div', 'inspector-body');
-    body.append(...(sel.kind === 'body' ? bodyControls(c, sel.index) : elementControls(c, sel.index)));
+    body.append(
+      ...(sel.kind === 'body'
+        ? bodyControls(c, sel.index)
+        : sel.kind === 'joint'
+          ? jointControls(c, sel.index)
+          : elementControls(c, sel.index)),
+    );
     const foot = el('div', 'inspector-foot');
     if (sel.kind === 'body') {
+      if (!c.mech.bodies[sel.index]!.detached)
+        foot.append(button('Edit joint', () => this.show({ kind: 'joint', index: sel.index })));
       const isTool = c.mech.tool === sel.index;
       foot.append(
         button(isTool ? 'tool at tip ✓' : 'make tip the tool', () => this.events.tool(sel.index, !isTool)),
       );
     }
-    const removable = sel.kind === 'element' || c.mech.bodies.length > 1;
-    const rm = button('delete', () => this.events.remove(sel), 'btn small danger');
-    rm.disabled = !removable;
+    const rm = button(
+      sel.kind === 'joint' ? 'disconnect joint' : 'delete',
+      () => this.events.remove(sel),
+      'btn small danger',
+    );
     foot.append(rm);
     this.el.replaceChildren(head, body, foot);
     this.el.hidden = false;
@@ -450,8 +523,7 @@ export function removeSelection(mech: Mechanism, sel: Selection): Mechanism | st
     m.elements.splice(sel.index, 1);
     return { ...m, name: 'Custom' };
   }
-  if (mech.bodies.length <= 1) return 'a mechanism needs at least one body';
+  if (sel.kind === 'joint') return detachBody(mech, sel.index);
   const m = removeBody(mech, sel.index);
-  if (dof(m) === 0) return 'that would leave nothing that can move';
   return { ...m, name: 'Custom' };
 }

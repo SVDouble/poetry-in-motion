@@ -2,7 +2,7 @@
 export class History<T> {
   private readonly undoStack: T[] = [];
   private readonly redoStack: T[] = [];
-  private last = 0;
+  private last = -Infinity;
 
   constructor(
     private readonly clone: (v: T) => T,
@@ -26,7 +26,7 @@ export class History<T> {
     const v = from.pop();
     if (v === undefined) return null;
     to.push(this.clone(current));
-    this.last = 0;
+    this.last = -Infinity;
     return v;
   }
 

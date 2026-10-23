@@ -7,7 +7,7 @@ import { pageContext } from '../control/page';
 import { PAGES } from '../control/pages';
 import { ControlStore } from '../control/store';
 import type { Derivation } from '../model/derivation';
-import { dof, encode, PRESETS, paramVector } from '../model/description';
+import { dof, encode, link, PRESETS, paramVector } from '../model/description';
 import { presets } from '../scope/presets';
 import { Signals } from '../scope/signals';
 import type { SimClient } from './client';
@@ -162,4 +162,40 @@ describe('wasm core', () => {
     }
     for (const g of signals.groups()) expect(missing(g.ids)).toEqual([]);
   });
+});
+
+it('a ground-guided block has only one sliding DOF and cannot lift or rotate under gravity', () => {
+  const mech = {
+    name: 'Rail carriage',
+    g: 9.81,
+    tool: -1,
+    closures: [],
+    elements: [],
+    bodies: [
+      link(-1, 'prismatic', {
+        shape: 'block',
+        l: 0,
+        uniform: false,
+        r: 0,
+        I: 0.02,
+        mountY: 2,
+        beta: 0,
+        limit: 0,
+      }),
+    ],
+  };
+  const d = build(encode(mech));
+  expect(d.n).toBe(1);
+  expect(d.nu).toBe(1);
+  core.set_controller(0, kind('passive'));
+  core.set_input(0, 1);
+  core.step(1000);
+  const [x, y, angle] = snapshot().frame(1);
+  expect(x).toBeGreaterThan(0.1);
+  expect(y).toBe(2);
+  expect(angle).toBe(0);
+  mech.bodies[0]!.actuated = false;
+  const passive = build(encode(mech));
+  expect(passive.n).toBe(1);
+  expect(passive.nu).toBe(0);
 });

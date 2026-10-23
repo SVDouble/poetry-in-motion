@@ -10,6 +10,7 @@ Run `make e2e-smoke`; CHROMIUM optionally selects a local executable.
 import asyncio
 import os
 
+from builder import builder
 from playwright.async_api import Page, Route, async_playwright
 
 URL = os.environ.get("APP_URL", "http://localhost:5173/")
@@ -259,6 +260,7 @@ async def main() -> None:
             await page.wait_for_function(
                 "window.mainGeneration > 0 && document.body.dataset.stage === 'build'"
             )
+            await builder(page)
             assert await page.evaluate(CLIENT) == isolated, "wrong snapshot transport"
             await experiment(page)
             await delayed_marks(page)
@@ -275,7 +277,7 @@ async def main() -> None:
             assert not errors, errors
             await page.close()
             transport = "shared memory" if isolated else "message fallback"
-            print(f"{transport}: transitions, pause and cancellation passed", flush=True)
+            print(f"{transport}: builder, transitions, pause and cancellation passed", flush=True)
         await browser.close()
 
 

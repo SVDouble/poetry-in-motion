@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { emptyMechanism, PRESETS } from '../model/description';
+import { emptyMechanism, link, PRESETS } from '../model/description';
 import type { BuildResult, Built } from '../sim/client';
 import { DocumentSession } from './document';
 
@@ -61,4 +61,18 @@ it('never renders an accepted in-flight model over a subsequently emptied docume
   expect((await pending).kind).toBe('empty');
   expect(s.client.install).toHaveBeenCalledWith(built);
   expect(s.doc.installed).toBeNull();
+});
+
+it('keeps incomplete drafts out of the worker even when an older commit is accepted', async () => {
+  const s = session();
+  const pending = s.doc.rebuild();
+  const draft = { ...emptyMechanism(), bodies: [link(-1, 'fixed', { detached: true })] };
+  s.doc.edit(draft);
+  s.resolve(built);
+  await pending;
+  const installed = s.doc.installed;
+  expect((await s.doc.rebuild()).kind).toBe('error');
+  expect(s.doc.installed).toBe(installed);
+  expect(s.doc.draft).toBe(draft);
+  expect(s.client.build).toHaveBeenCalledTimes(1);
 });

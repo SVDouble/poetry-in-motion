@@ -6,20 +6,20 @@
    parent (or the ground) by a **revolute**, **prismatic** or **fixed** joint, plus **loop closures** between
    two bodies or a body and the ground: **pins** (four-bar) and **slots** (slider-crank), and **springs and
    dampers** between any two points. Build it in the view:
-   - drag a part from the **palette** (bar, slider, cart, weld, spring, damper, spring–damper, pin, slot) onto
-     a lit port to attach it there, or onto empty space to fix it to the ground; springs, dampers and loops
-     take a second point;
-   - click any part to open its **inspector**: shape, joint, drive, and every number with ◀ ▶ arrows (hold to
-     repeat, Shift for fine steps, or type a value) — length, mass, centre of mass, inertia, mounting, range,
-     initial value, friction, stiffness, rest length, damping, attachment points;
-   - drag **○** to rotate or stretch a body (snaps to 15° / 5 cm, Alt for free, Shift to set its initial
-     angle) — onto a port of another body, it closes a loop there; drag **◆** to move a joint — onto a port,
-     it re-hangs the body there;
-   - the side panel holds the same settings as a tree (drag entries to re-hang), Delete removes, Ctrl+Z undoes.
+   - place **Ground** attachment points and independent **Bar** or **Block** bodies from the palette;
+   - choose a **Rotational**, **Translational** or **Fixed** joint, click its ground point or any position
+     along a body, then click an unconnected body. Alternatively, choose Bar/Block after placing the joint
+     anchor to draw a new body from it;
+   - use the **connection graph** to select bodies and joints separately. Body controls set geometry and
+     mass; joint controls set attachment position, initial coordinate, limits and **motor/passive** actuation;
+   - unfinished assemblies remain editable drafts. Connect every component to ground and provide at least
+     one moving joint before deriving or simulating. Drafts survive undo, JSON export and shared URLs;
+   - ground is a fixed reference frame, not a collision floor. A block on a ground translational joint has
+     **one sliding DOF** along its guide; it cannot rotate or lift off a horizontal guide. A passive joint
+     still moves under forces. A freely flying planar body is not provided by this builder;
+   - use springs/dampers or loop pins/slots for additional connections. Drag the ○ handle to rotate/stretch
+     a body and ◆ to move its attachment; Ctrl+Z undoes edits.
 
-   Presets: cart-pole, two-, three- and seven-joint arm, double pendulum, wall pendulum, branching arm,
-   acrobot, cart double pendulum, four-bar linkage, slider-crank, gantry, mass–spring–damper, sprung
-   pendulum — and a test rebuilds every one of them from nothing with the builder's own operations.
 2. **Derive** its equations of motion step by step, symbolically, with generic coefficients (mᵢ, lᵢ, rᵢ, Iᵢ, βᵢ, g):
    kinematics, centre-of-mass velocities, kinetic and potential energy, the inertia matrix, the Christoffel
    symbols, the Coriolis matrix, gravity and friction, the scalar equations, and the Jacobians.

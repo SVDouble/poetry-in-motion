@@ -49,6 +49,7 @@ export function poseBounds(mech: Mechanism): Bounds {
       }
     }
   });
+  for (const [x, y] of mech.anchors ?? []) grow(x, y, 0.15);
   for (const c of mech.closures) if (c.a < 0) grow(c.gx, c.gy, 0.15);
   for (const e of mech.elements) if (e.a < 0) grow(e.gx, e.gy, 0.15);
   if (!Number.isFinite(minX)) return { cx: 0, cy: 0, width: 3, height: 3 };

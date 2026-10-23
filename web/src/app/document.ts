@@ -1,4 +1,4 @@
-import { cloneMechanism, encode, type Mechanism } from '../model/description';
+import { assemblyIssue, cloneMechanism, encode, type Mechanism } from '../model/description';
 import type { Built, SimClient } from '../sim/client';
 
 type Outcome =
@@ -46,6 +46,8 @@ export class DocumentSession {
       this.runtimeDocument = null;
       return { kind: 'empty' };
     }
+    const issue = assemblyIssue(document);
+    if (issue) return { kind: 'error', error: issue };
     const result = await this.client.build(encode(document), current);
     if (!result.ok) return current() ? { kind: 'error', error: result.error } : { kind: 'stale' };
     this.client.install(result);

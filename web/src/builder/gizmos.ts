@@ -10,11 +10,11 @@
  *   space means the ground; parts with two ends (springs, dampers, loops) take a second point;
  * - **connect mode**: after "pin loop", every port of every other body is shown; click one, or empty ground.
  */
-import { isDescendant, type Mechanism } from '../model/description';
+import { groundPoints, isDescendant, type JointKind, type Mechanism } from '../model/description';
 import type { RobotView } from '../scene/robot';
 import type { Stage } from '../scene/stage';
 import type { Snapshot } from '../sim/layout';
-import { type Anchor, type PartKind, partSpec } from './parts';
+import { type Anchor, isJoint, type PartKind, partSpec } from './parts';
 
 const SVG = 'http://www.w3.org/2000/svg';
 export const PORTS = [0, 0.5, 1];
@@ -35,9 +35,9 @@ export interface GizmoEvents {
   /** The joint of `body` was dropped onto a port: hang the body there. */
   snapJoint(body: number, to: Anchor): void;
   /** A part from the palette was placed (the second anchor for two-ended parts). */
-  place(kind: PartKind, a: Anchor, b?: Anchor): void;
+  place(kind: PartKind, a: Anchor, b?: Anchor, joint?: { kind: JointKind; from: Anchor }): void;
   /** Placing was cancelled, or needs its second end (for the hint line). */
-  placing(state: 'first' | 'second' | 'done'): void;
+  placing(state: 'first' | 'second' | 'done', kind?: PartKind): void;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(
@@ -72,6 +72,7 @@ export class Gizmos {
   private pointer: [number, number] | null = null;
   private hover: Anchor | null = null;
   private placing: { kind: PartKind; from: Anchor | null } | null = null;
+  private pendingJoint: { kind: JointKind; from: Anchor } | undefined;
 
   constructor(
     private readonly host: HTMLElement,
@@ -125,7 +126,7 @@ export class Gizmos {
       this.hover = null;
       this.pointer = null;
       this.events.dragEnd();
-      if (to && this.selected >= 0) {
+      if (to && this.selected >= 0 && !this.scene?.mech.bodies[this.selected]?.detached) {
         if (what === 'tip') this.events.snapTip(this.selected, to);
         else this.events.snapJoint(this.selected, to);
       }
@@ -146,16 +147,30 @@ export class Gizmos {
 
   /** Start placing a part from the palette. */
   beginPlace(kind: PartKind): void {
+    const previous = this.placing;
+    this.pendingJoint =
+      (kind === 'bar' || kind === 'block') && previous?.from && isJoint(previous.kind)
+        ? { kind: previous.kind, from: previous.from }
+        : undefined;
     this.placing = { kind, from: null };
     this.connectFrom = null;
     this.host.classList.add('placing');
     this.signature = '';
-    this.events.placing('first');
+    this.events.placing(this.pendingJoint ? 'second' : 'first', kind);
+  }
+
+  beginJoint(kind: 'revolute' | 'prismatic' | 'fixed', body: number, s: number): void {
+    if (!this.scene) return;
+    this.beginPlace(kind);
+    const [x, y] = this.scene.robot.port(body, s, this.scene.snap, this.scene.params);
+    this.placing!.from = { body, s, x, y };
+    this.events.placing('second', kind);
   }
 
   cancel(): void {
     if (!this.placing) return;
     this.placing = null;
+    this.pendingJoint = undefined;
     this.hover = null;
     this.pointer = null;
     this.host.classList.remove('placing');
@@ -180,19 +195,40 @@ export class Gizmos {
   private nearest([px, py]: [number, number], dragging: boolean): Anchor | null {
     const sc = this.scene;
     if (!sc) return null;
+    if (this.placing && !partSpec(this.placing.kind).twoEnded) return null;
     let best: Anchor | null = null;
     let bestD = REACH;
+    if (this.placing)
+      for (const [x, y] of groundPoints(sc.mech)) {
+        const [sx, sy] = this.stage.toScreen(x, y);
+        // The hatching remains a separate ground target when a body shares this origin.
+        const d = Math.min(Math.hypot(sx - px, sy - py), Math.hypot(sx - px, sy + 8 - py));
+        if (d < bestD) {
+          bestD = d;
+          best = { body: -1, s: 0, x, y };
+        }
+      }
     sc.mech.bodies.forEach((b, k) => {
       if (dragging && this.selected >= 0) {
         // the tip snaps to anything but its own body; the joint only to bodies outside its subtree
         if (k === this.selected) return;
         if (this.dragging === 'joint' && isDescendant(sc.mech, k, this.selected)) return;
       }
-      for (const s of b.l > 1e-3 ? PORTS : [0]) {
+      const ports = b.l > 1e-3 ? [...PORTS] : [0];
+      if (this.placing && b.l > 1e-3) {
+        const [ax, ay] = this.stage.toScreen(...sc.robot.port(k, 0, sc.snap, sc.params));
+        const [bx, by] = this.stage.toScreen(...sc.robot.port(k, 1, sc.snap, sc.params));
+        const t = Math.max(
+          0,
+          Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2)),
+        );
+        ports.push(t);
+      }
+      for (const s of ports) {
         const [x, y] = sc.robot.port(k, s, sc.snap, sc.params);
         const [sx, sy] = this.stage.toScreen(x, y);
         const d = Math.hypot(sx - px, sy - py);
-        if (d < bestD) {
+        if (d < bestD - 1e-6 || (Math.abs(d - bestD) <= 1e-6 && (best?.body === -1 || k === this.selected))) {
           bestD = d;
           best = { body: k, s, x, y };
         }
@@ -207,10 +243,14 @@ export class Gizmos {
     this.track(e);
     const [x, y] = this.stage.toWorld(e.clientX, e.clientY);
     const at: Anchor = this.hover ?? { body: -1, s: 0, x, y };
+    if (isJoint(p.kind) && !p.from && !this.hover) {
+      this.events.placing('first', p.kind);
+      return;
+    }
     if (partSpec(p.kind).twoEnded && !p.from) {
       p.from = at;
       this.signature = '';
-      this.events.placing('second');
+      this.events.placing('second', p.kind);
       return;
     }
     const from = p.from;
@@ -220,7 +260,8 @@ export class Gizmos {
     this.signature = '';
     this.events.placing('done');
     if (from) this.events.place(p.kind, from, at);
-    else this.events.place(p.kind, at);
+    else this.events.place(p.kind, at, undefined, this.pendingJoint);
+    this.pendingJoint = undefined;
   }
 
   /** Redraw at the current pose. Cheap: a handful of SVG nodes. */
@@ -232,13 +273,21 @@ export class Gizmos {
       snap.frame(k).map((v) => v.toFixed(4)),
     );
     const [vw, vh] = this.stage.toScreen(0, 0);
-    const sig = `${this.selected}|${JSON.stringify(this.connectFrom)}|${frames.join()}|${params.join()}|${vw.toFixed(1)},${vh.toFixed(1)}`;
+    const sig = `${JSON.stringify(mech.anchors)}|${mech.bodies.map((b) => b.detached)}|${this.selected}|${JSON.stringify(this.connectFrom)}|${frames.join()}|${params.join()}|${vw.toFixed(1)},${vh.toFixed(1)}`;
     if (sig === this.signature) return;
     this.signature = sig;
     svg.replaceChildren();
     svg.classList.toggle('connecting', this.connectFrom !== null);
     const i = this.selected;
     const scr = (x: number, y: number) => this.stage.toScreen(x, y);
+    for (const [x, y] of groundPoints(mech)) {
+      const [gx, gy] = scr(x, y);
+      const mark = el('path', {
+        d: `M${gx - 10},${gy + 4} H${gx + 10} M${gx - 6},${gy + 4} l-5,7 M${gx + 2},${gy + 4} l-5,7 M${gx + 10},${gy + 4} l-5,7`,
+        class: 'ground-anchor',
+      });
+      svg.append(mark, el('circle', { cx: gx, cy: gy, r: 4, class: 'port target ground-point' }));
+    }
     const allPorts = (skip = -1) => {
       mech.bodies.forEach((b, k) => {
         if (k === skip) return;
@@ -258,15 +307,20 @@ export class Gizmos {
       const at = this.pointer;
       if (at) {
         const [hx, hy] = this.hover ? scr(this.hover.x, this.hover.y) : at;
-        if (p.from) {
-          const [fx, fy] = scr(p.from.x, p.from.y);
+        const source = p.from ?? this.pendingJoint?.from;
+        if (source) {
+          const [fx, fy] = scr(source.x, source.y);
           svg.append(el('line', { x1: fx, y1: fy, x2: hx, y2: hy, class: 'rubber' }));
           svg.append(el('circle', { cx: fx, cy: fy, r: 5, class: 'port origin-port' }));
         }
         const label = el('text', { x: hx + 14, y: hy - 12, class: 'place-label' });
         const target = this.hover
-          ? `body ${this.hover.body + 1}, ${this.hover.s === 0 ? 'origin' : this.hover.s === 1 ? 'tip' : 'middle'}`
-          : 'ground';
+          ? this.hover.body < 0
+            ? 'Ground anchor'
+            : `body ${this.hover.body + 1}, ${Math.round(this.hover.s * 100)}%`
+          : isJoint(p.kind)
+            ? 'choose a ground point or body'
+            : 'place here';
         label.textContent = `${partSpec(p.kind).label}${p.from ? ' · second end' : ''} → ${target}`;
         svg.append(el('circle', { cx: hx, cy: hy, r: 3, class: 'drop-dot' }), label);
       }
@@ -342,7 +396,9 @@ export class Gizmos {
     const jt = el('title', {});
     jt.textContent =
       b.parent < 0
-        ? 'drag: move the joint on the ground (Alt: no snapping) — drop it on a port to hang the body there'
+        ? b.detached
+          ? 'drag: move the unconnected body (Alt: no snapping)'
+          : 'drag: move the ground attachment (Alt: no snapping)'
         : 'drag: slide the joint along its parent — drop it on a port of another body to hang it there';
     dh.append(jt);
     dh.addEventListener('pointerdown', (e) => this.start(e, 'joint'));

@@ -208,8 +208,18 @@ export class Figure {
   /** Ground supports, rails on the ground, ground pins and slots, gravity. */
   paintStatic(pen: Pen, annotate: boolean): void {
     const u = pen.u;
+    for (const [x, y] of this.mech.anchors ?? []) {
+      if (
+        this.mech.bodies.some(
+          (b) => b.parent < 0 && !b.detached && Math.hypot(b.mountX - x, b.mountY - y) < 1e-8,
+        )
+      )
+        continue;
+      hatched(pen, x + 10 * u, y - 4 * u, x - 10 * u, y - 4 * u);
+      circle(pen, x, y, 3 * u, { stroke: pen.inks.ink, fill: pen.inks.paper, width: 1.2 });
+    }
     this.mech.bodies.forEach((raw) => {
-      if (raw.parent >= 0) return;
+      if (raw.parent >= 0 || raw.detached) return;
       const b = normalise(raw);
       if (b.joint === 'prismatic') {
         const a = b.mountAngle + b.axisAngle;
@@ -665,13 +675,6 @@ export class Figure {
         for (const q of pts.slice(1)) pen.line(...q);
         pen.close();
         pen.draw({ stroke: ink, fill: pen.inks.paper, width: 1.8 });
-        if (b.joint === 'prismatic') {
-          for (const wx of [-0.11, 0.11]) {
-            const [cx, cy] = corner(wx, -BLOCK.h / 2 - 0.02);
-            circle(pen, cx, cy, 0.04, { stroke: ink, fill: pen.inks.paper, width: 1.4 });
-            circle(pen, cx, cy, 1.4 * u, { fill: ink });
-          }
-        }
       }
       const l = this.geo.length(i, params);
       if (l > 1e-3) {
@@ -704,6 +707,7 @@ export class Figure {
 
     // joints: hinges, welds, loop pins
     this.mech.bodies.forEach((b, i) => {
+      if (b.detached) return;
       const [x, y, p] = snap.frame(i + 1);
       const ink = i === this.selected ? pen.inks.accent : pen.inks.ink;
       if (b.joint === 'revolute') hinge(pen, x, y, ink, b.actuated);

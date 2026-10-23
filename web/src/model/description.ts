@@ -13,6 +13,8 @@ export type JointKind = 'revolute' | 'prismatic' | 'fixed';
 export type Shape = 'link' | 'block';
 
 export interface BodySpec {
+  /** An unconnected editor body. Its mount is a world pose; it is never sent to the simulator. */
+  detached?: boolean;
   /** Index of the parent body, or -1 for the ground. Parents always come first. */
   parent: number;
   joint: JointKind;
@@ -70,6 +72,8 @@ export interface Element {
 }
 
 export interface Mechanism {
+  /** Explicit, fixed attachment points placed in the editor. All belong to the same world frame. */
+  anchors?: [number, number][];
   name: string;
   bodies: BodySpec[];
   closures: Closure[];
@@ -134,6 +138,7 @@ export function actuatorIndex(m: Mechanism): number[] {
 }
 
 export function encode(mech: Mechanism): number[] {
+  if (mech.bodies.some((b) => b.detached)) throw new Error('Connect every body before deriving equations');
   const out = [
     DESC_VERSION,
     mech.bodies.length,
@@ -535,6 +540,7 @@ export const DEFAULT_PRESET = 'Cart-pole';
 export function cloneMechanism(m: Mechanism): Mechanism {
   return {
     ...m,
+    ...(m.anchors ? { anchors: m.anchors.map(([x, y]): [number, number] => [x, y]) } : {}),
     bodies: m.bodies.map((b) => ({ ...b })),
     closures: m.closures.map((c) => ({ ...c })),
     elements: m.elements.map((e) => ({ ...e })),
@@ -555,6 +561,16 @@ export function validateMechanism(raw: unknown): string | null {
   if (typeof raw.name !== 'string' || typeof raw.g !== 'number' || !Number.isFinite(raw.g))
     return 'Invalid name or gravity';
   const nb = raw.bodies.length;
+  if (
+    raw.anchors !== undefined &&
+    (!Array.isArray(raw.anchors) ||
+      raw.anchors.length > MAX_BODIES ||
+      raw.anchors.some(
+        (a) =>
+          !Array.isArray(a) || a.length !== 2 || a.some((v) => typeof v !== 'number' || !Number.isFinite(v)),
+      ))
+  )
+    return 'Invalid ground anchors';
   if (nb > MAX_BODIES || raw.closures.length > MAX_CLOSURES || raw.elements.length > MAX_ELEMENTS)
     return 'Mechanism exceeds engine capacity';
   const index = (v: unknown, max: number, ground = false) =>
@@ -572,6 +588,8 @@ export function validateMechanism(raw: unknown): string | null {
       !['link', 'block'].includes(String(b.shape)) ||
       typeof b.actuated !== 'boolean' ||
       typeof b.uniform !== 'boolean' ||
+      (b.detached !== undefined && typeof b.detached !== 'boolean') ||
+      (b.detached === true && (b.parent !== -1 || b.joint !== 'fixed' || b.actuated !== false)) ||
       !finite(b, [
         'mountS',
         'mountX',
@@ -594,7 +612,7 @@ export function validateMechanism(raw: unknown): string | null {
       return `Invalid body ${i + 1}: check parent, joint, finite values and nonnegative physical coefficients`;
     if (b.joint !== 'fixed') moving++;
   }
-  if (moving > MAX_DOF || (nb > 0 && moving === 0)) return `Mechanism needs 1–${MAX_DOF} moving joints`;
+  if (moving > MAX_DOF) return `Mechanism supports at most ${MAX_DOF} moving joints`;
   const ends = (r: Record<string, unknown>) =>
     index(r.a, nb, true) &&
     index(r.b, nb) &&
@@ -648,6 +666,7 @@ export function migrateOrThrow(raw: unknown): Mechanism {
     } as Partial<BodySpec>);
   });
   const result = {
+    ...(m.anchors !== undefined ? { anchors: m.anchors } : {}),
     name: m.name ?? 'Custom',
     g: m.g ?? 9.81,
     tool: m.tool ?? -1,
@@ -658,6 +677,24 @@ export function migrateOrThrow(raw: unknown): Mechanism {
   const error = validateMechanism(result);
   if (error) throw new Error(error);
   return result;
+}
+
+/** Why an otherwise valid editor document cannot yet be simulated. */
+export function assemblyIssue(m: Mechanism): string | null {
+  const loose = m.bodies.filter((b) => b.detached).length;
+  if (loose)
+    return `${loose} unconnected ${loose === 1 ? 'body' : 'bodies'}: add joints to connect the assembly to ground.`;
+  if (m.bodies.length && dof(m) === 0)
+    return 'Fixed assembly: add a rotational or translational joint to simulate motion.';
+  return null;
+}
+
+/** All visible fixed attachment points, including supports in imported/preset mechanisms. */
+export function groundPoints(m: Mechanism): [number, number][] {
+  const points: [number, number][] = [...(m.anchors ?? [])];
+  for (const b of m.bodies) if (b.parent < 0 && !b.detached) points.push([b.mountX, b.mountY]);
+  for (const e of [...m.closures, ...m.elements]) if (e.a < 0) points.push([e.gx, e.gy]);
+  return points.filter(([x, y], i) => points.findIndex(([a, b]) => Math.hypot(a - x, b - y) < 1e-9) === i);
 }
 
 /** Compatibility helper for callers that do not need an import error message. */
@@ -720,6 +757,7 @@ export function reparent(
     b.mountX = 0;
     b.mountY = 0;
   }
+  if (parent < i) return { mech: { ...m, name: 'Custom' }, index: i };
   const { mech: out, remap } = reorder(m);
   return { mech: { ...out, name: 'Custom' }, index: remap.get(i) ?? 0 };
 }

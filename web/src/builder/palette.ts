@@ -7,11 +7,12 @@ import { PARTS, type PartKind } from './parts';
 
 /** Each symbol in a 44 × 26 box, stroked in the current colour. */
 const ICONS: Record<PartKind, string> = {
-  bar: '<circle cx="8" cy="18" r="3.4" fill="var(--card)"/><path d="M11 16.5 L38 6" stroke-width="3.2"/>',
-  slider:
-    '<path d="M4 20 H40" stroke-dasharray="3 2"/><rect x="15" y="15" width="12" height="10" fill="var(--card)"/><path d="M21 15 V3" stroke-width="3"/>',
-  cart: '<rect x="10" y="6" width="24" height="11" fill="var(--card)"/><circle cx="15" cy="19.5" r="2.5" fill="var(--card)"/><circle cx="29" cy="19.5" r="2.5" fill="var(--card)"/><path d="M3 22.5 H41"/><path d="M6 22.5 l-3 3 M12 22.5 l-3 3 M18 22.5 l-3 3 M24 22.5 l-3 3 M30 22.5 l-3 3 M36 22.5 l-3 3 M42 22.5 l-3 3" stroke-width="0.8"/>',
-  weld: '<path d="M6 19 L38 7" stroke-width="4"/><rect x="3" y="15.5" width="7" height="7" fill="currentColor" transform="rotate(45 6.5 19)"/>',
+  bar: '<path d="M8 18 L38 6" stroke-width="3.2"/>',
+  ground: '<path d="M7 12 H37 M10 12 l-5 8 M18 12 l-5 8 M26 12 l-5 8 M34 12 l-5 8"/>',
+  block: '<rect x="9" y="5" width="26" height="17"/>',
+  revolute: '<circle cx="22" cy="13" r="9"/><circle cx="22" cy="13" r="4"/>',
+  prismatic: '<path d="M3 8 H41 M3 19 H41"/><rect x="17" y="8" width="10" height="11" fill="var(--card)"/>',
+  fixed: '<path d="M10 13 H34 M22 1 V25"/><rect x="17" y="8" width="10" height="10" fill="var(--card)"/>',
   spring: '<path d="M3 13 H9 L12 7 L17 19 L22 7 L27 19 L32 7 L35 13 H41"/>',
   damper: '<path d="M3 13 H12 M24 7 H12 V19 H24 M20 8.5 V17.5 M20 13 H41"/>',
   springDamper:
@@ -29,10 +30,22 @@ export class Palette {
   readonly el = el('div', 'palette overlay');
 
   constructor(events: PaletteEvents) {
-    this.el.append(el('div', 'palette-title', 'Parts'));
+    let group = '';
     for (const p of PARTS) {
+      if (p.group !== group) {
+        group = p.group;
+        this.el.append(el('div', 'palette-title', group));
+      }
       const b = el('button', 'palette-item');
       b.type = 'button';
+      b.dataset.part = p.kind;
+      b.setAttribute('aria-label', `Place ${p.label}`);
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          events.start(p.kind);
+        }
+      });
       b.title = `${p.label}: ${p.hint}${p.twoEnded ? ' — drop one end, then click the other' : ''}`;
       b.innerHTML = `<svg viewBox="0 0 44 26" width="44" height="26" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${ICONS[p.kind]}</svg><span>${p.label}</span>`;
       b.addEventListener('pointerdown', (e) => {
